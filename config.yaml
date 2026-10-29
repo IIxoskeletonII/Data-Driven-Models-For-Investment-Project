@@ -1,0 +1,90 @@
+# Single source of every setting (DDMI Research Protocol v4.1). Section numbers refer to the protocol.
+# Scripts refuse outputs built with a different config.yaml (src/config.py: check_used).
+
+seed: 42
+
+data: # section 04
+  tickers: [XLB, XLE, XLF, XLI, XLK, XLP, XLU, XLV, XLY] # traded: the nine original Select Sector SPDR ETFs
+  hedge: IVV # traded hedge instrument (iShares Core S&P 500)
+  benchmark: SPY # market benchmark, bought and held, never traded
+  vix: ^VIX # market state (Cboe VIX index), not traded
+  fred: [DGS3MO, DGS10, BAA10Y] # 3-month T-bill (risk-free), 10-year Treasury, BAA-10y credit spread
+  fred_lag_days: 1 # market series lagged one day (section 04, as-of rules)
+  start: "1998-12-01"
+  end: "2026-10-16" # included, a Friday: the data snapshot ends here (section 05)
+  data_dir: data
+
+split: # section 10
+  warmup_end: "2002-12-31" # feature windows only, no scoring
+  in_sample_end: "2019-12-27" # last Friday of the In-Sample period
+  oos_start: "2019-12-30" # first OOS-realised return: open of Monday 30 Dec 2019 (IS/OOS by realisation date)
+  warmup_weeks: 104 # applied identically to every model (section 06)
+  initial_train_years: [2003, 2007] # initial training window of the walk-forward
+  test_years: [2008, 2019] # 12 expanding yearly test folds
+  embargo_weeks: 1 # purge overlapping labels + one extra week at every boundary
+  refit: quarterly # expanding window, refit quarterly; refits continue in OOS, tuning does not
+
+execution:
+  type: open_to_open # signal at Friday close t, executed at O(t+1), return O(t+2)/O(t+1) - 1 (section 05)
+
+features: # section 06
+  asset: [MOM26_1, MOM52_4, REV1, VOL13, DD13, BETA52] # cross-sectionally z-scored each Friday
+  states: [BEAR24, MKT_VAR, VIX_Z, TERM, CREDIT] # common to all assets; scaling fitted on training folds only
+  bear_weeks: 104 # BEAR24: SPY cumulative total return over the prior 104 weeks < 0
+  mkt_var_days: 126 # MKT_VAR: variance of daily SPY returns over the prior 126 trading days
+  beta_weeks: 52 # BETA52: daily cov(asset, SPY) / var(SPY) over 52 weeks
+  interactions: # M2, pre-registered, no search over others
+    - [BETA52, BEAR24, MKT_VAR] # primary
+    - [BETA52, BEAR24]
+    - [MOM26_1, BEAR24]
+    - [MOM26_1, MKT_VAR]
+    - [VOL13, VIX_Z]
+
+models: # section 07, fixed grids
+  M0: { feature: MOM26_1 } # rule momentum, the hurdle
+  M1: { kind: ridge, alpha: [0.1, 1, 10] } # 6 asset features
+  M2: { kind: ridge, alpha: [0.1, 1, 10] } # M1 + 5 pre-registered interactions
+  M3: { kind: lightgbm, max_depth: [2, 3], n_estimators: 200, learning_rate: 0.03, num_threads: 1, deterministic: true }
+  M0_star: { lookback_weeks: [13, 26, 52] } # fallback: M0 lookback chosen at each refit by walk-forward IS Sharpe
+  candidate_order: [M1, M2, M3, M5, ENS] # simplest first
+
+selection: # section 07 gate, applied to walk-forward In-Sample results
+  sharpe_uplift: 0.15 # net Sharpe >= M0 + 0.15
+  mdd_tolerance: 0.02 # max drawdown at most 2 percentage points worse than M0
+  bootstrap_prob: 0.80 # paired block bootstrap P(uplift > 0) >= 0.80
+  bootstrap_resamples: 5000
+  bootstrap_block: 4 # weeks, stationary bootstrap mean block length
+  bootstrap_block_sensitivity: 8
+
+agent_lab: # section 08
+  max_candidates: 40
+  budget_usd: 5 # hard stop in code
+
+signal: # section 09
+  top_k: 2 # ranks 1-2 -> +1
+  bottom_k: 2 # two lowest ranks -> -1
+  sensitivity_k: [1, 3] # reported as sensitivity, never selected
+  core_weight: 0.25 # core weight = 0.25 x signal: 50% long, 50% short
+  hedge_cap: 0.5 # |h| <= 50% of core gross
+  hedge_deadband: 0.02 # hedge signal 0 if the hedge is below 2% of capital
+
+costs: # section 09, proposal, not broker quotes
+  bps: [5, 10, 20] # trading cost per $ traded: optimistic, baseline, adverse
+  bps_baseline: 10
+  borrow: [0.01, 0.02, 0.05] # short borrow, annual
+  borrow_baseline: 0.02
+
+metrics: # section 11
+  periods_per_year: 52
+  risk_free_series: DGS3MO # weekly, time-varying: primary
+  risk_free_constant: 0.02 # skeleton's constant, shown alongside for comparability
+  market_neutral: { beta_abs_max: 0.10, corr_abs_max: 0.20 }
+
+qa: # section 04 QA gates; thresholds fixed before the data was downloaded
+  big_move: 0.10 # daily moves above 10% listed for manual review
+  split_tolerance: 0.03 # a day-to-day price ratio within 3% of 2, 3, 4, 5, 10 (or the inverse) looks like a split
+  dividend_yield_band: [0.003, 0.06] # adjusted-minus-raw annual return gap consistent with a dividend yield
+  reconciliation_total_tol: 0.005 # |log total adjustment - sum of log dividend factors| over the whole history
+  reconciliation_step_tol: 0.001 # largest day-to-day change of Adj Close / Close not explained by a dividend
+  second_source_dates: 20 # dates sampled (seed above) for the Stooq cross-check
+  second_source_tol: 0.001 # |daily return difference| allowed against the second source (10 bps)
