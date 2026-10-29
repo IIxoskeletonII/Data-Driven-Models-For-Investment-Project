@@ -7,10 +7,12 @@ Conventions (as in the course skeleton):
 """
 
 import hashlib
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas.errors import Pandas4Warning
 
 WEEK_COLUMNS = ["date_open", "date_close"]
 
@@ -19,6 +21,14 @@ DATE_FORMAT = "%Y-%m-%d"
 
 PRICE_FIELDS = ["Open", "High", "Low", "Close"]
 RAW_FIELDS = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Dividends", "Stock Splits"]
+
+
+def quiet_yfinance_deprecations() -> None:
+    """Hide the pandas deprecation warnings raised inside yfinance's own code (console noise only).
+
+    The filter matches only warnings attributed to yfinance modules; warnings from our code still show.
+    """
+    warnings.filterwarnings("ignore", category=Pandas4Warning, module=r"yfinance\.")
 
 
 def file_stem(ticker: str) -> str:
