@@ -1,0 +1,8 @@
+count,value
+weeks in the panel,1455
+scored signal weeks (date_close from the first scored week),1242
+"In-Sample, by realisation date of the return (open of week t+2 <= in_sample_end)",885
+"Out-of-Sample, by realisation date of the return",355
+scored weeks without a return in the data (last two weeks),2
+"In-Sample, by week close (smoke-test definition)",887
+"Out-of-Sample, by week close (smoke-test definition)",355

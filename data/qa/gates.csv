@@ -1,0 +1,15 @@
+gate,status,detail
+"Raw files frozen (SHA-256, source, fetch time)",PASS,15 files verified against data/raw/manifest.json
+Monotonic dates,PASS,0 out-of-order dates in 15 raw files
+No duplicate dates,PASS,0 duplicated dates in 15 raw files
+One row per ticker per session,PASS,"equity calendar = union of the 11 tradables' dates (7012 sessions); missing sessions 0; ^VIX-only dates 2 (listed, allowed)"
+Positive prices,PASS,0 rows with a zero or negative Open/High/Low/Close/Adj Close
+No forward-filled tradable prices,PASS,"0 stale sessions (OHLC equal to the previous session's, or zero volume) from 2003-01-01; 1 in the warm-up (reported)"
+Daily moves above 10% listed for review,PASS,85 close-to-close and 73 open-to-open moves listed; split-like moves in adjusted prices: 0 (manual review pending)
+Corporate actions: 2:1 splits,PASS,"XLB 2025-12-05 (2), XLE 2025-12-05 (2), XLK 2025-12-05 (2), XLU 2025-12-05 (2), XLY 2025-12-05 (2); largest |return| within +/-2 sessions, adjusted and Yahoo open/close: 1.87% (an unadjusted event would be about -50%)"
+Corporate actions: other split factors,PASS,"XLF 2016-09-19 (1.231); largest |return| within +/-2 sessions, adjusted and Yahoo open/close: 1.42% (an unadjusted event would be about -19%)"
+Adjusted returns reconciled to dividends and splits,PASS,"11/11 tickers: |total gap| <= 0.005, unexplained daily step <= 0.001, annual gap in (0.3%, 6%)"
+20 sampled dates checked against the second source,NOT RUN,"Stooq unavailable for all 11 tickers (HTTP 404, text/html: not a CSV); not a Gate 1 blocker"
+Coverage audit per ticker,PASS,"missing opens/closes in the scored window: 0; sessions without VIX or a lagged FRED value: {'VIX': 0, 'DGS3MO': 0, 'DGS10': 0, 'BAA10Y': 0}; every ticker from before 2003-01-01 to 2026-10-16"
+Weekly panel,PASS,"(Monday, Friday) index through 2026-10-16; 0 missing weekly opens/closes in the scored window; scored weeks IS 885, OOS 355; first OOS return realised 2019-12-30; last evaluable signal week ends 2026-10-02"
+Composition breaks logged,PASS,"docs/composition_breaks.md records the 2016 and 2018 GICS changes (draft, owner Simone)"

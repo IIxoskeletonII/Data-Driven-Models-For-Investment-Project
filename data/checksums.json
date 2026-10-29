@@ -1,0 +1,380 @@
+{
+  "processed": {
+    "data/processed/daily_close.csv": {
+      "bytes": 1520016,
+      "columns": [
+        "XLB",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "IVV",
+        "SPY"
+      ],
+      "first_date": "1998-12-01",
+      "last_date": "2026-10-16",
+      "rows": 7012,
+      "sha256": "2d12f489df549413c18aaea369caef8782425233d1fdd3e1f055cf9d4d649591"
+    },
+    "data/processed/daily_high.csv": {
+      "bytes": 1524925,
+      "columns": [
+        "XLB",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "IVV",
+        "SPY"
+      ],
+      "first_date": "1998-12-01",
+      "last_date": "2026-10-16",
+      "rows": 7012,
+      "sha256": "6a6119483c6dadd2bcf91429cab9a22e0f4752225826bd54227fad8126b9233b"
+    },
+    "data/processed/daily_low.csv": {
+      "bytes": 1524976,
+      "columns": [
+        "XLB",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "IVV",
+        "SPY"
+      ],
+      "first_date": "1998-12-01",
+      "last_date": "2026-10-16",
+      "rows": 7012,
+      "sha256": "250654ab18da43d4a21bc954e3b4b583a352f98f6f9a17347d279a89695c17fb"
+    },
+    "data/processed/daily_market.csv": {
+      "bytes": 537548,
+      "columns": [
+        "VIX",
+        "DGS3MO",
+        "DGS10",
+        "BAA10Y"
+      ],
+      "first_date": "1998-12-01",
+      "last_date": "2026-10-16",
+      "rows": 7012,
+      "sha256": "5461e45e438085ad3bdff2d709bcdc9b5ba39e19db7c4272bea918e5bc1399ac"
+    },
+    "data/processed/daily_open.csv": {
+      "bytes": 1524603,
+      "columns": [
+        "XLB",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "IVV",
+        "SPY"
+      ],
+      "first_date": "1998-12-01",
+      "last_date": "2026-10-16",
+      "rows": 7012,
+      "sha256": "7fe0f75e6a26aaa67fd05508294b45a05c7c5f7a226ddd1e697757e3714e704c"
+    },
+    "data/processed/weekly_close.csv": {
+      "bytes": 331394,
+      "columns": [
+        "XLB",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "IVV",
+        "SPY"
+      ],
+      "first_date": "1998-12-04",
+      "last_date": "2026-10-16",
+      "rows": 1455,
+      "sha256": "d980615000d4d5bb9b0ec0557847a858749c3a5a61fb5f566964e9ef7a01ed88"
+    },
+    "data/processed/weekly_open.csv": {
+      "bytes": 332507,
+      "columns": [
+        "XLB",
+        "XLE",
+        "XLF",
+        "XLI",
+        "XLK",
+        "XLP",
+        "XLU",
+        "XLV",
+        "XLY",
+        "IVV",
+        "SPY"
+      ],
+      "first_date": "1998-12-04",
+      "last_date": "2026-10-16",
+      "rows": 1455,
+      "sha256": "4ebabf10f1634fa06f9e889fccf4ec63b3019d5a1d4fd149ccb0f9e76d8ad0f6"
+    }
+  },
+  "raw": {
+    "created_utc": "2026-10-29T16:51:27Z",
+    "files": {
+      "data/raw/fred/BAA10Y.csv": {
+        "bytes": 187827,
+        "fetched_utc": "2026-10-29T16:51:25Z",
+        "first_date": "1998-11-02",
+        "kept": "1998-10-31 to 2026-10-16",
+        "last_date": "2026-10-16",
+        "response_rows": 10648,
+        "response_sha256": "42e7372b2ecc53f595e2fbcc579d48fbd546efa5807bd16e0b7f447004ab594c",
+        "rows": 7295,
+        "series": "BAA10Y",
+        "sha256": "eafe4924074f8b02ca01e3a09ef8e1c84889971227fc7b40bddc0e81c3bdde6a",
+        "source": "FRED, Federal Reserve Bank of St. Louis",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAA10Y"
+      },
+      "data/raw/fred/DGS10.csv": {
+        "bytes": 193095,
+        "fetched_utc": "2026-10-29T16:51:25Z",
+        "first_date": "1998-11-02",
+        "kept": "1998-10-31 to 2026-10-16",
+        "last_date": "2026-10-16",
+        "response_rows": 16911,
+        "response_sha256": "81f4e470d0d7cfdf9da602beff84b750118a79a8cb0d6f01f5238aa89fd77fd4",
+        "rows": 7295,
+        "series": "DGS10",
+        "sha256": "e8783d32d9bbd03a8276b46eed3e05a2b2fb173900ca6c9ba6fea24a3a59cc23",
+        "source": "FRED, Federal Reserve Bank of St. Louis",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10"
+      },
+      "data/raw/fred/DGS3MO.csv": {
+        "bytes": 191032,
+        "fetched_utc": "2026-10-29T16:51:25Z",
+        "first_date": "1998-11-02",
+        "kept": "1998-10-31 to 2026-10-16",
+        "last_date": "2026-10-16",
+        "response_rows": 11781,
+        "response_sha256": "e5f28aeae20e845ba0f35041dfe440e1602fe56a960596825350dae2834cdeef",
+        "rows": 7295,
+        "series": "DGS3MO",
+        "sha256": "283bb7b026b01c6736910602041dcf5b4e13e95e47d807ecd9ac715fc99a5915",
+        "source": "FRED, Federal Reserve Bank of St. Louis",
+        "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO"
+      },
+      "data/raw/yahoo/IVV.csv": {
+        "bytes": 764128,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "2000-05-19",
+        "last_date": "2026-10-16",
+        "rows": 6642,
+        "sha256": "d2e1e5ea28648914d5d538f606cd98d5f5eb2a6199ab0f6c92a15f9886470504",
+        "source": "Yahoo Finance",
+        "ticker": "IVV"
+      },
+      "data/raw/yahoo/SPY.csv": {
+        "bytes": 805381,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-01",
+        "last_date": "2026-10-16",
+        "rows": 7012,
+        "sha256": "47121087bb66d465b97abb1af01fe81f4a77ec6942ee6892a324255ded71ab69",
+        "source": "Yahoo Finance",
+        "ticker": "SPY"
+      },
+      "data/raw/yahoo/VIX.csv": {
+        "bytes": 765405,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-01",
+        "last_date": "2026-10-16",
+        "rows": 7014,
+        "sha256": "9add0f77163e59b8ea6a21bad8beef6fe5dacf789a6fa2bf770d0d6e5777f0f0",
+        "source": "Yahoo Finance",
+        "ticker": "^VIX"
+      },
+      "data/raw/yahoo/XLB.csv": {
+        "bytes": 810179,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "ac244a154ce87477bac2c37706a54f58542280af2c121b3cdc194d12f92f8440",
+        "source": "Yahoo Finance",
+        "ticker": "XLB"
+      },
+      "data/raw/yahoo/XLE.csv": {
+        "bytes": 805138,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "d9a0dd69cc28ecb140a6290f5a41d6c70dec1cca020fd9b02201077f867ba26b",
+        "source": "Yahoo Finance",
+        "ticker": "XLE"
+      },
+      "data/raw/yahoo/XLF.csv": {
+        "bytes": 836892,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "d6bae871516cd930aaf2dd0e1592d6be7c5cbd9c2be5aee0854e92cf533a2120",
+        "source": "Yahoo Finance",
+        "ticker": "XLF"
+      },
+      "data/raw/yahoo/XLI.csv": {
+        "bytes": 796633,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "68e2ceabf41c0808c3eba3f27e8e4c838f94a56f9485c3b4de88ea782b731111",
+        "source": "Yahoo Finance",
+        "ticker": "XLI"
+      },
+      "data/raw/yahoo/XLK.csv": {
+        "bytes": 802409,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "076f7abc127bcef18047870d25b1665c6064c30a3e7869c28c5412d2bc57ce8f",
+        "source": "Yahoo Finance",
+        "ticker": "XLK"
+      },
+      "data/raw/yahoo/XLP.csv": {
+        "bytes": 799549,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "b923da2d475ad04fa335482ad7546de525e3634e0155ba58f3f8d93db1eb17b5",
+        "source": "Yahoo Finance",
+        "ticker": "XLP"
+      },
+      "data/raw/yahoo/XLU.csv": {
+        "bytes": 808964,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "bb9917dcccb657a029d61e659e0c55b6b766477188b8df05825530f99e3335aa",
+        "source": "Yahoo Finance",
+        "ticker": "XLU"
+      },
+      "data/raw/yahoo/XLV.csv": {
+        "bytes": 795027,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "2531c81047739c048483d2ea4f3a417d9b2e43bbf1443939c09c916025c27a4c",
+        "source": "Yahoo Finance",
+        "ticker": "XLV"
+      },
+      "data/raw/yahoo/XLY.csv": {
+        "bytes": 804133,
+        "call": "yfinance 1.7.0: yf.download(['XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLU', 'XLV', 'XLY', 'IVV', 'SPY', '^VIX'], start='1998-12-01', end='2026-10-17', auto_adjust=False, actions=True)",
+        "fetched_utc": "2026-10-29T16:51:23Z",
+        "first_date": "1998-12-22",
+        "last_date": "2026-10-16",
+        "rows": 6997,
+        "sha256": "8a3e2692932c7b394ef2fdf5471a81bdd4f8adf17c3ac262141790d2a69eec4c",
+        "source": "Yahoo Finance",
+        "ticker": "XLY"
+      }
+    },
+    "snapshot_end": "2026-10-16",
+    "unavailable": {
+      "stooq": {
+        "IVV": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=ivv.us&i=d"
+        },
+        "SPY": {
+          "checked_utc": "2026-10-29T16:51:27Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=spy.us&i=d"
+        },
+        "XLB": {
+          "checked_utc": "2026-10-29T16:51:25Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xlb.us&i=d"
+        },
+        "XLE": {
+          "checked_utc": "2026-10-29T16:51:25Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xle.us&i=d"
+        },
+        "XLF": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xlf.us&i=d"
+        },
+        "XLI": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xli.us&i=d"
+        },
+        "XLK": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xlk.us&i=d"
+        },
+        "XLP": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xlp.us&i=d"
+        },
+        "XLU": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xlu.us&i=d"
+        },
+        "XLV": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xlv.us&i=d"
+        },
+        "XLY": {
+          "checked_utc": "2026-10-29T16:51:26Z",
+          "reason": "HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t')",
+          "url": "https://stooq.com/q/d/l/?s=xly.us&i=d"
+        }
+      }
+    },
+    "versions": {
+      "pandas": "3.1.0",
+      "python-yfinance": "1.7.0"
+    }
+  }
+}

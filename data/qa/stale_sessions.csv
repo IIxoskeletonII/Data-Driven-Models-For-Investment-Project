@@ -1,0 +1,2 @@
+date,ticker,repeated_ohlc,zero_volume,window
+1999-01-26,XLI,False,True,warm-up
