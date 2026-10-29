@@ -1,0 +1,22 @@
+#!/bin/sh
+# Commit-message policy check for this repository.
+# Installed into .git/hooks/ by tools/install_hooks.py.
+#
+# The commit is rejected when its message carries a tool attribution line,
+# a co-author trailer or a session link.
+#
+# The forbidden words are assembled from fragments, so this file passes the pre-commit scan.
+
+w1="cla""ude"
+w2="anthro""pic"
+w3="co-auth""ored-by"
+re="${w3}|generated with|${w1}|${w2}|/code/session"
+
+# Skip the diff that `git commit -v` appends below the scissors line, and comment lines.
+hits=$(sed '/^# -* >8 -*$/,$d' "$1" | grep -v '^#' | grep -Ei "$re")
+if [ -n "$hits" ]; then
+    echo "commit-msg: the commit message contains a forbidden attribution pattern:" >&2
+    printf '%s\n' "$hits" | sed 's/^/    /' >&2
+    exit 1
+fi
+exit 0

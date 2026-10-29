@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment (recreate with `uv sync`)
+.venv/
+
+# Credentials and API keys
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Licensed raw vendor data: local only, shipped in the LUISS zip, never in the public repo
+data/raw/
+
+# Processed data derived from licensed prices: local only (checksums in data/checksums.json)
+data/processed/*
+!data/processed/.gitkeep
+
+# Outputs: ignored until results exist
+outputs/*
+!outputs/.gitkeep
+
+# Archives (submission zip, data snapshots)
+*.zip

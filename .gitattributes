@@ -1,0 +1,13 @@
+# Text files are stored with LF and checked out with LF on every OS, whatever core.autocrlf says.
+* text=auto eol=lf
+
+# Data files are kept byte for byte (no line-ending conversion), so their SHA-256 never changes.
+data/**/*.csv binary
+data/**/*.json binary
+*.parquet binary
+
+# Other binary formats
+*.png binary
+*.pdf binary
+*.pptx binary
+*.zip binary

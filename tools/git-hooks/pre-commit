@@ -1,0 +1,49 @@
+#!/bin/sh
+# Pre-commit policy checks for this repository.
+# Installed into .git/hooks/ by tools/install_hooks.py.
+#
+# The commit is rejected when:
+#   (a) a staged path is a local assistant settings or instructions file;
+#   (b) an added line contains a forbidden attribution word
+#       (docs/ai_tools_used.md and uv.lock are exempt);
+#   (c) a staged file lives under data/raw/ (licensed vendor data, never committed).
+#
+# The forbidden words are assembled from fragments, so this file does not match check (b).
+
+w1="cla""ude"
+w2="anthro""pic"
+w3="co-auth""ored-by"
+path_re="(^|/)\.${w1}(/|\$)|(^|/)${w1}(\.local)?\.md\$|(^|/)\.mcp\.json\$"
+word_re="${w1}|${w2}|${w3}"
+
+status=0
+staged=$(git diff --cached --name-only --diff-filter=d)
+
+# (a) forbidden paths
+bad=$(printf '%s\n' "$staged" | grep -Ei "$path_re")
+if [ -n "$bad" ]; then
+    echo "pre-commit: local assistant files must not be committed:" >&2
+    printf '%s\n' "$bad" | sed 's/^/    /' >&2
+    status=1
+fi
+
+# (b) forbidden words in added lines
+hits=$(git diff --cached -U0 --no-color --no-ext-diff --diff-filter=d -- . \
+        ':(exclude)docs/ai_tools_used.md' ':(exclude)uv.lock' |
+    awk -v re="$word_re" '/^\+\+\+ /{file = substr($0, 7); next}
+        /^\+/ && tolower(substr($0, 2)) ~ re {print file ": " substr($0, 2)}')
+if [ -n "$hits" ]; then
+    echo "pre-commit: added lines contain a forbidden attribution word:" >&2
+    printf '%s\n' "$hits" | sed 's/^/    /' >&2
+    status=1
+fi
+
+# (c) raw vendor data
+raw=$(printf '%s\n' "$staged" | grep -E '^data/raw/')
+if [ -n "$raw" ]; then
+    echo "pre-commit: files under data/raw/ are licensed vendor data and must not be committed:" >&2
+    printf '%s\n' "$raw" | sed 's/^/    /' >&2
+    status=1
+fi
+
+exit $status
