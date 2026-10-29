@@ -36,10 +36,10 @@ def file_stem(ticker: str) -> str:
     return ticker.replace("^", "")
 
 
-def write_csv(table: pd.DataFrame, path: Path) -> None:
+def write_csv(table: pd.DataFrame, path: Path, float_format: str = FLOAT_FORMAT) -> None:
     """Write a table so that the same data always gives the same bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_csv(path, lineterminator="\n", float_format=FLOAT_FORMAT, date_format=DATE_FORMAT, encoding="utf-8")
+    table.to_csv(path, lineterminator="\n", float_format=float_format, date_format=DATE_FORMAT, encoding="utf-8")
 
 
 def read_daily(path: Path) -> pd.DataFrame:
