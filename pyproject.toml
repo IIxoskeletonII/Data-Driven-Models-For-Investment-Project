@@ -1,0 +1,32 @@
+[project]
+name = "ddmi-sector-momentum"
+version = "0.1.0"
+description = "Regime-aware, dollar-neutral sector-momentum strategy with a beta hedge (LUISS Data-Driven Models for Investment, group 7)"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "lightgbm>=4.7.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pandas>=3.1.0",
+    "plotly>=7.1.0",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+    "statsmodels>=0.15.0",
+    "yfinance>=1.7.0",
+]
+
+[tool.ruff]
+line-length = 130
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
