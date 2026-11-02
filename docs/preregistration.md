@@ -337,12 +337,16 @@ C6 (§05 step 1 vs Amendment 1). Amendment 1 supersedes §05 step 1 for ^VIX, DG
 
 C7 (§06, naming). The weekly market-state frame stores the lagged VIX level in a column named VIX. VIX_Z denotes its in-fold standardisation inside the model pipeline and is used in the interaction VOL13 × VIX_Z.
 
-Amendment 3 (2 Nov 2026): clarification of §06 (winsorising level), before any feature or model code.
-Proposed by Eliya Allam; approved by Mattia Cervelli through the review of the pull request that contains it.
-No feature, score, signal, sizing or backtest result had been computed when it was committed; no In-Sample or
-Out-of-Sample result had been seen.
+Amendment 4 (2 Nov 2026): clarification of §06 (winsorising level).
+Proposed by Eliya Allam; approved by Mattia Cervelli through the review of the pull request from branch
+feat/2.2-features-m0. First committed as "Amendment 3, C8" (commit 80d822c), before any feature or model code existed
+and before any feature had been computed. Renumbered as Amendment 4, C1, because the ledger corrections of pull request
+#5 entered main first as Amendment 3 (decision S22-13); the clause text is unchanged. When it was renumbered, the
+In-Sample features, market states, sizing betas and momentum variants had been built (weeks 1998-12-04 to 2019-12-27,
+data/checksums_features.json); no label file, model score, signal, sizing or strategy result had been computed on real
+data, and no Out-of-Sample value had been computed or seen.
 
-C8 (§06, in-fold winsorising and standardisation). In each training fold, each continuous market state (MKT_VAR, VIX,
+C1 (§06, in-fold winsorising and standardisation). In each training fold, each continuous market state (MKT_VAR, VIX,
 TERM and CREDIT; Amendment 2 C1) is winsorised at the 1st and 99th percentiles of its values over the distinct training
 weeks (one value per week), then standardised with the mean and the sample standard deviation of the winsorised
 training values. The same bounds, mean and standard deviation are applied unchanged to the weeks the fold scores. The
