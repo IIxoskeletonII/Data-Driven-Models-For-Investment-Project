@@ -23,6 +23,16 @@ def _cfg(cfg: dict | None) -> dict:
     return load_config() if cfg is None else cfg
 
 
+WALKFORWARD_SECTIONS = ("seed", "data", "split", "features", "models")  # agreed with 06_backtest.py's check_used (S23-5)
+
+
+def walkforward_settings(cfg: dict) -> dict:
+    """The config sections saved as outputs/walkforward/<rung>/used.yaml by 05_train_walkforward.py and compared by
+    06_backtest.py with check_used (S23-5): exactly {seed, data, split, features, models}, each the whole section.
+    """
+    return {key: cfg[key] for key in WALKFORWARD_SECTIONS}
+
+
 def _winsor_quantiles(cfg: dict) -> tuple[float, float]:
     """The winsorising quantiles features.winsor_quantiles of config.yaml (Amendment 4 C1, S22-11)."""
     try:
