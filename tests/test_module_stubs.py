@@ -7,7 +7,6 @@ import pytest
 
 # (module, functions, phase, owner) of the contract 17 table, for the functions that are stubs until their phase
 STUB_FUNCTIONS = [
-    ("src.backtest", ["forward_returns", "run"], "2.1", "Mattia"),
     ("src.ledger", ["run_ledger"], "2.1", "Mattia"),
     ("src.metrics", ["performance", "return_stats", "behaviour", "market", "tbill_weekly_returns", "period_average_rf"],
      "2.1", "Mattia"),
