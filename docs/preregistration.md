@@ -336,3 +336,15 @@ C5 (§10–§11, period boundary). The backtest is one continuous book from the 
 C6 (§05 step 1 vs Amendment 1). Amendment 1 supersedes §05 step 1 for ^VIX, DGS3MO, DGS10 and BAA10Y: in features dated Friday t, these series enter at their previous-session value, not their Friday value.
 
 C7 (§06, naming). The weekly market-state frame stores the lagged VIX level in a column named VIX. VIX_Z denotes its in-fold standardisation inside the model pipeline and is used in the interaction VOL13 × VIX_Z.
+
+Amendment 3 (2 Nov 2026): clarification of §06 (winsorising level), before any feature or model code.
+Proposed by Eliya Allam; approved by Mattia Cervelli through the review of the pull request that contains it.
+No feature, score, signal, sizing or backtest result had been computed when it was committed; no In-Sample or
+Out-of-Sample result had been seen.
+
+C8 (§06, in-fold winsorising and standardisation). In each training fold, each continuous market state (MKT_VAR, VIX,
+TERM and CREDIT; Amendment 2 C1) is winsorised at the 1st and 99th percentiles of its values over the distinct training
+weeks (one value per week), then standardised with the mean and the sample standard deviation of the winsorised
+training values. The same bounds, mean and standard deviation are applied unchanged to the weeks the fold scores. The
+level is set in `config.yaml` as `features.winsor_quantiles: [0.01, 0.99]`. Reason: §06 requires "Scaling and winsorising
+fitted inside each training fold" but states no level, which the implementation would otherwise choose.
