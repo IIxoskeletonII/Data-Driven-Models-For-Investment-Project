@@ -1,6 +1,6 @@
 """The AI ladder of protocol section 07: M0 rank rule, ridge (M1, M2), LightGBM (M3), ENS and the M0* fallback.
 
-Phase 2.2 (Eliya): M0 and the in-fold scaling pipeline (decisions S22-6, S22-11; Amendment 2 C1, C7; Amendment 3 C8).
+Phase 2.2 (Eliya): M0 and the in-fold scaling pipeline (decisions S22-6, S22-11; Amendment 2 C1, C7; Amendment 4 C1).
 Not implemented yet: ridge, LightGBM, ENS and M0* in Phase 3.1 (Eliya). Interfaces: docs/interfaces.md, contracts 5, 8
 and 14.
 """
@@ -24,11 +24,11 @@ def _cfg(cfg: dict | None) -> dict:
 
 
 def _winsor_quantiles(cfg: dict) -> tuple[float, float]:
-    """The winsorising quantiles features.winsor_quantiles of config.yaml (Amendment 3 C8, S22-11)."""
+    """The winsorising quantiles features.winsor_quantiles of config.yaml (Amendment 4 C1, S22-11)."""
     try:
         lower, upper = cfg["features"]["winsor_quantiles"]
     except KeyError:
-        raise KeyError("config.yaml lacks features.winsor_quantiles (Amendment 3 C8: [0.01, 0.99]); the in-fold "
+        raise KeyError("config.yaml lacks features.winsor_quantiles (Amendment 4 C1: [0.01, 0.99]); the in-fold "
                        "winsorising of the market states cannot run without it") from None
     lower, upper = float(lower), float(upper)
     if not 0.0 <= lower < upper <= 1.0:
@@ -47,7 +47,7 @@ def _scaled_name(state: str) -> str:
 
 
 def fit_state_scaling(states: pd.DataFrame, cfg: dict | None = None) -> dict:
-    """In-fold winsorising and standardisation parameters of the continuous market states (§06, S22-6, C8).
+    """In-fold winsorising and standardisation parameters of the continuous market states (§06, S22-6, Amendment 4 C1).
 
     states: unscaled weekly market states (contract 4) of the TRAINING weeks only, one row per week, known after Friday
     close t. For each of MKT_VAR, VIX, TERM, CREDIT: lower/upper = numpy.nanquantile at features.winsor_quantiles

@@ -1,6 +1,6 @@
-"""Model-input pipeline and M0 of src/models.py (§06, §07; Amendment 2 C1 and C7; Amendment 3 C8; S22-6, S22-11).
+"""Model-input pipeline and M0 of src/models.py (§06, §07; Amendment 2 C1 and C7; Amendment 4 C1; S22-6, S22-11).
 
-The winsorising level is passed explicitly in cfg (features.winsor_quantiles = [0.01, 0.99], Amendment 3 C8), since the
+The winsorising level is passed explicitly in cfg (features.winsor_quantiles = [0.01, 0.99], Amendment 4 C1), since the
 key is added to config.yaml in a separate pull request. Expected parameters are computed here with numpy.nanquantile
 (linear interpolation) and the mean and ddof=1 standard deviation over the distinct training weeks.
 """
@@ -146,7 +146,7 @@ def test_missing_winsor_quantiles_key_raises_key_error():
     with pytest.raises(KeyError) as excinfo:
         models.fit_state_scaling(train_states(states), cfg=cfg)
     message = str(excinfo.value)
-    assert "winsor_quantiles" in message and "Amendment 3" in message
+    assert "winsor_quantiles" in message and "Amendment 4" in message
     with pytest.raises(KeyError):
         models.fit_transform_train(make_features(TRAIN_FRIDAYS), states, cfg=cfg)
 
