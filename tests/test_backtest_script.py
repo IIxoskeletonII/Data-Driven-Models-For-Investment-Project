@@ -1,12 +1,13 @@
 """06_backtest.py: CLI wiring only; refuses real-data runs until the vault exists (Phase 2.3), and the ledger check accepts
 In-Sample years only."""
 
+import copy
 import importlib.util
 
 import pandas as pd
 import pytest
 
-from src.config import ROOT
+from src.config import ROOT, load_config
 
 
 @pytest.fixture(scope="module")
@@ -67,3 +68,55 @@ def test_ledger_check_stops_before_any_oos_return_even_with_frozen_lock(script, 
         script.main(["--ledger-years", "2012"])
     assert "after the In-Sample end" in str(raised.value)
     assert not (tmp_path / "outputs").exists()
+
+
+def test_ledger_settings_come_from_config(script):
+    cfg = load_config()
+    settings = script.ledger_settings(cfg)
+    assert settings == {"years": [2005, 2012, 2016, 2018], "books_per_year": 10, "tolerance": 1e-6, "tolerance_costs": 1e-10}
+    assert settings["tolerance"] == 1e-6  # §09 pre-registered, never loosened (Amendment 3 C1 keeps it)
+
+
+@pytest.mark.parametrize("change,message", [
+    ({"years": [2012, 2020]}, "In-Sample"),
+    ({"years": []}, "non-empty"),
+    ({"books_per_year": 0}, "positive int"),
+    ({"tolerance": 1e-5}, "(0, 1e-6]"),
+    ({"tolerance_costs": 0.0}, "(0, 1e-6]"),
+])
+def test_ledger_settings_refuse_bad_values(script, change, message):
+    cfg = copy.deepcopy(load_config())
+    cfg["ledger"] |= change
+    with pytest.raises(SystemExit) as raised:
+        script.ledger_settings(cfg)
+    assert message in str(raised.value)
+
+
+def test_ledger_settings_require_the_section(script):
+    cfg = copy.deepcopy(load_config())
+    del cfg["ledger"]
+    with pytest.raises(SystemExit, match="no ledger"):
+        script.ledger_settings(cfg)
+
+
+def test_ledger_years_default_to_config_and_can_be_overridden(script, monkeypatch):
+    calls = []
+    monkeypatch.setattr(script, "run_ledger_check", lambda cfg, years: calls.append(years))
+    script.main(["--ledger-years"])
+    script.main(["--ledger-years", "2012"])
+    assert calls == [[], [2012]]
+
+
+def test_ledger_check_uses_the_configured_books_and_tolerances(script, synthetic_market, tmp_path, monkeypatch, capsys):
+    # synthetic raw data cut at the In-Sample end; 2 books per year and a tolerance of 1e-7 are read from the config
+    is_end = pd.Timestamp("2019-12-27")
+    cut = {t: frame.loc[frame.index <= is_end] for t, frame in synthetic_market.raw.items()}
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    monkeypatch.setattr(script, "read_raw_in_sample", lambda tickers, end: {t: cut[t] for t in tickers})
+    cfg = copy.deepcopy(load_config())
+    cfg["ledger"] |= {"books_per_year": 2, "tolerance": 1e-7}
+    script.run_ledger_check(cfg, [2012])
+    summary = pd.read_csv(tmp_path / "outputs" / "ledger" / "reconciliation.csv", index_col=0)
+    assert summary.loc[2012, "books"] == 2
+    out = capsys.readouterr().out
+    assert "|ledger - engine| <= 1e-07: PASS" in out and "<= 1e-10: PASS" in out

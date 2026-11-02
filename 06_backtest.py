@@ -7,8 +7,9 @@ config they were built with (src/config.py: save_used).
 Modes (real-data backtests come in Phase 2.3, through src/vault.py; until then the script refuses to run without a flag):
   --synthetic             the shared synthetic market of tests/conftest.py with seeded random scores (wiring check)
                           -> outputs/backtests/synthetic/
-  --ledger-years Y [Y..]  ledger reconciliation on real data (Levels A and B, Amendment 3), In-Sample years only: every date used
-                          is <= split.in_sample_end; the weights are seeded random ±k books, no model
+  --ledger-years [Y ..]   ledger reconciliation on real data (Levels A and B, Amendment 3), In-Sample years only: every date used
+                          is <= split.in_sample_end; the weights are seeded random ±k books, no model. Without years it
+                          replays ledger.years; books per year and tolerances always come from config.yaml (ledger.*)
                           -> outputs/ledger/  (differences only, no prices)
 """
 
@@ -27,14 +28,38 @@ from src.ledger import dividend_reinvestment_term, run_ledger
 from src.metrics import period_metrics
 from src.sizing import size_book
 
-LEDGER_TOLERANCE = 1e-6  # pre-registered (§09): zero-cost ledger vs engine, per week
-LEDGER_COSTS_TOLERANCE = 1e-10  # Level A with costs and borrow, after Amendment 3 C2
-LEDGER_BOOKS = 10  # seeded random books replayed per year
-
 
 def used_settings(cfg: dict) -> dict:
     """The config sections that determine the backtest outputs."""
     return {key: cfg[key] for key in ("seed", "split", "execution", "signal", "costs", "metrics")}
+
+
+def ledger_settings(cfg: dict) -> dict:
+    """The ledger section of config.yaml, checked: In-Sample years only (every week realised before split.in_sample_end),
+    a positive number of books per year, tolerances in (0, 1e-6] (the pre-registered §09 tolerance is the loosest allowed).
+    """
+    if "ledger" not in cfg:
+        raise SystemExit("config.yaml has no ledger: section (years, books_per_year, tolerance, tolerance_costs)")
+    ledger = cfg["ledger"]
+    missing = [key for key in ("years", "books_per_year", "tolerance", "tolerance_costs") if key not in ledger]
+    if missing:
+        raise SystemExit(f"config.yaml ledger: section lacks {missing}")
+    years, books = ledger["years"], ledger["books_per_year"]
+    if not years or not all(isinstance(year, int) and not isinstance(year, bool) for year in years):
+        raise SystemExit(f"ledger.years must be a non-empty list of years, got {years!r}")
+    _check_in_sample_years(years, pd.Timestamp(cfg["split"]["in_sample_end"]), "ledger.years")
+    if not isinstance(books, int) or isinstance(books, bool) or books < 1:
+        raise SystemExit(f"ledger.books_per_year must be a positive int, got {books!r}")
+    for key in ("tolerance", "tolerance_costs"):
+        if not 0 < float(ledger[key]) <= 1e-6:
+            raise SystemExit(f"ledger.{key} must be in (0, 1e-6], the pre-registered §09 tolerance, got {ledger[key]!r}")
+    return {"years": list(years), "books_per_year": books, "tolerance": float(ledger["tolerance"]),
+            "tolerance_costs": float(ledger["tolerance_costs"])}
+
+
+def _check_in_sample_years(years: list[int], is_end: pd.Timestamp, name: str) -> None:
+    if any(pd.Timestamp(year, 12, 31) >= is_end for year in years):
+        raise SystemExit(f"{name} must be In-Sample years whose weeks all realise before {is_end.date()}, got {years}")
 
 
 def random_scores(index: pd.MultiIndex, seed: int) -> pd.DataFrame:
@@ -108,10 +133,14 @@ def refuse_oos_returns(realised_on: pd.Series, is_end: pd.Timestamp) -> None:
                          f"(first {late.min().date()}); Out-of-Sample returns are computed only by 08_run_oos.py")
 
 
-def run_ledger_check(cfg: dict, years: list[int]) -> None:
+def run_ledger_check(cfg: dict, years: list[int] | None = None) -> None:
+    """Levels A and B of the ledger reconciliation on real In-Sample data (§09, Amendment 3), settings from ledger.*;
+    `years` overrides ledger.years."""
+    settings = ledger_settings(cfg)
     is_end = pd.Timestamp(cfg["split"]["in_sample_end"])
-    if any(pd.Timestamp(year, 12, 31) >= is_end for year in years):
-        raise SystemExit(f"--ledger-years must be In-Sample years whose weeks all realise before {is_end.date()}")
+    years = settings["years"] if not years else list(years)
+    _check_in_sample_years(years, is_end, "--ledger-years")
+    books_per_year, tolerance, tolerance_costs = settings["books_per_year"], settings["tolerance"], settings["tolerance_costs"]
     traded, tradables = list(universe().traded), list(universe().tradables)
     raw = read_raw_in_sample(tradables, is_end)
     adjusted = {t: adjust_ohlc(raw[t]) for t in tradables}
@@ -129,7 +158,7 @@ def run_ledger_check(cfg: dict, years: list[int]) -> None:
     for year in years:
         weeks = fwd.index[(fridays.year == year) & fwd[traded].notna().all(axis=1).to_numpy()]
         diff_a, diff_a_costs, diff_b, terms, events = [], [], [], [], []
-        for book in range(LEDGER_BOOKS):
+        for book in range(books_per_year):
             seed = cfg["seed"] + 100 * year + book
             sizing = size_book(random_scores(weeks, seed), random_betas(weeks, seed), cfg)
             zero = run(sizing, fwd, period, 0.0, 0.0)
@@ -153,7 +182,7 @@ def run_ledger_check(cfg: dict, years: list[int]) -> None:
             return float(values.abs().max()) if len(values) else 0.0
 
         rows.append({
-            "year": year, "books": LEDGER_BOOKS, "book_weeks": len(diff_b_all),
+            "year": year, "books": books_per_year, "book_weeks": len(diff_b_all),
             "A_max_abs_diff": worst(pd.concat(diff_a)),
             "A_costs_max_abs_diff": worst(pd.concat(diff_a_costs)),
             "B_max_abs_diff": worst(diff_b_all), "B_mean_abs_diff": float(diff_b_all.abs().mean()),
@@ -171,17 +200,17 @@ def run_ledger_check(cfg: dict, years: list[int]) -> None:
     out = ROOT / "outputs" / "ledger"
     write_csv(summary, out / "reconciliation.csv", float_format="%.6g")
     write_csv(by_ticker, out / "level_b_reinvestment_term_by_ticker.csv", float_format="%.6g")
-    save_used(used_settings(cfg), out / "used.yaml")
+    save_used(used_settings(cfg) | {"ledger": cfg["ledger"]}, out / "used.yaml")
     print(summary.T.to_string(float_format=lambda x: f"{x:.3e}"))
     print()
     print("Level B: max |w * reinvestment term| by ticker and year")
     print(by_ticker.to_string(float_format=lambda x: f"{x:.2e}"))
     checks = {
-        f"Level A, zero cost, |ledger - engine| <= {LEDGER_TOLERANCE:g}": summary["A_max_abs_diff"] <= LEDGER_TOLERANCE,
-        f"Level A, with costs and borrow, |ledger - engine| <= {LEDGER_COSTS_TOLERANCE:g}":
-            summary["A_costs_max_abs_diff"] <= LEDGER_COSTS_TOLERANCE,
-        f"Level B, |ledger - engine - dividend-reinvestment term| <= {LEDGER_TOLERANCE:g} (Amendment 3 C1)":
-            summary["B_max_abs_remainder"] <= LEDGER_TOLERANCE,
+        f"Level A, zero cost, |ledger - engine| <= {tolerance:g}": summary["A_max_abs_diff"] <= tolerance,
+        f"Level A, with costs and borrow, |ledger - engine| <= {tolerance_costs:g}":
+            summary["A_costs_max_abs_diff"] <= tolerance_costs,
+        f"Level B, |ledger - engine - dividend-reinvestment term| <= {tolerance:g} (Amendment 3 C1)":
+            summary["B_max_abs_remainder"] <= tolerance,
     }
     print()
     for name, passed in checks.items():
@@ -191,12 +220,13 @@ def run_ledger_check(cfg: dict, years: list[int]) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--synthetic", action="store_true", help="run on the shared synthetic market")
-    parser.add_argument("--ledger-years", type=int, nargs="+", help="ledger reconciliation on In-Sample years of real data")
+    parser.add_argument("--ledger-years", type=int, nargs="*",
+                        help="ledger reconciliation on In-Sample years of real data (default: ledger.years)")
     args = parser.parse_args(argv)
     cfg = load_config()
     if args.synthetic:
         run_synthetic(cfg)
-    elif args.ledger_years:
+    elif args.ledger_years is not None:
         run_ledger_check(cfg, args.ledger_years)
     else:
         sys.exit("06_backtest.py: real-data backtests need the vault (src/vault.py, Phase 2.3). "
