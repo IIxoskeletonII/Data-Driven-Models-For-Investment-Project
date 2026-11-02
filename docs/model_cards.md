@@ -10,11 +10,11 @@ M0 is the transparent momentum hurdle: relative sector winners are expected to k
 
 ### Inputs
 
-`MOM26_1` is `ln TR(t−1w) − ln TR(t−26w)`, computed from adjusted-close total-return data and cross-sectionally z-scored on each Friday. No market-state input is used. [prereg §06; interfaces §3]
+`MOM26_1` is `ln TR(t−1w) − ln TR(t−26w)`, computed from adjusted-close total-return data and cross-sectionally z-scored on each Friday. No market-state input is used. [prereg §06; interfaces, contract 3]
 
 ### Preprocessing
 
-The asset input is cross-sectionally z-scored using the nine sectors on each Friday. There are no model interactions and no fitted market-state transformation in M0. [prereg §06; interfaces §3]
+The asset input is cross-sectionally z-scored using the nine sectors on each Friday. There are no model interactions and no fitted market-state transformation in M0. [prereg §06; interfaces, contract 3]
 
 ### Model and fixed grid
 
@@ -22,7 +22,7 @@ The model is a rank on `MOM26_1`; its fixed grid is empty. [prereg §07]
 
 ### Training schedule
 
-M0 is scored on the same 12 yearly In-Sample test folds used for the candidates. The walk-forward process uses an expanding history, quarterly refits, purging and a one-week embargo; M0 itself has no fitted parameters. [prereg §07, §10; interfaces §13]
+M0 is scored on the same 12 yearly In-Sample test folds used for the candidates. The walk-forward process uses an expanding history, quarterly refits, purging and a one-week embargo; M0 itself has no fitted parameters. [prereg §07, §10; interfaces, contract 13]
 
 ### Role in selection
 
@@ -30,7 +30,7 @@ M0 is the hurdle against which every candidate is compared and is not itself in 
 
 ### Leakage controls and determinism
 
-The signal is computed after Friday’s close and executed at the next session’s open; labels are available only after their realised forward return and fitted rows satisfy the purge and embargo rule. The fixed feature construction and tie-break rule are deterministic. [prereg §05, §09, §10; interfaces §6, §13]
+The signal is computed after Friday’s close and executed at the next session’s open; labels are available only after their realised forward return and fitted rows satisfy the purge and embargo rule. The fixed feature construction and tie-break rule are deterministic. [prereg §05, §09, §10; interfaces, contract 6, contract 13]
 
 ### Known limitations
 
@@ -51,7 +51,7 @@ M1 tests whether additive information beyond intermediate momentum improves the 
 
 ### Inputs
 
-`MOM26_1`, `MOM52_4`, `REV1`, `VOL13`, `DD13` and `BETA52`. Their definitions are, respectively, intermediate momentum; 12–1 month momentum; one-week reversal/continuation; 13-week annualised daily-return volatility; 13-week drawdown; and 52-week daily beta to SPY. [prereg §06; interfaces §3]
+`MOM26_1`, `MOM52_4`, `REV1`, `VOL13`, `DD13` and `BETA52`. Their definitions are, respectively, intermediate momentum; 12–1 month momentum; one-week reversal/continuation; 13-week annualised daily-return volatility; 13-week drawdown; and 52-week daily beta to SPY. [prereg §06; interfaces, contract 3]
 
 ### Preprocessing
 
@@ -92,11 +92,11 @@ M2 tests whether market regimes change the cross-sectional ordering rather than 
 
 ### Inputs
 
-M2 uses the six M1 asset features plus the five interactions `BETA52_x_BEAR24_x_MKT_VAR`, `BETA52_x_BEAR24`, `MOM26_1_x_BEAR24`, `MOM26_1_x_MKT_VAR` and `VOL13_x_VIX_Z`. The interactions use `BEAR24`, `MKT_VAR`, `VIX_Z`, `TERM` and `CREDIT` market states, whose source observations are lagged one equity session; the states are not additional standalone M2 design columns. [prereg §06; Amendment 1; interfaces §4–5]
+M2 uses the six M1 asset features plus the five interactions `BETA52_x_BEAR24_x_MKT_VAR`, `BETA52_x_BEAR24`, `MOM26_1_x_BEAR24`, `MOM26_1_x_MKT_VAR` and `VOL13_x_VIX_Z`. The interactions use only `BEAR24`, `MKT_VAR` and `VIX_Z`; `TERM` and `CREDIT` enter no interaction. Their source observations are lagged one equity session. The stored market-state column is named `VIX`; `VIX_Z` is its in-fold standardisation inside the pipeline, and the states are not additional standalone M2 design columns. [prereg §06; Amendment 2 C1, C7; interfaces, contract 4–5]
 
 ### Preprocessing
 
-Asset features are cross-sectionally z-scored. Market-state winsorising and scaling are fitted inside each training fold; interactions are built after that in-fold transformation. `BEAR24` remains the pre-registered 0/1 state unless a recorded decision changes this open point. [prereg §06; interfaces §4–5, open point P1]
+Asset features are cross-sectionally z-scored. In-fold winsorising and standardisation apply only to the continuous market states `MKT_VAR`, `VIX`, `TERM` and `CREDIT`; `BEAR24` stays 0/1 and is never scaled. Interactions are built after that transformation. [prereg §06; Amendment 2 C1; interfaces, contract 4–5, open point P1]
 
 ### Model and fixed grid
 
@@ -129,15 +129,15 @@ Only timestamp-valid inputs and labels passing the cutoff are used. Market-state
 
 ### Purpose and mechanism
 
-M3 tests nonlinear combinations of the M2 inputs. Precisely, it fits LightGBM on the M2 design matrix: six asset features plus the five regime interactions. [prereg §06, §07; interfaces §5]
+M3 tests nonlinear combinations of the M2 inputs. Precisely, it fits LightGBM on the M2 design matrix: six asset features plus the five regime interactions. [prereg §06, §07; interfaces, contract 5]
 
 ### Inputs
 
-M3 uses the M2 design: `MOM26_1`, `MOM52_4`, `REV1`, `VOL13`, `DD13`, `BETA52`, and the five named M2 interactions. The market states used inside those interactions are lagged one equity session. [prereg §06; Amendment 1; interfaces §4–5]
+M3 uses the M2 design: `MOM26_1`, `MOM52_4`, `REV1`, `VOL13`, `DD13`, `BETA52`, and the five named M2 interactions. The market states used inside those interactions are lagged one equity session. [prereg §06; Amendment 1; interfaces, contract 4–5]
 
 ### Preprocessing
 
-Asset features are cross-sectionally z-scored. Market-state winsorising/scaling is in-fold, and interactions are constructed after in-fold scaling. [prereg §06; interfaces §3–5]
+Asset features are cross-sectionally z-scored. In-fold winsorising and standardisation apply only to continuous market states; `BEAR24` stays 0/1 and is never scaled. Interactions are constructed after that transformation. [prereg §06; Amendment 2 C1; interfaces, contract 3–5]
 
 ### Model and fixed grid
 
@@ -153,7 +153,7 @@ M3 is the third candidate in the pre-registered candidate order. [prereg §07]
 
 ### Leakage controls and determinism
 
-Label-end cutoffs, in-fold preprocessing, fixed hyperparameters, fixed seed, deterministic LightGBM, one thread and no file/network access in the model protocol constrain leakage and nondeterminism. [prereg §05, §06, §07; interfaces §13–14]
+Label-end cutoffs, in-fold preprocessing, fixed hyperparameters, fixed seed, deterministic LightGBM, one thread and no file/network access in the model protocol constrain leakage and nondeterminism. [prereg §05, §06, §07; interfaces, contract 13–14]
 
 ### Known limitations
 
@@ -178,7 +178,7 @@ M5 inherits the inputs of the best preceding rung and adds only approved agent f
 
 ### Preprocessing
 
-Inherited asset features use cross-sectional z-scores; market states are lagged one session and their winsorising/scaling is fitted in-fold; added features follow the same lag and fold-fitting controls. [prereg §06, Amendment 1]
+Inherited asset features use cross-sectional z-scores; market states are lagged one session, in-fold winsorising and standardisation apply only to continuous states, and `BEAR24` stays 0/1 and is never scaled; added features follow the same lag and fold-fitting controls. [prereg §06, Amendment 1, Amendment 2 C1]
 
 ### Model and fixed grid
 
@@ -252,15 +252,15 @@ Equal weighting can dilute a genuinely stronger component and inherits the estim
 
 ### Purpose and mechanism
 
-M0* preserves the transparent momentum mechanism while adding a walk-forward choice of lookback, so the system still contains an optimisation method if no AI candidate clears the gate. Precisely, it chooses among `MOM13_1`, `MOM26_1` and `MOM52_1` at each refit using In-Sample walk-forward Sharpe. [prereg §07; interfaces §3]
+M0* preserves the transparent momentum mechanism while adding a walk-forward choice of lookback, so the system still contains an optimisation method if no AI candidate clears the gate. Precisely, it chooses among `MOM13_1`, `MOM26_1` and `MOM52_1` at each refit using In-Sample walk-forward Sharpe. [prereg §07; interfaces, contract 3]
 
 ### Inputs
 
-The variants are `MOM13_1 = ln TR(t−1w) − ln TR(t−13w)`, `MOM26_1 = ln TR(t−1w) − ln TR(t−26w)` and `MOM52_1 = ln TR(t−1w) − ln TR(t−52w)`. [interfaces §3]
+The variants are `MOM13_1 = ln TR(t−1w) − ln TR(t−13w)`, `MOM26_1 = ln TR(t−1w) − ln TR(t−26w)` and `MOM52_1 = ln TR(t−1w) − ln TR(t−52w)`. [interfaces, contract 3]
 
 ### Preprocessing
 
-Each momentum variant uses the same cross-sectional z-scoring and warm-up discipline as the asset features. No market-state interaction is added. [prereg §06, §07; interfaces §3]
+Each momentum variant uses the same cross-sectional z-scoring and warm-up discipline as the asset features. No market-state interaction is added. [prereg §06, §07; interfaces, contract 3]
 
 ### Model and fixed grid
 
