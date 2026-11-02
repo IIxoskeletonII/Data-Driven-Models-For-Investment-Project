@@ -337,6 +337,12 @@ C6 (§05 step 1 vs Amendment 1). Amendment 1 supersedes §05 step 1 for ^VIX, DG
 
 C7 (§06, naming). The weekly market-state frame stores the lagged VIX level in a column named VIX. VIX_Z denotes its in-fold standardisation inside the model pipeline and is used in the interaction VOL13 × VIX_Z.
 
+Amendment 3 (2 Nov 2026): accounting corrections found by the independent ledger. Proposed by Mattia Cervelli; approved by Eliya Allam through the review of this pull request. No feature, score, signal or strategy result had been computed when it was committed; the engine had been run only on synthetic hand cases and the synthetic test market, and on seeded random weight books for In-Sample years 2005, 2012, 2016 and 2018.
+
+C1 (§09 ledger, Level B). The engine uses dividend-adjusted opens, whose adjustment factor references the previous close; a cash ledger books dividends on the ex-date. Level B therefore passes if, every week, |ledger return − engine return − dividend-reinvestment term| ≤ 1e-6, where the term is computed from the dividend series and prices as documented in docs/methods.md. Measured on the In-Sample years 2005, 2012, 2016 and 2018 (10 seeded random weight books per year, no strategy signal; 2,090 book-weeks; zero cost): raw max weekly difference 5.86e-5, mean 1.46e-6; remainder max 5.11e-7. Level A (same price basis, no costs) keeps the 1e-6 tolerance unchanged.
+
+C2 (§09 return formula). Drifted pre-trade weights divide by the book's value after costs and borrow: w_pre[t] = w[t−1]·(1+R_fwd[t−1]) / (1 + r_net[t−1]). The pre-registered denominator 1 + Σ w·R_fwd omitted costs and borrow; the difference was at most 2.31e-6 per week (mean 1.355e-6) against the shares-and-cash ledger at 10 bps and 2% borrow, on the same books. With the corrected formula the difference is at most 4.4e-16 on the same books and in all three cost scenarios.
+
 Amendment 4 (2 Nov 2026): clarification of §06 (winsorising level).
 Proposed by Eliya Allam; approved by Mattia Cervelli through the review of the pull request from branch
 feat/2.2-features-m0. First committed as "Amendment 3, C8" (commit 80d822c), before any feature or model code existed

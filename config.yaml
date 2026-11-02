@@ -34,6 +34,7 @@ features: # section 06
   bear_weeks: 104 # BEAR24: SPY cumulative total return over the prior 104 weeks < 0
   mkt_var_days: 126 # MKT_VAR: variance of daily SPY returns over the prior 126 trading days
   beta_weeks: 52 # BETA52: daily cov(asset, SPY) / var(SPY) over 52 weeks
+  winsor_quantiles: [0.01, 0.99] # in-fold winsorising of MKT_VAR, VIX, TERM, CREDIT on training weeks (Amendment 4 C1)
   interactions: # M2, pre-registered, no search over others
     - [BETA52, BEAR24, MKT_VAR] # primary
     - [BETA52, BEAR24]
@@ -74,6 +75,12 @@ costs: # section 09, proposal, not broker quotes
   bps_baseline: 10
   borrow: [0.01, 0.02, 0.05] # short borrow, annual
   borrow_baseline: 0.02
+
+ledger: # section 09 ledger reconciliation, Amendment 3
+  years: [2005, 2012, 2016, 2018] # In-Sample years replayed on real data; 2016 holds the XLF real-estate spin-off factor
+  books_per_year: 10 # seeded random placebo books per year (accounting check only, no model)
+  tolerance: 1.0e-6 # Level A without costs; Level B remainder after the dividend-reinvestment term (Amendment 3 C1)
+  tolerance_costs: 1.0e-10 # Level A with costs and borrow (Amendment 3 C2)
 
 metrics: # section 11
   periods_per_year: 52

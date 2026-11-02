@@ -327,8 +327,10 @@ entries S2-8 to S2-14 in `docs/decisions.md`. The table keeps the original quest
 - `src/metrics.py` (Mattia) implements the definitions of the course skeleton's `docs/metrics.md` on weekly return series
   (`pd.Series` on the weekly index, `float64`, P = 52): `performance(r, rf)`, `return_stats(r)`, `behaviour(signals,
   weights)`, `market(r, m, rf)` return `dict[str, float]`; ratios with a zero denominator are `NaN`.
-  `tbill_weekly_returns(dgs3mo, weeks)` turns the daily FRED yield (%) into weekly returns on the weekly index, lagged one
-  session (Amendment 1); `period_average_rf(rf_weekly, period)` gives the annual average per period.
+  `tbill_weekly_returns(dgs3mo, weeks, sessions)` turns the daily FRED yield (%) into weekly returns on the weekly index:
+  the rate of week t is the last observation dated on or before the session before the last session of week t
+  (Amendment 1, contract 1), accruing rate/100 · 7/365 over the holding week; `sessions` is the equity calendar
+  (contract 0). `period_average_rf(rf_weekly, period)` gives the annual average per period.
 - `src/stats.py` (Eliya) implements §11 inference on weekly series: `paired_block_bootstrap`, `rank_ic`,
   `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, and `selection_gate`, the §07 rule applied to In-Sample
   walk-forward results (Sharpe uplift ≥ `selection.sharpe_uplift`, drawdown tolerance `selection.mdd_tolerance`, bootstrap
