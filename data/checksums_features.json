@@ -1,0 +1,62 @@
+{
+  "features.csv": {
+    "bytes": 1315788,
+    "columns": [
+      "MOM26_1",
+      "MOM52_4",
+      "REV1",
+      "VOL13",
+      "DD13",
+      "BETA52"
+    ],
+    "first_date_close": "1998-12-04",
+    "last_date_close": "2019-12-27",
+    "rows": 9900,
+    "sha256": "096500eb028722c84afdfc8b138b07635b8ee9287812d6bdd71f819b4755829d"
+  },
+  "market_states.csv": {
+    "bytes": 107517,
+    "columns": [
+      "BEAR24",
+      "MKT_VAR",
+      "VIX",
+      "TERM",
+      "CREDIT"
+    ],
+    "first_date_close": "1998-12-04",
+    "last_date_close": "2019-12-27",
+    "rows": 1100,
+    "sha256": "f06e9e71003cd2bfc7ff867b6f845a7625bbfea5a3ad70bc5814c29a63c9edb8"
+  },
+  "momentum_variants.csv": {
+    "bytes": 730171,
+    "columns": [
+      "MOM13_1",
+      "MOM26_1",
+      "MOM52_1"
+    ],
+    "first_date_close": "1998-12-04",
+    "last_date_close": "2019-12-27",
+    "rows": 9900,
+    "sha256": "52c51f2fedc09339a4f7390d6d811d02e593d29ef2a816c154b0253864d04802"
+  },
+  "sizing_betas.csv": {
+    "bytes": 226922,
+    "columns": [
+      "XLB",
+      "XLE",
+      "XLF",
+      "XLI",
+      "XLK",
+      "XLP",
+      "XLU",
+      "XLV",
+      "XLY",
+      "IVV"
+    ],
+    "first_date_close": "1998-12-04",
+    "last_date_close": "2019-12-27",
+    "rows": 1100,
+    "sha256": "b028c13b9f7263c8d472a116dc8bf91f3b7d589d09abe0916036c3ffdd94fe03"
+  }
+}
