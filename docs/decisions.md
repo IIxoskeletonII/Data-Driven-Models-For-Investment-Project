@@ -188,6 +188,21 @@ Format of the operating manual's evidence standard. Quotes are from the DDMI Res
 
 `docs/licensing.md` stays Simone's file: she adds investing.com as the second price source (S2-1) when she finalises it.
 
+### S2-17 · Correction of the evidence reference in S2-14
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which commit introduced the unscaled `VIX_Z` market-state column that S2-14 corrects? |
+| Options considered | (a) keep the reference to b505705; (b) cite the commits that added the text |
+| Decision | (b). The evidence of S2-14 is commits 89a73eb (`docs/interfaces.md`, contract 4 lists `VIX_Z` as the unscaled lagged VIX level) and b24b727 (`src/contracts.py` and `tests/test_contracts.py` validate a market-state frame with a `VIX_Z` column). b505705 was the head of `main` that contained them but adds no `VIX_Z` line. S2-14 is not edited (this log is append-only); this entry supersedes its evidence reference |
+| Rationale | Evidence references must point at the commit that introduced the text |
+| Evidence | `git show 89a73eb`: "columns exactly `BEAR24`, `MKT_VAR`, `VIX_Z`, `TERM`, `CREDIT`"; `git show b505705` adds no line containing `VIX_Z` |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
