@@ -218,6 +218,147 @@ Format of the operating manual's evidence standard. Quotes are from the DDMI Res
 | Files affected | `docs/interfaces.md`, `tests/test_module_stubs.py`, `src/plots.py`, `src/stats.py`, `src/agents/__init__.py`, `src/agents/graph.py`, `src/agents/vault_server.py` |
 | Amendment | No: planning, not specification |
 
+## 2026-11-02 · Session 2.2: features, labels, folds, vault and M0
+
+Format of the operating manual's evidence standard. "Contract n" is `docs/interfaces.md`; "Instruction" quotes Eliya's
+corrections to the session 2.2 prompt (2 Nov 2026). "Approved by" is completed by Mattia's approving review of the pull
+request that implements Session 2.2.
+
+### S22-1 · VOL13 uses daily simple returns
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Is VOL13 the standard deviation of daily log returns (contract 3) or of daily simple returns? |
+| Options considered | (a) daily log returns, as contract 3 states; (b) daily simple returns |
+| Decision | (b). VOL13 = sample standard deviation (`ddof=1`) of daily simple returns `TR(s) / TR(s−1) − 1` whose end session `s` lies in the 13 calendar weeks ending Friday t (S22-3), × √252. Contract 3 is corrected in the same pull request |
+| Rationale | §06 does not say "log"; the contract's own convention reads unstated returns as simple; BETA52 and MKT_VAR, the other daily-return features, use simple returns, so all three share one return series |
+| Evidence | §06 asset table: "VOL13 \| Std of daily returns over 13 weeks × √252"; §06 states table: "MKT\_VAR \| Variance of daily SPY returns over the prior 126 trading days"; contract 0 (commit 89a73eb): "Returns \| Simple returns unless "log" is said."; contract 3 (commit 89a73eb): "`VOL13` \| sample std (`ddof=1`) of daily log returns whose end session lies in weeks t−12 … t, × √252"; Instruction C: "protocol §06 says "Std of daily returns", not log returns. Use daily simple returns, consistent with BETA52 and MKT_VAR" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` §"Changes") |
+| Files affected | `docs/interfaces.md` (contract 3, VOL13 row), `src/features.py`, `tests/test_features.py` |
+| Amendment | No: the decision follows the pre-registered wording; the contract's "log" was the deviation |
+
+### S22-2 · Market series at a session: last value published on or before the previous session
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | How are ^VIX and the FRED series aligned to the equity calendar, in particular on bond-market holidays when equities trade (Columbus Day, Veterans Day)? |
+| Options considered | (a) the value dated exactly on the previous session, NaN when it is missing; (b) the last non-missing observation dated on or before the previous session (carry the last published value forward, never a later one); (c) `data/processed/daily_market.csv` as written at Gate 1 (VIX of the same session, FRED lagged one calendar day) |
+| Decision | (b). `lag_one_session(series, sessions)`: the value at session s is the last non-missing observation dated on or before the equity session before s; NaN at the first session and before the first observation. Each FRED series is lagged on its own, then TERM = DGS10 − DGS3MO. A feature dated Friday t takes the value at the last session of week t, i.e. the last observation dated on or before the session before it. Observations dated on non-sessions (VIX-only holidays, FRED values on Good Friday) are used only from the first session whose previous session is on or after their date. Features read the raw files `data/raw/yahoo/VIX.csv` (Close) and `data/raw/fred/<SERIES>.csv`, never `daily_market.csv`, which would lag FRED twice |
+| Rationale | (a) would leave TERM and CREDIT missing after every bond holiday; (c) does not implement Amendment 1. (b) uses only values that were published by the decision time and is the contract 1 rule |
+| Evidence | Amendment 1: "All market-state series (^VIX, DGS3MO, DGS10, BAA10Y) enter features lagged one equity session"; Amendment 2 C6: "in features dated Friday t, these series enter at their previous-session value, not their Friday value"; contract 1 (commit 89a73eb): "Contract value at session s (Amendment 1): **the last observation dated on or before the session before s**"; Instruction D: "On bond-market holidays when equities trade (e.g. Columbus Day, Veterans Day), carry the last published FRED value forward, never a later one". In the archived data, DGS10 has no value on Thursday 2004-11-11 and Thursday 2010-11-11 (equity sessions), so the Fridays 2004-11-12 and 2010-11-12 use Wednesday's value |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/features.py` (`lag_one_session`, `market_states`), `03_build_features.py`, `tests/test_features.py` (hand tests with a Thursday Veterans Day and a Columbus Day) |
+| Amendment | No: applies Amendment 1 and C6 as contract 1 already states them; the bond-holiday case is recorded here |
+
+### S22-3 · Window and lag conventions
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | What do "13 weeks", "52 weeks", "104 weeks", "126 trading days" and "TR(t − k w)" mean on the session calendar? |
+| Options considered | (a) calendar weeks ending Friday t; (b) a fixed number of sessions (13 × 5, 52 × 5); (c) rows of the weekly index |
+| Decision | (a), with fixed session counts only where the text gives them. With F the Friday `date_close` of week t: "the 13 (52) weeks ending t" are all equity sessions s with F − 91 days < s ≤ F (F − 364 days < s ≤ F). A daily return `TR(s) / TR(s−1) − 1` belongs to a window when its end session s does. `TR(t − k w)` is the close of the last session of the calendar week ending F − 7k days (Thursday when that Friday is a holiday); NaN if that week has no session. BEAR24 compares `TR_SPY(t)` with `TR_SPY(t − 104 w)` under the same rule. MKT_VAR uses exactly the 126 daily SPY returns whose end sessions are the last 126 sessions up to the last session of week t. `03_build_features.py` checks that the weekly index has no calendar week without a session, so (a) and (c) coincide on our data |
+| Rationale | (a) follows the wording "over 13 weeks" and keeps holiday weeks consistent with the weekly panel (Thursday close after a Good Friday); (b) would cut windows in holiday weeks; MKT_VAR is defined in trading days, so it counts sessions |
+| Evidence | §06: "MOM26\_1 \| log TR(t−1w) / TR(t−26w)", "VOL13 \| Std of daily returns over 13 weeks × √252", "DD13 \| TR(t) / max TR over 13 weeks − 1", "BETA52 \| cov(asset, SPY) / var(SPY), daily, 52 weeks", "BEAR24 \| 1 if SPY's cumulative total return over the prior 24 months (104 weeks) is negative", "MKT\_VAR \| Variance of daily SPY returns over the prior 126 trading days"; contract 0 (commit 89a73eb): "Its *last session* is Friday, or Thursday when Friday is a holiday" and "`t − k w` \| The value at the last session of the week k rows earlier in the weekly index"; Instruction E: ""13 weeks" and "52 weeks ending t" mean all equity sessions in the 13 (or 52) calendar weeks ending Friday t; BEAR24's 104 weeks are counted the same way. TR(t−kw) is the last session of week t−k (Thursday when Friday is a holiday). MKT_VAR uses exactly 126 sessions." The archived calendar has 1,100 weeks from 1998-12-04 to 2019-12-27 and none without a session |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/features.py`, `03_build_features.py`, `tests/test_features.py` |
+| Amendment | No: implementation convention consistent with §06 and contract 0 |
+
+### S22-4 · Warm-up: when a window is full
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | When is a feature value defined rather than NaN, and how are sectors with a missing raw value z-scored? |
+| Options considered | (a) compute from whatever sessions are available; (b) NaN until every input of the window exists; z-score a week only when all 9 sectors have the raw value |
+| Decision | (b). A window value is NaN unless every close it needs is present: for a return window, the closes of all its sessions and of the session before its first session; for `TR(t − k w)`, a session in that week with a close; for MKT_VAR, 127 closes. A cross-sectional z-score is computed per feature and week only when all 9 sectors have the raw value, else all 9 are NaN; with zero dispersion all 9 get 0 (contract 3). Scoring starts at the first week with `date_close` after `split.warmup_end` (2003-01-03) for every model, whatever the first complete week is |
+| Rationale | Partial windows would make early values incomparable; a z-score over fewer than 9 sectors would change the scale of the score; contract 3 allows NaN only while a window is not full |
+| Evidence | §06 constraints: "a 104-week warm-up applied identically to every model"; §10 table: "Warm-up \| Dec 1998 – Dec 2002 \| Feature windows only (104-week BEAR24, 52-week beta); no scoring"; contract 3 (commit 89a73eb): "`NaN` only while a window is not yet full (warm-up)" and "a week where every sector has the same raw value gets `z = 0`" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/features.py`, `tests/test_features.py` |
+| Amendment | No |
+
+### S22-5 · Features are built only through the In-Sample end until the freeze
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | May `03_build_features.py` build features for the full data range (session 2.2 prompt, §1) before `FROZEN.lock` exists? |
+| Options considered | (a) build the full range, since features use no outcomes; (b) truncate every input at `split.in_sample_end` (2019-12-27) and refuse to write later rows unless `FROZEN.lock` exists and the caller is the explicit unlock path of `08_run_oos.py` |
+| Decision | (b). `03_build_features.py` truncates the daily closes, ^VIX and FRED inputs at 2019-12-27 right after reading them and writes only rows with `date_close ≤ 2019-12-27`. Its writer raises `OOSAccessError` for any later row unless `FROZEN.lock` exists and `allow_oos=True` is passed, which only `08_run_oos.py` does (Gate 4). Features use only data up to t, so the In-Sample values are identical to a full-range build |
+| Rationale | REV1, MOM26\_1 and the other features are past returns: computing them for dates after 2019-12-27 computes returns in the sealed period, which the manual forbids before Gate 3 even though no outcome is involved |
+| Evidence | Operating manual §3.3: "Before Gate 3 (`FROZEN.lock` exists and is signed), no code may read, compute or print any label, return, metric or plot for a date after 2019-12-27, except raw data QA."; §10 vault protocol: "Until Gate 3, `src/vault.py` refuses to return any label or metric dated after the In-Sample end"; Instruction F: "until FROZEN.lock exists, 03_build_features.py builds only through 2019-12-27, by truncating its inputs at the In-Sample end … The full-range build happens only through 08_run_oos.py's unlock path." Supersedes the session 2.2 prompt §1, "builds features for the full date range" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `03_build_features.py`, `tests/test_build_features.py` |
+| Amendment | No: stricter than §10 and consistent with it |
+
+### S22-6 · In-fold scaling of the continuous states and the interaction columns
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | On which rows are the scaling parameters fitted, with which estimator, and how are the M2 interaction columns built? |
+| Options considered | Fit on (a) the panel rows (each week repeated 9 times) or (b) the distinct training weeks; standard deviation with `ddof=0` or `ddof=1` |
+| Decision | (b) with `ddof=1`. `fit_transform_train` takes the purged training rows; for each of MKT\_VAR, VIX, TERM and CREDIT it computes the lower and upper winsorising quantiles (level: S22-11) over the distinct training weeks, clips, then computes the mean and the sample standard deviation (`ddof=1`) of the clipped values over the same weeks; a state with zero training dispersion scales to 0. `transform_test` applies the stored parameters without refitting. BEAR24 is passed through as 0/1. VIX\_Z is the scaled VIX. The design matrix holds the six z-scored asset features and, with `interactions=True`, the five pre-registered products in `features.interactions` order: z-scored asset feature × raw BEAR24 × scaled MKT\_VAR or VIX\_Z (`BETA52_x_BEAR24_x_MKT_VAR`, `BETA52_x_BEAR24`, `MOM26_1_x_BEAR24`, `MOM26_1_x_MKT_VAR`, `VOL13_x_VIX_Z`). The states themselves are not columns of the design matrix (contract 5) |
+| Rationale | A market state is one number per week; fitting on the panel rows would weight each week 9 times, which leaves the mean unchanged but shifts interpolated quantiles and the `ddof=1` standard deviation. `ddof=1` matches the z-scores of contract 3 |
+| Evidence | §06: "Market states (common to all assets; scaling fitted on training folds only)"; §06 constraints: "Scaling and winsorising fitted inside each training fold"; Amendment 2 C1: "BEAR24 is an indicator and is used as 0/1 everywhere. It is never winsorised or standardised."; C7: "VIX_Z denotes its in-fold standardisation inside the model pipeline"; contract 5 (commit ae7360f): "`BEAR24` enters as its raw 0/1 value (Amendment 2 C1); `MKT_VAR` and `VIX_Z` (the in-fold standardised `VIX`, C7) enter scaled"; Instruction B: "Build the interactions after the transformation, from the scaled MKT_VAR and VIX_Z and the raw BEAR24. Test: when BEAR24 = 0, both BEAR24 interactions are exactly 0." |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/models.py` (`fit_transform_train`, `transform_test`), `tests/test_models.py` |
+| Amendment | No |
+
+### S22-7 · Labels on weekly-index rows; label files at integration
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which week is "t+2" for `label_end`, and who writes the label file the vault reads? |
+| Options considered | (a) `label_end` = first session of the row two places later in the weekly index; (b) first session of the calendar week starting `date_open + 14 days`; for the file: (c) built in this pull request; (d) built at integration (Phase 2.3) from `src/backtest.py: forward_returns` |
+| Decision | (a) and (d). `make_labels(fwd, sessions)` uses rows, like `forward_returns` (contract 7), so `label_end` and `realised_on` refer to the same week; S22-3 shows (a) = (b) on our calendar. `03_build_features.py` writes no labels in this pull request: `forward_returns` is Mattia's and still a stub on `main`. The vault reads `data/processed/labels.csv` when it exists; Phase 2.3 writes it, truncated at the In-Sample end like the features (S22-5) |
+| Rationale | Labels must be on the same weeks as the forward returns they come from; computing forward returns here would duplicate Mattia's engine code |
+| Evidence | §05: "Each label has `label_end = O(t+2)`"; contract 6 (commit 89a73eb): "`label_end` (`datetime64`): the **actual session date of `O(t+2)`**, the first session of week t+2 (not the nominal Monday)"; contract 7: "`realised_on` … `date_open` of week t+2"; session 2.2 prompt §2.1: "`make_labels(fwd)` takes forward returns as an input (Mattia's engine computes them; no dependency)" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/labels.py`, `src/vault.py`, `tests/test_labels.py` |
+| Amendment | No |
+
+### S22-8 · Vault: data source, unlock path and trial rows
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Where does the vault read its data, how does `08_run_oos.py` unlock it, and what does `run_walkforward` write to the trial log before the engine is integrated? |
+| Options considered | Trial metrics: (a) run the engine inside the vault; (b) an optional evaluator argument, metrics left empty without it |
+| Decision | `Vault` gains optional keyword arguments with defaults that keep contract 15: `data_dir` (default `data/processed`, files `features.csv`, `market_states.csv`, `labels.csv`) or in-memory `frames`. Any `as_of` after `is_end`, and any spec asking for weeks after it, raises `OOSAccessError` and is logged as `refused`, unless `FROZEN.lock` exists and `unlock()` was called; `unlock()` itself raises when the lock is missing and is called only by `08_run_oos.py`. `run_walkforward(spec, evaluate=None)` scores the In-Sample folds of contract 13 and appends one trial row per call; `is_sharpe` and `is_mdd` are filled only when an evaluator (the engine, from Phase 2.3) is passed, and left empty otherwise. `spec_hash` is the SHA-256 of the spec as canonical JSON (sorted keys). No real-data walk-forward is run in this pull request, so `docs/trial_log.csv` gains no row |
+| Rationale | (a) would make the vault depend on Mattia's engine before it exists; (b) keeps one trial row per evaluated configuration and lets Phase 2.3 attach the metrics |
+| Evidence | Contract 15 (commit 89a73eb): "`run_walkforward(spec)` \| weekly scores (contract 8) of a model spec over the In-Sample folds (contract 13); appends one row to `docs/trial_log.csv`"; contract "Changes": "Adding an optional keyword argument with a default that keeps the old behaviour is not a contract change."; session 2.2 prompt: "Do NOT run M0 through the engine yet; that is Phase 2.3" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/vault.py`, `tests/test_vault.py` |
+| Amendment | No |
+
+### S22-9 · Checksums of the feature files
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Where are the checksums of the files written by `03_build_features.py` committed? |
+| Options considered | (a) inside `data/checksums.json`, which `01_download_data.py` rewrites; (b) a separate `data/checksums_features.json` |
+| Decision | (b). `03_build_features.py` writes `data/processed/features.csv`, `market_states.csv`, `sizing_betas.csv` and `momentum_variants.csv` (git-ignored) and records rows, date range, columns, size and SHA-256 of each in `data/checksums_features.json` (committed), plus `data/processed/features_config.yaml` for `check_used` |
+| Rationale | (a) would be erased by every run of `01_download_data.py`; a hash, a date range and a row count disclose no price |
+| Evidence | Operating manual §3.6: "Never commit raw vendor data … or any file holding a full daily or weekly price or return series per ticker. Summary tables, flags and metrics are fine."; session 2.2 prompt §1: "writes them to `data/processed/` (git-ignored, derived from licensed data) with `check_used`, and commits only checksums" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `03_build_features.py`, `data/checksums_features.json` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
