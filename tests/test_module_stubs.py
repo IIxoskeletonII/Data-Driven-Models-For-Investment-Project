@@ -18,11 +18,11 @@ STUB_FUNCTIONS = [
     ("src.vault", ["append_trial"], "2.2", "Eliya"),
     ("src.models", ["fit_transform_train", "transform_test"], "2.2", "Eliya"),
     ("src.models", ["ensemble_scores", "select_m0_star_lookback"], "3.1", "Eliya"),
-    ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history"], "3.2", "Eliya"),
-    ("src.agents.graph", ["build_graph", "run_lab"], "3.2", "Eliya"),
+    ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history"], "3.3", "Eliya"),
+    ("src.agents.graph", ["build_graph", "run_lab"], "3.3", "Eliya"),
     ("src.stats", ["paired_block_bootstrap", "rank_ic", "deflated_sharpe_ratio", "pbo_cscv", "sharpe_difference_test",
-                   "selection_gate"], "3.3", "Eliya"),
-    ("src.plots", ["equity_curves", "drawdowns", "exposures"], "3.3", "Mattia"),
+                   "selection_gate"], "3.1", "Eliya"),
+    ("src.plots", ["equity_curves", "drawdowns", "exposures"], "3.2", "Mattia"),
 ]
 
 STUBS = [(module, name, phase, owner) for module, names, phase, owner in STUB_FUNCTIONS for name in names]

@@ -85,7 +85,7 @@ def states_frame() -> pd.DataFrame:
     index = weekly_index(n=6)
     states = pd.DataFrame(
         {"BEAR24": [np.nan, 0.0, 0.0, 1.0, 1.0, 0.0], "MKT_VAR": [np.nan, 1e-4, 1.2e-4, 1.1e-4, 0.9e-4, 1e-4],
-         "VIX_Z": [np.nan, 13.1, 12.6, 14.0, 15.2, 13.8], "TERM": [np.nan, 0.3, 0.25, 0.28, 0.31, 0.27],
+         "VIX": [np.nan, 13.1, 12.6, 14.0, 15.2, 13.8], "TERM": [np.nan, 0.3, 0.25, 0.28, 0.31, 0.27],
          "CREDIT": [np.nan, 2.1, 2.05, 2.0, 2.02, 2.04]}, index=index)
     return states[STATES]
 
@@ -142,7 +142,7 @@ LEGS = [
     (("XLK", "XLY"), ("XLP", "XLU")),  # β_c = 0.25 (1.4 + 1.2 - 0.6 - 0.5) = 0.375; h = -0.375 / 1.0 = -0.375
     (("XLP", "XLU"), ("XLE", "XLK")),  # β_c = 0.25 (0.6 + 0.5 - 1.2 - 1.4) = -0.375; h = +0.375
     (("XLK", "XLY"), ("XLP", "XLU")),  # β_c = 0.375, β_IVV = 0.7: -0.5357 -> clipped to h = -0.5 (cap binds)
-    (("XLB", "XLE"), ("XLF", "XLI")),  # β_c = 0.25 (1.1 + 1.2 - 1.3 - 0.96) = 0.01; |h| = 0.01 < 0.02 -> h = 0
+    (("XLB", "XLE"), ("XLF", "XLI")),  # β_c = 0.25 (1.1 + 1.2 - 1.3 - 0.96) = 0.01; |h| / (1 + |h|) = 0.0099 < 0.02 -> h = 0
 ]
 
 
@@ -159,7 +159,7 @@ def sector_signals() -> pd.DataFrame:
 
 def sizing() -> SizingResult:
     """The §09 formulas row by row:
-    β_c = Σ 0.25 s_i β̂_i;  h = clip(-β_c / β̂_IVV, -0.5, 0.5), 0 if |h| < 0.02;
+    β_c = Σ 0.25 s_i β̂_i;  h = clip(-β_c / β̂_IVV, -0.5, 0.5), 0 if |h| / (1 + |h|) < 0.02 (Amendment 2 C2);
     w_i = 0.25 s_i / (1 + |h|);  w_IVV = h / (1 + |h|);  β_res = (β_c + h β̂_IVV) / (1 + |h|).
     """
     signals, betas = sector_signals(), betas_frame()
@@ -172,7 +172,7 @@ def sizing() -> SizingResult:
         beta_c = float((CORE * s * b[SECTORS]).sum())
         ratio = -beta_c / b[HEDGE]
         h = float(np.clip(ratio, -CAP, CAP))
-        if abs(h) < DEAD_BAND:
+        if abs(h) / (1 + abs(h)) < DEAD_BAND:  # the final IVV weight is below 2% of capital
             h = 0.0
         weights.loc[t, SECTORS] = (CORE * s / (1 + abs(h))).to_numpy()
         weights.loc[t, HEDGE] = h / (1 + abs(h))
@@ -513,7 +513,9 @@ BAD_STATES = {
     "extra column": lambda f: f.assign(EXTRA=0.0),
     "missing column": lambda f: f.drop(columns="TERM"),
     "float32": lambda f: f.astype("float32"),
-    "NaN after the warm-up": lambda f: with_value(f, 3, "VIX_Z", np.nan),
+    "NaN after the warm-up": lambda f: with_value(f, 3, "VIX", np.nan),
+    "BEAR24 standardised (Amendment 2 C1)": lambda f: with_value(f, 3, "BEAR24", 1.7),
+    "standardised VIX_Z column instead of VIX (C7)": lambda f: f.rename(columns={"VIX": "VIX_Z"}),
     "unsorted weeks": lambda f: f.iloc[::-1],
     "index not the weekly index": lambda f: with_index(f, f.index.get_level_values("date_close")),
 }
@@ -673,6 +675,57 @@ def test_betas_invalid(name):
 
 
 # ---------------------------------------------------------------- validate_weights
+
+
+def _hedged_weights(w_ivv: float, k: int = 2) -> pd.DataFrame:
+    """One week with k longs, k shorts at core weight 0.5 / k (Amendment 2 C4) and an IVV weight w_ivv:
+    each sector |w| = (0.5 / k)(1 - |w_ivv|), so Σ|w| = 2k (0.5 / k)(1 - |w_ivv|) + |w_ivv| = 1."""
+    leg = 0.5 / k * (1 - abs(w_ivv))
+    row = {t: 0.0 for t in TRADED}
+    for t in SECTORS[:k]:
+        row[t] = leg
+    for t in SECTORS[-k:]:
+        row[t] = -leg
+    row[HEDGE] = w_ivv
+    return pd.DataFrame([row], index=weekly_index("2019-12-02", 1))[TRADED].astype("float64")
+
+
+def test_core_weight_for():
+    assert contracts.core_weight_for() == CORE == 0.25
+    assert contracts.core_weight_for(2) == 0.25
+    assert contracts.core_weight_for(1) == 0.5
+    assert contracts.core_weight_for(3) == pytest.approx(1 / 6, abs=1e-15)
+    for bad in (0, -1, 1.5, True):
+        with pytest.raises(ContractError):
+            contracts.core_weight_for(bad)
+
+
+def test_weights_dead_band_amendment_2_c2():
+    contracts.validate_weights(_hedged_weights(0.0))
+    contracts.validate_weights(_hedged_weights(-DEAD_BAND))  # exactly 2% of capital: allowed
+    with pytest.raises(ContractError, match="dead-band"):  # 1.5% of capital must have been rounded to 0
+        contracts.validate_weights(_hedged_weights(0.015))
+    contracts.validate_weights(_hedged_weights(0.015), dead_band=0.01)  # explicit override
+
+
+@pytest.mark.parametrize("k", [1, 3])
+def test_weights_sensitivity_core_weight_amendment_2_c4(k):
+    weights = _hedged_weights(-0.2, k=k)
+    contracts.validate_weights(weights, k=k)
+    with pytest.raises(ContractError):  # sized 0.5 / k, not the pre-registered 0.25
+        contracts.validate_weights(weights)
+    signals = pd.DataFrame(np.sign(weights.to_numpy()), index=weights.index, columns=TRADED).astype("int8")
+    contracts.validate_signals(signals, top_k=k, bottom_k=k)
+    contracts.validate_weights(weights, signals, k=k)
+
+
+def test_market_states_config_must_name_vix_and_no_z_column(monkeypatch):
+    cfg = copy.deepcopy(CFG)
+    cfg["features"]["states"] = [s if s != "VIX" else "VIX_Z" for s in cfg["features"]["states"]]
+    monkeypatch.setattr(contracts, "_default_config", lambda: cfg)
+    frame = states_frame().rename(columns={"VIX": "VIX_Z"})
+    with pytest.raises(ContractError, match="VIX"):
+        contracts.validate_market_states(frame)
 
 
 def test_weights_valid():

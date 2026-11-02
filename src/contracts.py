@@ -25,6 +25,7 @@ WEEK_LEVELS = ["date_open", "date_close"]
 FEATURE_LEVELS = ["date_close", "ticker"]
 LABEL_COLUMNS = ["y", "label_end"]
 PERIODS = ("IS", "OOS")
+MARKET_STATE_REQUIRED = ("BEAR24", "VIX")  # Amendment 2 C1 (indicator, never scaled) and C7 (lagged VIX level)
 LABEL_END_MIN_DAYS = 10  # label_end of week t is a session of week t+2: at least its Monday, date_close(t) + 10 days
 
 
@@ -389,23 +390,32 @@ def validate_features(features: pd.DataFrame, columns: Sequence[str] | None = No
 
 
 def validate_market_states(states: pd.DataFrame) -> None:
-    """Market states (§06, Amendment 1, contract 4): weekly index, columns exactly features.states, float64, unscaled.
+    """Market states (§06, Amendments 1 and 2, contract 4): weekly index, columns exactly features.states, float64, unscaled.
 
-    No ±inf; NaN only in the leading warm-up; BEAR24 in {0, 1}; MKT_VAR (a variance of daily SPY returns) ≥ 0. Inputs
-    are lagged one session, so row t is known after Friday close t.
+    The columns include the indicator BEAR24, in {0, 1} and never scaled (Amendment 2 C1), and VIX, the VIX level lagged
+    one session (C7); no column is a standardised `*_Z` name, which exists only inside the model pipeline. No ±inf; NaN
+    only in the leading warm-up; MKT_VAR (a variance of daily SPY returns) ≥ 0. Row t is known after Friday close t.
     """
     obj = "market states"
+    expected = list(_default_config()["features"]["states"])
+    for required in MARKET_STATE_REQUIRED:
+        if required not in expected:
+            _fail(obj, f"config.yaml features.states must contain {required!r} (Amendment 2 C1, C7), got {expected}")
+    scaled = [c for c in expected if c.endswith("_Z")]
+    if scaled:
+        _fail(obj, f"config.yaml features.states lists standardised names {scaled}: the frame holds unscaled states and "
+                   "the `*_Z` columns exist only inside the model pipeline (Amendment 2 C7)")
     _require_frame(obj, states)
     validate_weekly_index(states.index)
-    _check_columns(obj, states, _default_config()["features"]["states"])
+    _check_columns(obj, states, expected)
     _check_dtype(obj, states, np.dtype(np.float64))
     values = _check_finite_or_nan(obj, states)
     _check_leading_nan(obj, states, values)
-    if "BEAR24" in states.columns:
-        bear = values[:, list(states.columns).index("BEAR24")]
-        bad = ~np.isnan(bear) & (bear != 0.0) & (bear != 1.0)
-        if bad.any():
-            _fail(obj, f"BEAR24 must be 0.0 or 1.0, got {float(bear[_first(bad)]):g} in {_row_label(states.index, _first(bad))}")
+    bear = values[:, expected.index("BEAR24")]
+    bad = ~np.isnan(bear) & (bear != 0.0) & (bear != 1.0)
+    if bad.any():
+        _fail(obj, f"BEAR24 must be 0.0 or 1.0 (an unscaled indicator, Amendment 2 C1), got {float(bear[_first(bad)]):g} "
+                   f"in {_row_label(states.index, _first(bad))}")
     if "MKT_VAR" in states.columns:
         variance = values[:, list(states.columns).index("MKT_VAR")]
         bad = ~np.isnan(variance) & (variance < 0)
@@ -500,19 +510,36 @@ def validate_betas(betas: pd.DataFrame) -> None:
     _check_leading_nan(obj, betas, values)
 
 
+def core_weight_for(k: int | None = None, cfg: dict | None = None) -> float:
+    """Core weight per selected name (§09; Amendment 2 C4): core gross per side / k, i.e. 0.5 / k.
+
+    The side gross is signal.core_weight × signal.top_k (0.25 × 2 = 0.5), so k = 2 (or None) gives the pre-registered 0.25
+    and the sensitivity runs k = 1 and k = 3 give 0.5 and 1/6: the core stays dollar-neutral with gross 1 before hedge scaling.
+    """
+    signal = _cfg(cfg)["signal"]
+    if k is None:
+        return float(signal["core_weight"])
+    if isinstance(k, bool) or not isinstance(k, (int, np.integer)) or k < 1:
+        raise ContractError(f"core_weight_for: k must be a positive int, got {k!r}")
+    return float(signal["core_weight"]) * signal["top_k"] / int(k)
+
+
 def validate_weights(weights: pd.DataFrame, signals: pd.DataFrame | None = None, *, core_weight: float | None = None,
-                     cap: float | None = None) -> None:
-    """Target weights (§09, contract 11): weekly index, columns exactly TRADED, float64, no NaN or ±inf.
+                     cap: float | None = None, k: int | None = None, dead_band: float | None = None) -> None:
+    """Target weights (§09, Amendment 2 C2 and C4, contract 11): weekly index, columns exactly TRADED, float64, no NaN or ±inf.
 
     On every row with positions (tolerance 1e-12): Σ|w| = 1; the sector legs are dollar-neutral (Σ_sectors w = 0) and
-    every non-zero sector weight has size core_weight · (1 − |w_IVV|); |w_IVV| ≤ cap / (1 + cap). An all-zero row is
-    flat. With `signals` (same index and columns), sign(w) = signal element-wise. core_weight and cap default to
-    signal.core_weight and signal.hedge_cap. Weights of week t are held from O(t+1) to O(t+2).
+    every non-zero sector weight has size core_weight · (1 − |w_IVV|); |w_IVV| ≤ cap / (1 + cap); and w_IVV is either 0
+    or at least dead_band (2% of capital, C2). An all-zero row is flat. With `signals` (same index and columns),
+    sign(w) = signal element-wise. core_weight defaults to core_weight_for(k) (0.25 for the pre-registered k = 2, 0.5 / k
+    in the sensitivity runs, C4); cap and dead_band default to signal.hedge_cap and signal.hedge_deadband. Weights of
+    week t are held from O(t+1) to O(t+2).
     """
     obj = "weights"
     signal = _default_config()["signal"]
-    core_weight = signal["core_weight"] if core_weight is None else core_weight
+    core_weight = core_weight_for(k) if core_weight is None else core_weight
     cap = signal["hedge_cap"] if cap is None else cap
+    dead_band = signal["hedge_deadband"] if dead_band is None else dead_band
     _require_frame(obj, weights)
     validate_weekly_index(weights.index)
     u = universe()
@@ -543,6 +570,11 @@ def validate_weights(weights: pd.DataFrame, signals: pd.DataFrame | None = None,
     if too_big.any():
         row = _first(too_big)
         _fail(obj, f"{_row_label(weights.index, row)}: |w_{u.hedge}| = {float(abs(hedge[row])):.17g} exceeds cap / (1 + cap) = {cap / (1 + cap):.17g}")
+    in_band = (np.abs(hedge) > TOLERANCE) & (np.abs(hedge) < dead_band - TOLERANCE)
+    if in_band.any():
+        row = _first(in_band)
+        _fail(obj, f"{_row_label(weights.index, row)}: |w_{u.hedge}| = {float(abs(hedge[row])):.17g} is inside the dead-band: "
+                   f"below {dead_band} of capital the hedge must be 0 (§09 step 4, Amendment 2 C2)")
     if signals is None:
         return
     _require_frame("signals", signals)
@@ -620,10 +652,11 @@ def validate_forward_returns(fwd: pd.DataFrame, realised_on: pd.Series, period: 
                         f"(IS iff realised_on <= {_day(is_end)})")
 
 
-def validate_backtest_result(result: BacktestResult, cost_bps: float | None = None, borrow_annual: float | None = None) -> None:
+def validate_backtest_result(result: BacktestResult, cost_bps: float | None = None, borrow_annual: float | None = None,
+                             *, k: int | None = None) -> None:
     """Backtest output (§09, contract 12). Tolerance 1e-12.
 
-    weights pass validate_weights; every Series is named after its field and shares the weights' index; numeric fields
+    weights pass validate_weights (with k for the sensitivity runs, Amendment 2 C4); every Series is named after its field and shares the weights' index; numeric fields
     are float64 and finite; period is "IS"/"OOS" with no missing value and never "IS" after "OOS"; turnover, costs and
     borrow ≥ 0; turnover of the first week = Σ|w| (entered from cash); net = gross − costs − borrow;
     net_exposure = Σ_i w; w_IVV = hedge / (1 + |hedge|). With cost_bps (basis points per dollar traded) the check
@@ -633,7 +666,7 @@ def validate_backtest_result(result: BacktestResult, cost_bps: float | None = No
     obj = "backtest result"
     if not isinstance(result, BacktestResult):
         _fail(obj, f"must be a BacktestResult, got {type(result).__name__}")
-    validate_weights(result.weights)
+    validate_weights(result.weights, k=k)
     index = result.weights.index
     numeric = {}
     for field in fields(BacktestResult):
