@@ -32,3 +32,29 @@ jobs:
 
       - name: Tests
         run: uv run pytest -q
+
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0 # every commit of every fetched branch, not only the tip
+
+      # Same patterns as tools/git-hooks/commit-msg, assembled from fragments so this file passes the commit-time scan.
+      - name: No attribution patterns in any commit message
+        shell: bash
+        run: |
+          w1="cla""ude"; w2="anthro""pic"; w3="co-auth""ored-by"
+          re="${w3}|generated with|${w1}|${w2}|/code/session"
+          bad=0
+          for commit in $(git rev-list --all); do
+            hits=$(git log -1 --format=%B "$commit" | grep -Ei "$re" || true)
+            if [ -n "$hits" ]; then
+              echo "::error::commit $commit has a forbidden pattern in its message:"
+              printf '%s\n' "$hits" | sed 's/^/    /'
+              bad=1
+            fi
+          done
+          echo "$(git rev-list --all | wc -l) commits checked"
+          exit $bad
