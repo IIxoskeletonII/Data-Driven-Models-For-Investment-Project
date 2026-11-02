@@ -5,11 +5,15 @@ description = "Regime-aware, dollar-neutral sector-momentum strategy with a beta
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
+    "langgraph>=1.2.19",
     "lightgbm>=4.7.0",
     "matplotlib>=3.11.2",
+    "mcp>=2.3.0",
     "numpy>=2.5.4",
+    "openai>=3.42.1",
     "pandas>=3.1.0",
     "plotly>=7.1.0",
+    "pydantic>=2.14.2",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
     "scikit-learn>=1.9.1",
