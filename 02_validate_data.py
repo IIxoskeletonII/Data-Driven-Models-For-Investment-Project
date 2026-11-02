@@ -2,7 +2,7 @@
 
 No strategy logic: only data-quality statistics on prices (returns, counts, flags).
 
-Inputs:  data/raw/ (manifest.json, yahoo/, fred/, stooq/ when available), data/processed/
+Inputs:  data/raw/ (manifest.json, yahoo/, fred/, second_source/ when placed by hand), data/processed/
 Outputs: docs/qa_report.md (generated, except the reviewer sign-off section, to be filled by hand)
          data/qa/*.csv (returns, counts and flags only: no price levels)
 """
@@ -15,9 +15,26 @@ from src import validate
 from src.config import ROOT, check_used, data_settings, load_config, tradables
 from src.data import adjust_ohlc, file_stem, read_daily, read_weekly, sha256, write_csv
 
-PASS, FAIL, NOT_RUN = "PASS", "FAIL", "NOT RUN"
+PASS, FAIL = "PASS", "FAIL"
+SECOND_SOURCE_OWNER = "Simone"  # workstream A (protocol section 14)
+PENDING = f"PENDING (owner: {SECOND_SOURCE_OWNER})"
 EVENT_WINDOW = 2  # sessions shown before and after a corporate-action date
 QA_FLOAT_FORMAT = "%.10g"  # QA tables are for reading: 10 significant digits
+
+SECOND_SOURCE_FORMAT = """**Expected input.** One CSV file per ticker in `data/raw/second_source/` (git-ignored: licensed data, local and in
+the LUISS zip only), named after the ticker (`XLB.csv`, ..., `IVV.csv`, `SPY.csv`), for the 11 tradables. Columns, exactly
+and in this order: `date,open,high,low,close,adj_close,volume`. Dates are ISO (`YYYY-MM-DD`), one row per session; prices
+in USD per share; `adj_close` may be left empty when the source publishes no adjusted close.
+
+**investing.com exports** are accepted as downloaded ("Historical Data", daily), with this column mapping
+(`src/validate.py: read_second_source`): `Date` (MM/DD/YYYY) -> `date`; `Price` -> `close`; `Open` -> `open`; `High` ->
+`high`; `Low` -> `low`; `Vol.` (K/M/B suffixes) -> `volume`; `Change %` dropped; `adj_close` empty. Thousands separators
+are removed and rows are sorted by date.
+
+**Check.** Close-to-close returns of the second source's `close` (and `adj_close` when given) against Yahoo's adjusted
+and split-only closes, on the 20 sampled dates (`qa.second_source_dates`, seed `seed`); PASS if the best-matching
+convention differs by at most `qa.second_source_tol` (10 bps) on every comparison. The gate reads PENDING until all
+11 files are present."""
 
 
 class Report:
@@ -78,14 +95,17 @@ def main() -> None:
     raw = {t: read_daily(raw_dir / "yahoo" / f"{file_stem(t)}.csv").astype("float64") for t in names + [vix]}
     adjusted = {t: adjust_ohlc(raw[t]) for t in names}
     fred = {s: read_daily(raw_dir / "fred" / f"{s}.csv")[s].astype("float64") for s in cfg["data"]["fred"]}
-    stooq = {t: read_daily(path).astype("float64") for t in names if (path := raw_dir / "stooq" / f"{file_stem(t)}.csv").exists()}
+    second_dir = raw_dir / "second_source"
+    second = {t: validate.read_second_source(path) for t in names if (path := second_dir / f"{file_stem(t)}.csv").exists()}
     sessions = pd.DatetimeIndex(sorted(set().union(*(raw[t].index for t in names))))
 
     adj_close = pd.DataFrame({t: adjusted[t]["Close"] for t in names})
     adj_open = pd.DataFrame({t: adjusted[t]["Open"] for t in names})
     returns_close = pd.DataFrame({t: daily_returns(adj_close[t]) for t in names})
     returns_open = pd.DataFrame({t: daily_returns(adj_open[t]) for t in names})
-    stooq_returns = pd.DataFrame({t: daily_returns(stooq[t]["Close"]) for t in stooq}, index=sessions)
+    # Duplicated second-source dates are reported by the duplicate-date gate; the first row is used for the comparisons.
+    second_close = {t: second[t]["close"][~second[t].index.duplicated()] for t in second}
+    second_returns = pd.DataFrame({t: daily_returns(second_close[t]) for t in second}, index=sessions)
 
     report = Report(qa_dir)
 
@@ -107,7 +127,7 @@ def main() -> None:
 
     # 2. One row per ticker per session; monotonic dates; no duplicates
     rows, all_raw = [], {f"yahoo/{file_stem(t)}": raw[t] for t in raw} | {f"fred/{s}": fred[s].to_frame() for s in fred}
-    all_raw |= {f"stooq/{file_stem(t)}": stooq[t] for t in stooq}
+    all_raw |= {f"second_source/{file_stem(t)}": second[t] for t in second}
     for name, frame in all_raw.items():
         rows.append({"file": name, "duplicates": len(validate.duplicate_dates(frame.index)),
                      "non_monotonic": len(validate.non_monotonic_dates(frame.index)),
@@ -143,7 +163,8 @@ def main() -> None:
     # 3. Positive prices
     price_columns = ["Open", "High", "Low", "Close", "Adj Close"]
     bad = {t: len(validate.non_positive_prices(raw[t], price_columns)) for t in names + [vix]}
-    bad |= {f"stooq/{t}": len(validate.non_positive_prices(stooq[t], ["Open", "High", "Low", "Close"])) for t in stooq}
+    bad |= {f"second_source/{t}": len(validate.non_positive_prices(second[t], ["open", "high", "low", "close"]))
+            for t in second}
     report.gate("Positive prices", PASS if sum(bad.values()) == 0 else FAIL,
                 f"{sum(bad.values())} rows with a zero or negative Open/High/Low/Close/Adj Close")
     inconsistent = {t: int(((raw[t]["Low"] > raw[t][["Open", "Close"]].min(axis=1) + 1e-9)
@@ -172,7 +193,7 @@ def main() -> None:
         flagged = returns.where(returns.abs() > qa["big_move"]).stack().dropna().rename("return")
         table = flagged.rename_axis(["date", "ticker"]).reset_index()
         table["spy_return"] = returns[spy].reindex(table["date"]).to_numpy()
-        table["stooq_return"] = [stooq_returns[t].get(d, float("nan")) if t in stooq_returns else float("nan")
+        table["second_source_return"] = [second_returns[t].get(d, float("nan")) if t in second_returns else float("nan")
                                  for d, t in zip(table["date"], table["ticker"])]
         return table.set_index("date")
 
@@ -201,7 +222,8 @@ def main() -> None:
                             "yahoo_close_to_close": daily_returns(raw[t]["Close"]).get(s),
                             "yahoo_open_to_open": daily_returns(raw[t]["Open"]).get(s),
                             "spy_close_to_close": returns_close[spy].get(s),
-                            "stooq_close_to_close": stooq_returns[t].get(s) if t in stooq_returns else float("nan")})
+                            "second_source_close_to_close": second_returns[t].get(s) if t in second_returns
+                            else float("nan")})
     windows = pd.DataFrame(windows).set_index("date")
     columns = ["adj_close_to_close", "adj_open_to_open", "yahoo_close_to_close", "yahoo_open_to_open"]
     worst = windows.set_index("event")[columns].abs().max(axis=1).groupby(level=0).max()
@@ -246,38 +268,44 @@ def main() -> None:
                    "return; the implied distribution yield is the average annual sum of D / Close(t-1).\n\n"
                    + markdown(recon) + "\n\n" + report.table("reconciliation", recon))
 
-    # 8. Second source: 20 sampled dates
-    unavailable = manifest.get("unavailable", {}).get("stooq", {})
-    if not stooq:
-        reasons = sorted({u["reason"].split(" (first bytes")[0] for u in unavailable.values()})
-        report.gate(f"{qa['second_source_dates']} sampled dates checked against the second source", NOT_RUN,
-                    f"Stooq unavailable for all {len(unavailable)} tickers ({'; '.join(reasons)}); not a Gate 1 blocker")
-        report.section("Second source (Stooq)",
-                       f"Not run: Stooq returned no CSV for any ticker ({'; '.join(reasons)}). The CSV endpoint now answers "
-                       "with an HTML page; from a browser it shows a JavaScript verification page. No attempt was made to "
-                       "bypass it. Columns for Stooq returns in the tables above are therefore n/a. Options: a browser "
-                       "download of the 11 CSV files by a team member, or Bloomberg total returns on the sampled dates "
-                       "(protocol section 04, Bloomberg plan).\n\n"
-                       + markdown(pd.DataFrame([{"ticker": t} | u for t, u in unavailable.items()]).set_index("ticker")))
+    # 8. Second source: 20 sampled dates (files placed by hand in data/raw/second_source/)
+    gate_name = f"{qa['second_source_dates']} sampled dates checked against the second source"
+    missing = [t for t in names if t not in second]
+    stooq_failures = manifest.get("unavailable", {}).get("stooq", {})
+    reasons = sorted({u["reason"].split(" (first bytes")[0] for u in stooq_failures.values()})
+    history = (f"The automatic Stooq download of `01_download_data.py` failed for all {len(stooq_failures)} tickers "
+               f"({'; '.join(reasons)}): the CSV endpoint now answers with an HTML page and a JavaScript verification "
+               "page, which was not bypassed. " if stooq_failures else "")
+    if not second:
+        report.gate(gate_name, PENDING, f"no files in data/raw/second_source/ yet; {len(names)} tickers expected")
+        result_text = "Not run yet: no file in `data/raw/second_source/`."
     else:
         window = sessions[(sessions >= scored_from) & (sessions <= end)]
         dates = validate.sample_dates(window, qa["second_source_dates"], cfg["seed"])
-        rows = []
-        for t in stooq:
-            for convention, series in [("adjusted", adj_close[t]), ("split_only", raw[t]["Close"])]:
-                table = validate.compare_returns(series, stooq[t]["Close"], dates).assign(ticker=t, yahoo=convention)
-                rows.append(table)
-        comparison = pd.concat(rows).rename(columns={"first": "yahoo_return", "second": "stooq_return"})
-        error = comparison.groupby("yahoo")["difference"].apply(lambda d: d.abs().max())
-        convention = error.idxmin()
-        worst = error[convention]
-        report.gate(f"{qa['second_source_dates']} sampled dates checked against the second source",
-                    PASS if worst <= qa["second_source_tol"] else FAIL,
-                    f"Stooq matches Yahoo's {convention} series; max |return difference| {worst:.4%} over "
-                    f"{(comparison['yahoo'] == convention).sum()} comparisons")
-        report.section("Second source (Stooq)", "Close-to-close returns, not price levels, on dates sampled with seed "
-                       f"{cfg['seed']}. Stooq's convention is the Yahoo series it matches best.\n\n" + markdown(error.to_frame())
-                       + "\n\n" + report.table("second_source", comparison))
+        unique = {t: second[t][~second[t].index.duplicated()] for t in second}
+        comparison = pd.concat([validate.compare_second_source(adj_close[t], raw[t]["Close"], unique[t], dates).assign(ticker=t)
+                                for t in second])
+        comparison = comparison.dropna(subset=["difference"])
+        error = comparison.groupby(["yahoo", "second_series"])["difference"].apply(lambda d: d.abs().max())
+        convention = error.idxmin() if len(error) else ("none", "none")
+        worst = error[convention] if len(error) else float("nan")
+        used = (comparison["yahoo"] == convention[0]) & (comparison["second_series"] == convention[1])
+        per_ticker = comparison[used].groupby("ticker").size().reindex(list(second), fill_value=0)
+        short = list(per_ticker.index[per_ticker < qa["second_source_dates"]])  # every sampled date must be compared
+        failed = not len(error) or worst > qa["second_source_tol"] or bool(short)
+        status = FAIL if failed else (PENDING if missing else PASS)
+        report.gate(gate_name, status,
+                    f"{len(second)}/{len(names)} tickers; second-source {convention[1]} matches Yahoo's {convention[0]} "
+                    f"series; max |return difference| {worst:.4%} over {int(used.sum())} comparisons"
+                    + (f"; fewer than {qa['second_source_dates']} comparisons for {short}" if short else "")
+                    + (f"; missing files: {missing}" if missing else ""))
+        files = pd.DataFrame([{"file": f"data/raw/second_source/{file_stem(t)}.csv", "rows": len(second[t]),
+                               "sha256": sha256(second_dir / f"{file_stem(t)}.csv")} for t in second])
+        result_text = (f"Close-to-close returns, not price levels, on dates sampled with seed {cfg['seed']} from the scored "
+                       "window. The convention used is the pairing with the smallest maximum |difference|.\n\n"
+                       + markdown(error.to_frame()) + "\n\n" + report.table("second_source", comparison)
+                       + "\n\nSecond-source files used (SHA-256):\n\n" + markdown(files))
+    report.section("Second source", history + f"Owner: {SECOND_SOURCE_OWNER}. " + result_text + "\n\n" + SECOND_SOURCE_FORMAT)
 
     # 9. Coverage audit per ticker (scored window, processed tables)
     daily_open, daily_close = read_daily(processed_dir / "daily_open.csv"), read_daily(processed_dir / "daily_close.csv")
@@ -368,7 +396,7 @@ def write_report(path, manifest, report: Report, gates: pd.DataFrame) -> None:
         "## Reviewer sign-off (Simone)\n\n"
         "To be completed by the workstream A owner (protocol section 14).\n\n"
         "- Review of the flagged daily moves above 10%:\n"
-        "- Interpretation of the second-source (Stooq) reconciliation:\n"
+        "- Interpretation of the second-source reconciliation:\n"
         "- PASS/FAIL confirmation of each gate:\n"
         "- Signed (name, date):\n"
     )

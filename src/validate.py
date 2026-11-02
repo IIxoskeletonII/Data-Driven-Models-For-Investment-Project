@@ -121,3 +121,59 @@ def compare_returns(first: pd.Series, second: pd.Series, dates: pd.DatetimeIndex
     table = pd.DataFrame({"first": a.loc[dates], "second": b.loc[dates]})
     table["difference"] = table["first"] - table["second"]
     return table.rename_axis("date")
+
+
+# Second price source (QA cross-check). Files are placed by hand in data/raw/second_source/ (git-ignored, licensed).
+SECOND_SOURCE_COLUMNS = ["date", "open", "high", "low", "close", "adj_close", "volume"]
+# investing.com "Historical Data" export, as downloaded: newest row first, US dates, thousands separators, volume
+# with K/M/B suffixes. "Change %" is dropped; investing.com publishes no adjusted close, so adj_close stays empty.
+INVESTING_COM_COLUMNS = {"Date": "date", "Price": "close", "Open": "open", "High": "high", "Low": "low", "Vol.": "volume"}
+INVESTING_COM_DATE_FORMAT = "%m/%d/%Y"
+VOLUME_SUFFIXES = {"K": 1e3, "M": 1e6, "B": 1e9}
+
+
+def _number(text: str) -> float:
+    """Parse a number written with optional thousands separators and a K/M/B suffix ('' or '-' is missing)."""
+    text = text.strip().replace(",", "")
+    if text in ("", "-"):
+        return float("nan")
+    scale = VOLUME_SUFFIXES.get(text[-1].upper(), 1.0)
+    return float(text[:-1] if scale != 1.0 else text) * scale
+
+
+def read_second_source(path) -> pd.DataFrame:
+    """One ticker's second-source daily prices, indexed by an ascending DatetimeIndex named 'date'.
+
+    Accepted formats: the standard columns date,open,high,low,close,adj_close,volume with ISO dates (adj_close may be
+    empty), or an investing.com export mapped by INVESTING_COM_COLUMNS. Returns float64 columns
+    open, high, low, close, adj_close, volume. Raises ValueError for any other header.
+    """
+    table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    table.columns = [str(c).strip() for c in table.columns]
+    columns = list(table.columns)
+    if columns == SECOND_SOURCE_COLUMNS:
+        dates = pd.to_datetime(table["date"], format="%Y-%m-%d")
+    elif set(INVESTING_COM_COLUMNS) <= set(columns):
+        table = table[list(INVESTING_COM_COLUMNS)].rename(columns=INVESTING_COM_COLUMNS).assign(adj_close="")
+        dates = pd.to_datetime(table["date"], format=INVESTING_COM_DATE_FORMAT)
+    else:
+        raise ValueError(f"{path}: unrecognised columns {columns}; expected exactly {SECOND_SOURCE_COLUMNS} "
+                         f"or an investing.com export with {list(INVESTING_COM_COLUMNS)}")
+    values = SECOND_SOURCE_COLUMNS[1:]
+    frame = pd.DataFrame({c: [_number(v) for v in table[c]] for c in values}, index=pd.DatetimeIndex(dates, name="date"))
+    return frame.astype("float64").sort_index()
+
+
+def compare_second_source(adjusted_close: pd.Series, split_close: pd.Series, second: pd.DataFrame,
+                          dates: pd.DatetimeIndex) -> pd.DataFrame:
+    """Close-to-close returns of Yahoo and the second source on the sampled dates, for every convention pairing.
+
+    The second source's close is compared with Yahoo's adjusted close and split-only close; its adj_close, when given,
+    with Yahoo's adjusted close. Columns: yahoo_return, second_source_return, difference, yahoo, second_series.
+    """
+    pairs = [("adjusted", adjusted_close, "close"), ("split_only", split_close, "close")]
+    if second["adj_close"].notna().any():
+        pairs.append(("adjusted", adjusted_close, "adj_close"))
+    tables = [compare_returns(yahoo, second[column], dates).assign(yahoo=convention, second_series=column)
+              for convention, yahoo, column in pairs]
+    return pd.concat(tables).rename(columns={"first": "yahoo_return", "second": "second_source_return"})

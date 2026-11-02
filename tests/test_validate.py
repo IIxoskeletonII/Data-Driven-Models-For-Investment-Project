@@ -137,3 +137,51 @@ def test_sample_dates_fixed_seed(sessions):
     assert a.equals(b)
     assert len(a.unique()) == 20 and a.is_monotonic_increasing
     assert a.isin(sessions).all()
+
+
+# Second source: import formats and the 20-date comparison on synthetic files
+
+
+def _write(path, text: str):
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
+def test_read_second_source_standard_format(tmp_path):
+    path = _write(tmp_path / "XLB.csv", "date,open,high,low,close,adj_close,volume\n"
+                  "2021-01-05,10,11,9,10.5,,1000\n2021-01-04,9,10,8,9.5,9.4,2000\n")
+    frame = validate.read_second_source(path)
+    assert frame.index.name == "date" and list(frame.index) == [pd.Timestamp("2021-01-04"), pd.Timestamp("2021-01-05")]
+    assert list(frame.columns) == validate.SECOND_SOURCE_COLUMNS[1:]
+    assert (frame.dtypes == "float64").all()
+    assert frame.loc["2021-01-04", "adj_close"] == 9.4 and np.isnan(frame.loc["2021-01-05", "adj_close"])
+
+
+def test_read_second_source_investing_com_mapping(tmp_path):
+    path = _write(tmp_path / "SPY.csv", '﻿"Date","Price","Open","High","Low","Vol.","Change %"\n'
+                  '"01/05/2021","1,371.25","1,368.00","1,372.50","1,365.10","1.25M","0.24%"\n'
+                  '"01/04/2021","1,368.00","1,370.00","1,375.00","1,360.00","850.30K","-1.10%"\n')
+    frame = validate.read_second_source(path)
+    assert list(frame.index) == [pd.Timestamp("2021-01-04"), pd.Timestamp("2021-01-05")]  # sorted ascending
+    assert frame.loc["2021-01-05", "close"] == 1371.25 and frame.loc["2021-01-05", "open"] == 1368.0
+    assert frame.loc["2021-01-05", "volume"] == 1.25e6 and frame.loc["2021-01-04", "volume"] == pytest.approx(850300.0)
+    assert frame["adj_close"].isna().all()
+
+
+def test_read_second_source_rejects_unknown_header(tmp_path):
+    path = _write(tmp_path / "XLB.csv", "Date,Open,Close\n2021-01-04,1,2\n")
+    with pytest.raises(ValueError, match="unrecognised columns"):
+        validate.read_second_source(path)
+
+
+def test_compare_second_source_finds_the_matching_convention(raw, tmp_path):
+    rows = "".join(f"{d.date()},{r.Open},{r.High},{r.Low},{r.Close},,{int(r.Volume)}\n" for d, r in raw.iterrows())
+    second = validate.read_second_source(_write(tmp_path / "XLB.csv", "date,open,high,low,close,adj_close,volume\n" + rows))
+    ex_dates = raw.index[raw["Dividends"] > 0]  # adjusted and split-only returns differ only on ex-dividend dates
+    dates = validate.sample_dates(raw.index[1:], 20, seed=42).union(ex_dates)
+    table = validate.compare_second_source(raw["Adj Close"], raw["Close"], second, dates)
+    error = table.groupby(["yahoo", "second_series"])["difference"].apply(lambda d: d.abs().max())
+    assert error.idxmin() == ("split_only", "close")  # the file holds Yahoo's split-only close
+    assert error.min() < 1e-12
+    assert error[("adjusted", "close")] > 1e-4  # the dividend shows on the ex-dates
+    assert len(table[table["yahoo"] == "split_only"]) == len(dates)

@@ -83,7 +83,7 @@ Information only: raw bars with Low above min(Open, Close) or High below max(Ope
 
 Adjusted close-to-close returns, with SPY's return on the same day and the second source's return when available. Automated part of the gate: no move in the adjusted closes or opens has a price ratio within 3% of a split ratio (2, 3, 4, 5, 10 or their inverses). The economic review of each move is in the reviewer sign-off below.
 
-| date | ticker | return | spy_return | stooq_return |
+| date | ticker | return | spy_return | second_source_return |
 | --- | --- | --- | --- | --- |
 | 2000-01-10 | XLV | 0.1023 | 0.0034 | n/a |
 | 2001-01-03 | XLK | 0.1610 | 0.0480 | n/a |
@@ -179,7 +179,7 @@ Open-to-open moves (the execution prices): Table: `data/qa/big_moves_open.csv` (
 
 Every date with a Yahoo split factor: the 2:1 splits of 5 Dec 2025 and the real-estate distribution of 19 Sep 2016, which Yahoo books for XLF as a split factor of 1.231. Returns of the event ticker within ±2 sessions: adjusted (our series), Yahoo's Close and Open with auto_adjust=False, SPY, and the second source. PASS if no return in the window exceeds the big-move threshold in absolute value: an unadjusted split or distribution would show as a drop of about 50% or 19%.
 
-| date | event | factor | adj_close_to_close | adj_open_to_open | yahoo_close_to_close | yahoo_open_to_open | spy_close_to_close | stooq_close_to_close |
+| date | event | factor | adj_close_to_close | adj_open_to_open | yahoo_close_to_close | yahoo_open_to_open | spy_close_to_close | second_source_close_to_close |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2025-12-03 | XLB 2025-12-05 | 2.0000 | 0.0070 | -0.0067 | 0.0070 | -0.0067 | 0.0035 | n/a |
 | 2025-12-04 | XLB 2025-12-05 | 2.0000 | -0.0058 | 0.0000 | -0.0058 | 0.0000 | 0.0007 | n/a |
@@ -234,23 +234,24 @@ With f = Adj Close / Close, a distribution D (dividend plus capital gain) with e
 
 Table: `data/qa/reconciliation.csv` (11 rows).
 
-## Second source (Stooq)
+## Second source
 
-Not run: Stooq returned no CSV for any ticker (HTTP 404, text/html: not a CSV). The CSV endpoint now answers with an HTML page; from a browser it shows a JavaScript verification page. No attempt was made to bypass it. Columns for Stooq returns in the tables above are therefore n/a. Options: a browser download of the 11 CSV files by a team member, or Bloomberg total returns on the sampled dates (protocol section 04, Bloomberg plan).
+The automatic Stooq download of `01_download_data.py` failed for all 11 tickers (HTTP 404, text/html: not a CSV): the CSV endpoint now answers with an HTML page and a JavaScript verification page, which was not bypassed. Owner: Simone. Not run yet: no file in `data/raw/second_source/`.
 
-| ticker | checked_utc | reason | url |
-| --- | --- | --- | --- |
-| IVV | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=ivv.us&i=d |
-| SPY | 2026-10-29T16:51:27Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=spy.us&i=d |
-| XLB | 2026-10-29T16:51:25Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xlb.us&i=d |
-| XLE | 2026-10-29T16:51:25Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xle.us&i=d |
-| XLF | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xlf.us&i=d |
-| XLI | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xli.us&i=d |
-| XLK | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xlk.us&i=d |
-| XLP | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xlp.us&i=d |
-| XLU | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xlu.us&i=d |
-| XLV | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xlv.us&i=d |
-| XLY | 2026-10-29T16:51:26Z | HTTP 404, text/html: not a CSV (first bytes: b'<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;margin-t') | https://stooq.com/q/d/l/?s=xly.us&i=d |
+**Expected input.** One CSV file per ticker in `data/raw/second_source/` (git-ignored: licensed data, local and in
+the LUISS zip only), named after the ticker (`XLB.csv`, ..., `IVV.csv`, `SPY.csv`), for the 11 tradables. Columns, exactly
+and in this order: `date,open,high,low,close,adj_close,volume`. Dates are ISO (`YYYY-MM-DD`), one row per session; prices
+in USD per share; `adj_close` may be left empty when the source publishes no adjusted close.
+
+**investing.com exports** are accepted as downloaded ("Historical Data", daily), with this column mapping
+(`src/validate.py: read_second_source`): `Date` (MM/DD/YYYY) -> `date`; `Price` -> `close`; `Open` -> `open`; `High` ->
+`high`; `Low` -> `low`; `Vol.` (K/M/B suffixes) -> `volume`; `Change %` dropped; `adj_close` empty. Thousands separators
+are removed and rows are sorted by date.
+
+**Check.** Close-to-close returns of the second source's `close` (and `adj_close` when given) against Yahoo's adjusted
+and split-only closes, on the 20 sampled dates (`qa.second_source_dates`, seed `seed`); PASS if the best-matching
+convention differs by at most `qa.second_source_tol` (10 bps) on every comparison. The gate reads PENDING until all
+11 files are present.
 
 ## Coverage audit
 
@@ -302,7 +303,7 @@ Table: `data/qa/weekly_counts.csv` (7 rows).
 | Corporate actions: 2:1 splits | PASS | XLB 2025-12-05 (2), XLE 2025-12-05 (2), XLK 2025-12-05 (2), XLU 2025-12-05 (2), XLY 2025-12-05 (2); largest |return| within +/-2 sessions, adjusted and Yahoo open/close: 1.87% (an unadjusted event would be about -50%) |
 | Corporate actions: other split factors | PASS | XLF 2016-09-19 (1.231); largest |return| within +/-2 sessions, adjusted and Yahoo open/close: 1.42% (an unadjusted event would be about -19%) |
 | Adjusted returns reconciled to dividends and splits | PASS | 11/11 tickers: |total gap| <= 0.005, unexplained daily step <= 0.001, annual gap in (0.3%, 6%) |
-| 20 sampled dates checked against the second source | NOT RUN | Stooq unavailable for all 11 tickers (HTTP 404, text/html: not a CSV); not a Gate 1 blocker |
+| 20 sampled dates checked against the second source | PENDING (owner: Simone) | no files in data/raw/second_source/ yet; 11 tickers expected |
 | Coverage audit per ticker | PASS | missing opens/closes in the scored window: 0; sessions without VIX or a lagged FRED value: {'VIX': 0, 'DGS3MO': 0, 'DGS10': 0, 'BAA10Y': 0}; every ticker from before 2003-01-01 to 2026-10-16 |
 | Weekly panel | PASS | (Monday, Friday) index through 2026-10-16; 0 missing weekly opens/closes in the scored window; scored weeks IS 885, OOS 355; first OOS return realised 2019-12-30; last evaluable signal week ends 2026-10-02 |
 | Composition breaks logged | PASS | docs/composition_breaks.md records the 2016 and 2018 GICS changes (draft, owner Simone) |
@@ -312,6 +313,6 @@ Table: `data/qa/weekly_counts.csv` (7 rows).
 To be completed by the workstream A owner (protocol section 14).
 
 - Review of the flagged daily moves above 10%:
-- Interpretation of the second-source (Stooq) reconciliation:
+- Interpretation of the second-source reconciliation:
 - PASS/FAIL confirmation of each gate:
 - Signed (name, date):

@@ -1,4 +1,4 @@
-date,event,factor,adj_close_to_close,adj_open_to_open,yahoo_close_to_close,yahoo_open_to_open,spy_close_to_close,stooq_close_to_close
+date,event,factor,adj_close_to_close,adj_open_to_open,yahoo_close_to_close,yahoo_open_to_open,spy_close_to_close,second_source_close_to_close
 2025-12-03,XLB 2025-12-05,2,0.007015939548,-0.006714357644,0.007015900169,-0.006714396486,0.003462748187,
 2025-12-04,XLB 2025-12-05,2,-0.005843297642,1.80666182e-08,-0.005843315603,0,0.0007310609522,
 2025-12-05,XLB 2025-12-05,2,-0.003278018976,-0.0009013889951,-0.00327795763,-0.0009013275026,0.001899514151,

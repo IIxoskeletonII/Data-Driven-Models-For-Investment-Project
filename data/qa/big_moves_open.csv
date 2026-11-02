@@ -1,4 +1,4 @@
-date,ticker,return,spy_return,stooq_return
+date,ticker,return,spy_return,second_source_return
 2001-01-04,XLK,0.1723040483,0.05163196934,
 2001-10-04,XLK,0.1069520347,0.03527706329,
 2002-07-24,XLU,-0.1168545562,-0.05354330191,
