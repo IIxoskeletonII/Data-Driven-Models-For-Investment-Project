@@ -719,6 +719,49 @@ def test_weights_sensitivity_core_weight_amendment_2_c4(k):
     contracts.validate_weights(weights, signals, k=k)
 
 
+def _one_week_result(weights: pd.DataFrame) -> BacktestResult:
+    """A one-week book entered from cash, with the §09 accounting written out:
+    turnover = Σ|w| (w_pre = 0); costs = 10 bps x turnover; borrow = 2% x 7/365 x Σ_{w<0}|w|; gross = Σ w R;
+    net = gross - costs - borrow; net exposure = Σ w; h = w_IVV / (1 - |w_IVV|) so that w_IVV = h / (1 + |h|)."""
+    index, w = weights.index, weights.iloc[0]
+    fwd = pd.Series(np.linspace(-0.02, 0.025, len(TRADED)), index=TRADED)
+    turnover = float(w.abs().sum())
+    costs = COST_BPS / 10_000 * turnover
+    borrow = BORROW * 7 / 365 * float(-w[w < 0].sum())
+    gross = float((w * fwd).sum())
+    w_ivv = float(w[HEDGE])
+
+    def series(value, name):
+        return pd.Series([value], index=index, name=name, dtype="float64")
+
+    return BacktestResult(weights=weights, gross=series(gross, "gross"), net=series(gross - costs - borrow, "net"),
+                          turnover=series(turnover, "turnover"), costs=series(costs, "costs"), borrow=series(borrow, "borrow"),
+                          residual_beta=series(0.0, "residual_beta"), net_exposure=series(float(w.sum()), "net_exposure"),
+                          hedge=series(w_ivv / (1 - abs(w_ivv)), "hedge"),
+                          period=pd.Series(["IS"], index=index, name="period", dtype=object))
+
+
+@pytest.mark.parametrize("k", [1, 2, 3])
+def test_sensitivity_books_validate_with_core_weight_keyword(k):
+    # k names long and k short at 0.5 / k each before hedge scaling: k = 1 -> 0.5, k = 2 -> 0.25, k = 3 -> 1/6
+    core = contracts.core_weight_for(k)
+    assert core == pytest.approx(0.5 / k, abs=1e-15)
+    weights = _hedged_weights(-0.2, k=k)
+    result = _one_week_result(weights)
+    contracts.validate_weights(weights, core_weight=core)
+    contracts.validate_weights(weights, k=k)
+    contracts.validate_backtest_result(result, cost_bps=COST_BPS, borrow_annual=BORROW, core_weight=core)
+    contracts.validate_backtest_result(result, cost_bps=COST_BPS, borrow_annual=BORROW, k=k)
+    if k == 2:  # the pre-registered book also passes with the defaults
+        contracts.validate_weights(weights)
+        contracts.validate_backtest_result(result, cost_bps=COST_BPS, borrow_annual=BORROW)
+    else:  # a sensitivity book is not a 0.25 book
+        with pytest.raises(ContractError):
+            contracts.validate_backtest_result(result)
+        with pytest.raises(ContractError):  # nor a book of another k
+            contracts.validate_backtest_result(result, core_weight=contracts.core_weight_for(4 - k))
+
+
 def test_market_states_config_must_name_vix_and_no_z_column(monkeypatch):
     cfg = copy.deepcopy(CFG)
     cfg["features"]["states"] = [s if s != "VIX" else "VIX_Z" for s in cfg["features"]["states"]]

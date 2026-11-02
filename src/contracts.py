@@ -653,10 +653,11 @@ def validate_forward_returns(fwd: pd.DataFrame, realised_on: pd.Series, period: 
 
 
 def validate_backtest_result(result: BacktestResult, cost_bps: float | None = None, borrow_annual: float | None = None,
-                             *, k: int | None = None) -> None:
+                             *, k: int | None = None, core_weight: float | None = None) -> None:
     """Backtest output (§09, contract 12). Tolerance 1e-12.
 
-    weights pass validate_weights (with k for the sensitivity runs, Amendment 2 C4); every Series is named after its field and shares the weights' index; numeric fields
+    weights pass validate_weights, sized with core_weight (default core_weight_for(k): 0.25 for k = 2, 0.5 / k in the
+    sensitivity runs, Amendment 2 C4); every Series is named after its field and shares the weights' index; numeric fields
     are float64 and finite; period is "IS"/"OOS" with no missing value and never "IS" after "OOS"; turnover, costs and
     borrow ≥ 0; turnover of the first week = Σ|w| (entered from cash); net = gross − costs − borrow;
     net_exposure = Σ_i w; w_IVV = hedge / (1 + |hedge|). With cost_bps (basis points per dollar traded) the check
@@ -666,7 +667,7 @@ def validate_backtest_result(result: BacktestResult, cost_bps: float | None = No
     obj = "backtest result"
     if not isinstance(result, BacktestResult):
         _fail(obj, f"must be a BacktestResult, got {type(result).__name__}")
-    validate_weights(result.weights, k=k)
+    validate_weights(result.weights, k=k, core_weight=core_weight)
     index = result.weights.index
     numeric = {}
     for field in fields(BacktestResult):

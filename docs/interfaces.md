@@ -222,8 +222,9 @@ the same weekly index: the consecutive weeks that have weights and a realised fo
 | `hedge` | `Series` `float64` | `h` from `SizingResult`; `w_IVV = h / (1 + \|h\|)` within 1e-12 |
 | `period` | `Series` of `"IS"`/`"OOS"` | from contract 7 |
 
-Validator: `validate_backtest_result(result, cost_bps=None, borrow_annual=None, *, k=None)`; with the rates given it also
-checks the cost and borrow formulas within 1e-12. The backtest is one continuous book from the first scored week to the data
+Validator: `validate_backtest_result(result, cost_bps=None, borrow_annual=None, *, k=None, core_weight=None)`; with the
+rates given it also checks the cost and borrow formulas within 1e-12. Sensitivity books (k = 1, 3) pass `k=k` or
+`core_weight=0.5 / k` (`core_weight_for(k)`), here and in `validate_weights`; an explicit `core_weight` takes precedence. The backtest is one continuous book from the first scored week to the data
 end; metrics, equity curves (rebased to 100) and behaviour statistics are computed per period (Amendment 2 C5).
 
 ## 13. Walk-forward folds (§07, §10) → `WalkForwardFold`
@@ -384,7 +385,7 @@ validate_weights(weights: pd.DataFrame, signals: pd.DataFrame | None = None, *,
 validate_forward_returns(fwd: pd.DataFrame, realised_on: pd.Series, period: pd.Series,
                          is_end: pd.Timestamp | None = None) -> None
 validate_backtest_result(result: BacktestResult, cost_bps: float | None = None, borrow_annual: float | None = None,
-                         *, k: int | None = None) -> None
+                         *, k: int | None = None, core_weight: float | None = None) -> None   # core_weight_for(k)
 validate_folds(folds: Sequence[WalkForwardFold], embargo_weeks: int | None = None,
                label_end: pd.Series | None = None) -> None   # label_end: per-week series on the weekly index
 ```
