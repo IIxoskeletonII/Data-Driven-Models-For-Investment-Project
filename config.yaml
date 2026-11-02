@@ -75,6 +75,12 @@ costs: # section 09, proposal, not broker quotes
   borrow: [0.01, 0.02, 0.05] # short borrow, annual
   borrow_baseline: 0.02
 
+ledger: # section 09 ledger reconciliation, Amendment 3
+  years: [2005, 2012, 2016, 2018] # In-Sample years replayed on real data; 2016 holds the XLF real-estate spin-off factor
+  books_per_year: 10 # seeded random placebo books per year (accounting check only, no model)
+  tolerance: 1.0e-6 # Level A without costs; Level B remainder after the dividend-reinvestment term (Amendment 3 C1)
+  tolerance_costs: 1.0e-10 # Level A with costs and borrow (Amendment 3 C2)
+
 metrics: # section 11
   periods_per_year: 52
   risk_free_series: DGS3MO # weekly, time-varying: primary

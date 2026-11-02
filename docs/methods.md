@@ -86,3 +86,48 @@ The QA gates of section 04 are implemented as functions tested on a synthetic fi
 (`tests/test_validate.py`). Their thresholds are fixed in the `qa:` section of `config.yaml`, set before the data was
 downloaded. The generated report is `docs/qa_report.md`, and its tables are in `data/qa/` (returns, counts and flags only,
 no price levels).
+
+## Engine and ledger accounting (Phase 2.1)
+
+### Ledger reconciliation and the dividend-reinvestment term (Amendment 3)
+
+`src/ledger.py` replays the target weights with share counts and a cash account: execution at the first session after
+Friday t, valuation at the first session after Friday t + 7 days; costs paid in cash on the traded value; borrow paid on
+the short value at entry; no interest on cash. Level A uses the engine's adjusted opens; Level B uses actual opens
+(Yahoo's split-adjusted Open × the product of later split factors), multiplies share counts by the split factor and pays
+dividends in cash on the ex-date (shorts pay).
+
+The engine's adjusted open of day d is Open(d)·AdjClose(d)/Close(d), and Yahoo builds the factor backwards with
+f(e−1) = f(e)·(1 − D/C(e−1)) at each ex-date e. The adjusted series therefore reinvests each dividend at C(e−1) − D, while
+the ledger keeps it as cash. For a position of weight w in week t, with execution session s1 (actual open O1), valuation
+session s2 (actual open O2), ex-dates e_1 < … < e_n in (s1, s2] with cash dividends D_k per actual share, actual closes C
+and split factors q:
+
+    m(d)        = Π q over (s1, d]                         shares held per share bought at s1
+    δ_k         = D_k / (C(e_k − 1) / q(e_k))               dividend over the previous close, in ex-date units
+    1 + R_E     = m(s2) · (O2 / O1) / Π_k (1 − δ_k)         engine (adjusted opens)
+    1 + R_L     = (m(s2) · O2 + Σ_k m(e_k) · D_k) / O1      ledger (cash dividends)
+    term_{t,i}  = w_{t,i} · (R_L − R_E)
+
+The term is computed from the dividend series and prices only (`dividend_reinvestment_term`), never from the measured
+difference. A split factor without a dividend gives a term of exactly 0. Level B passes if
+|ledger_t − engine_t − Σ_i term_{t,i}| ≤ 1e-6 every week.
+
+Measured on real In-Sample data (2005, 2012, 2016, 2018; 10 seeded random ±2/±2 weight books per year with seeded random
+betas, no strategy signal; 2,090 book-weeks; zero cost): raw |ledger − engine| max 5.86e-5, mean 1.46e-6 (by year 1.02e-6
+to 1.89e-6); term max 5.88e-5; remainder max 5.11e-7, equal to the largest difference in weeks without a dividend. The
+remainder is Yahoo's float32 storage of Adj Close (day-to-day factor noise up to 7e-7 on days without a dividend). XLF on
+2016-09-19 is the real-estate (XLRE) spin-off, which Yahoo books as a 1.231 split factor; it is not a true split. The
+ledger treats it as a split, which preserves value like the adjusted series (5 book-weeks held; remainder there
+≤ 1.34e-7). The true 2:1 splits of December 2025 are Out-of-Sample and are not used. Level A: zero cost max 4.4e-16; with
+costs and borrow, after Amendment 3 C2, max 3.7e-16 at 10 bps and 2%, and at most 4.4e-16 in all three cost scenarios
+(5 bps/1%, 10 bps/2%, 20 bps/5%); 2.31e-6 at 10 bps/2% with the pre-registered denominator. On the synthetic market
+(exact float64 factors) the term equals the difference within 1e-12 and the planted 2:1 split contributes 0 within 1e-12.
+
+Economic size: the mean raw difference is about 1.5e-6 per week, under 0.01% per year (52 × 1.46e-6 ≈ 7.6e-5).
+
+Scope beyond the pre-registration: §09 asks for the ledger on three In-Sample years; the reconciliation covers four
+(2005, 2012, 2016, 2018), because 2016 holds the only split factor of the In-Sample data (S21-11). §09 pre-registers the
+no-cost check at 1e-6; the Level A check with costs and borrow at 1e-10, in all three cost scenarios, is ours
+(Amendment 3 C2, S21-9). The settings are in the `ledger:` section of `config.yaml`; `06_backtest.py --ledger-years`
+replays them and refuses any return realised after the In-Sample end (S21-14).
