@@ -218,6 +218,221 @@ Format of the operating manual's evidence standard. Quotes are from the DDMI Res
 | Files affected | `docs/interfaces.md`, `tests/test_module_stubs.py`, `src/plots.py`, `src/stats.py`, `src/agents/__init__.py`, `src/agents/graph.py`, `src/agents/vault_server.py` |
 | Amendment | No: planning, not specification |
 
+## 2026-11-02 · Session 2.1: engine, sizing, ledger and metrics
+
+Each entry follows the operating manual §2a. "Approved by" lists the approvals given so far; Eliya approves through the
+review of the 2.1 pull request.
+
+### S21-1 · Amendment 2 C2–C5 in the engine
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | How do the sizing and the engine implement Amendment 2 C2–C5? |
+| Options considered | Implement from the amendment text (chosen); wait for the merge |
+| Decision | C2: h = 0 (IVV signal 0) when the IVV weight \|h\|/(1+\|h\|) < `signal.hedge_deadband`. C3: see S21-2. C4: core weight 0.5/k from `src.contracts.core_weight_for(k)` (PR #3). C5: `run` is one continuous book over IS and OOS; `period_metrics` computes every metric, the equity rebased to 100 and the behaviour statistics per period |
+| Rationale | The amendment settles open points P2–P5 of `docs/interfaces.md` |
+| Evidence | Amendment 2 C2 "if \|h\| / (1 + \|h\|) < 0.02, then h = 0 and the IVV signal is 0"; C4 "each selected long or short name receives core weight 0.5 / k"; C5 "The backtest is one continuous book from the first scored week to the data end. The OOS period does not restart from cash" (commit 303152d, PR #3); §09 step 4 "0 if the hedge rounds to zero (below 2% of capital)"; skeleton `docs/metrics.md` "the equity curve restarts from 100 at the start of each period, and turnover and holding periods restart at the first week of each period". Test: h = −0.0203 is zeroed although \|h\| ≥ 0.02 |
+| Proposed by | Eliya Allam (Amendment 2) |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam (amendment PR) |
+| Files affected | `src/sizing.py`, `src/backtest.py`, `src/metrics.py` |
+| Amendment | Amendment 2 itself |
+
+### S21-2 · Missing inputs of §09 step 5 (Amendment 2 C3)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which missing inputs trigger the carry-forward, what is carried, and does a zero or non-finite IVV beta count as missing? |
+| Options considered | What is carried: (a) last week's signals and target weights (chosen); (b) the signals, re-sized with the new betas. IVV beta: (c) a zero or non-finite β̂_IVV counts as missing (chosen); (d) only a NaN counts |
+| Decision | Required: all 9 sector scores and all 10 BETA52 (the 9 sectors and IVV, whether held that week or not). A zero or non-finite IVV beta counts as missing: this is our interpretation, because the hedge h = clip(−β_c / β̂_IVV, −0.5, 0.5) is undefined there. A week missing any of them carries last week's sector signals, IVV signal, target weights, hedge, residual beta, net exposure and `cap_binds`; the engine rebalances from the drifted weights back to them; the event is logged (logger `src.sizing`, level WARNING) with the week and the missing fields, e.g. "2010-01-15: score XLI" or "2010-01-15: BETA52 IVV". Weeks before the first valid week have no row (flat), and the first row is entered from cash. A NaN beta after a column's warm-up breaks contract 10 and raises `ContractError` instead of being carried. The first implementation required only the betas of the held sectors and IVV; it was corrected to C3 before any commit, and the test that encoded it (`test_unheld_sector_without_beta_is_not_a_missing_input`) was replaced by `test_c3_every_beta_is_required_even_of_an_unheld_sector`, which is stricter, not looser: it requires more inputs before a week can trade |
+| Rationale | (b) would change positions in a week whose inputs are incomplete, and C3 names the targets; (c) because a division by a zero or non-finite beta gives no hedge, so the week cannot be sized |
+| Evidence | Amendment 2 C3: "After the warm-up, if any sector score or any required BETA52 (9 sectors and IVV) is missing in week t, the previous week's signals and target weights are carried forward unchanged and the book is rebalanced to those same targets; turnover from drift is therefore still charged. The event is logged with the week and the missing fields. Before the first fully valid week, the book is flat." (commit 303152d); §09 sizing: h = clip(−β_c / β̂_IVV, −0.5, 0.5); §09 step 5: "If a required input is missing, last week's positions are kept and the event is logged."; `docs/interfaces.md` contract 8: "A carried week also carries the previous `hedge`, `residual_beta`, `net_exposure` and `cap_binds`"; contract 10: "`NaN` in the warm-up only". Tests `test_c3_every_beta_is_required_even_of_an_unheld_sector`, `test_c3_unusable_beta_carries_signals_and_targets` (β̂_IVV = 0), `test_case_h_missing_score_keeps_last_signals` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam, 2 Nov 2026 (review of the 2.1 numbers) and PR review |
+| Files affected | `src/sizing.py`, `tests/test_sizing.py` |
+| Amendment | No (Amendment 2 C3) |
+
+### S21-3 · Refined signatures of the Phase 2.1 stubs
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which stub signatures change in the phase PR? |
+| Options considered | Keep the stubs exactly; refine them where the implementation needs it (chosen) |
+| Decision | `signals_from_scores` returns the 9 sector columns (the TRADED signals with IVV come from `target_weights`). Optional keywords: `target_weights(..., missing=None)`, `run(..., core_weight=None)`. New helpers: `size_book`, `period_metrics`, `equity_curve`, `actual_prices`, `dividend_reinvestment_term`. `tbill_weekly_returns(dgs3mo, weeks, sessions)` gains a required `sessions` argument (`docs/interfaces.md` contract 16 updated in this PR). `run_ledger(weights, raw, initial_capital=100.0, *, mode, cost_bps, borrow_annual)` returns a DataFrame (`nav_start, ret, traded, costs, borrow, dividends, splits, nav_end`) |
+| Rationale | The one-session lag needs the equity calendar; the ledger reports the components the reconciliation decomposes |
+| Evidence | `docs/interfaces.md` header "Adding an optional keyword argument with a default that keeps the old behaviour is not a contract change."; contract 17 "a stub's exact argument list is a proposal that its owner may refine in the phase pull request, which the other author reviews"; stub docstring of `signals_from_scores` "columns = sectors" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/sizing.py`, `src/backtest.py`, `src/metrics.py`, `src/ledger.py`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S21-4 · Weekly T-bill return
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | How is the daily DGS3MO yield turned into a weekly risk-free return? |
+| Options considered | rate/100 · 7/365 (chosen); rate/100/52; (1 + rate/100)^(1/52) − 1; actual days from O(t+1) to O(t+2) |
+| Decision | rf_t = DGS3MO/100 · 7/365, simple; the rate of week t is the last observation dated on or before the session before the last session of week t |
+| Rationale | Same day count as the pre-registered borrow charge; the lag follows Amendment 1 and contract 1 |
+| Evidence | §09 "b·(7/365)·Σ_{w<0}\|w\|"; §11 "Weekly FRED 3-month T-bill (time-varying), with its period average stated on the results slide"; contract 1 "the last observation dated on or before the session before s" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/metrics.py` |
+| Amendment | No |
+
+### S21-5 · Risk-free rate inside Sharpe, Sortino and alpha
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which annual rf enters the skeleton formulas when rf is a weekly series? |
+| Options considered | Compound annual return of the weekly rf over the same weeks (chosen); 52 × mean weekly rf |
+| Decision | `sharpe_rf` and Sortino use (annualised return − rf_annual), rf_annual = (Π(1+rf))^(52/T) − 1 = `period_average_rf`; Jensen alpha uses the mean weekly rf, (r̄ − rf_w − β(m̄ − rf_w))·52, equal to the skeleton formula for a constant (rf_w = rf/52); `sharpe_zero_cost` = annualised return / volatility; `sharpe_textbook` = √52·mean/std, information only |
+| Rationale | rf is annualised the same way as the strategy's compound return |
+| Evidence | §09 "Sharpe is reported two ways: the skeleton convention, (annual return − rf) / volatility, which is conservative here and is the headline; and the zero-cost long/short convention, annual return / volatility."; skeleton `docs/metrics.md` Sharpe, Sortino and Jensen alpha rows |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/metrics.py` |
+| Amendment | No |
+
+### S21-6 · Behaviour statistics of a weighted book
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | What is N in the skeleton's behaviour metrics, and how are weights reported? |
+| Options considered | N = 10 traded columns (chosen); N = 9 sectors |
+| Decision | Skeleton signal metrics with N = 10 (9 sectors + IVV); weight-based net and gross exposure and target turnover Σ\|w_t − w_{t−1}\| reported alongside; the drifted-weight turnover stays in `BacktestResult.turnover` |
+| Rationale | IVV is traded with its own discrete signal |
+| Evidence | Skeleton `docs/metrics.md` "N: Number of stocks traded by the strategy"; operating manual §1 "The hedge is IVV (traded, with its own discrete signal)" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/metrics.py` |
+| Amendment | No |
+
+### S21-7 · Validating sensitivity books (k = 1, 3)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | `validate_backtest_result` checks sector sizes against `signal.core_weight` only; how are k = 1, 3 books validated? |
+| Options considered | Local check in `run` until the contract has a `core_weight` keyword (chosen); skip validation |
+| Decision | Until PR #3 merged, `run(..., core_weight=0.5/k)` called `validate_weights(core_weight=...)` and checked the contract-12 identities itself. PR #3 (commit 52b4a56) adds `k=` and `core_weight=` to `validate_backtest_result` and `core_weight_for` to `src/contracts.py`; the follow-up commit d3db20a "refactor: validate sensitivity books with the contract validator" removes the local check and `src.sizing.core_weight_for` and calls the contract functions instead. Tested before the merge on the PR #3 branch: 365 passed |
+| Rationale | Never skip a validator; never edit the other owner's file |
+| Evidence | `src/contracts.py: validate_backtest_result` at b505705 calls `validate_weights(result.weights)` with the default core weight; commit 52b4a56 "feat: accept a core-weight keyword when validating sensitivity books"; Amendment 2 C4 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026 (deviation 3) |
+| Files affected | `src/backtest.py` |
+| Amendment | No |
+
+### S21-8 · Ledger conventions
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | How does the independent ledger book trades, costs, borrow and corporate actions? |
+| Options considered | As below (chosen) |
+| Decision | Execution at the first session after Friday t, valuation at the first session after Friday t + 7 days, found on the daily calendar; costs in cash on the traded value at execution; borrow at valuation on the short value at entry; dividends with ex-date in (execution, valuation] in cash (shorts pay); split factors multiply the shares; actual opens = Yahoo Open × product of later split factors; no interest on cash |
+| Rationale | An independent path to the same quantities as the engine |
+| Evidence | §09 "An independent position-and-cash ledger (shares, raw opens, dividend cash flows, splits, IVV) runs on three In-Sample years."; §05 clock |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/ledger.py` |
+| Amendment | No |
+
+### S21-9 · Drifted-weight denominator (Amendment 3 C2)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | With costs on, the engine and the ledger differ; which drifted-weight formula is right? |
+| Options considered | (a) keep the pre-registered 1 + Σ w·R_fwd and document the gap; (b) divide by 1 + r_net (chosen) |
+| Decision | w_pre[t] = w[t−1]·(1+R_fwd[t−1]) / (1 + r_net[t−1]); the engine loops over weeks for it |
+| Rationale | The book's value after costs and borrow is 1 + r_net |
+| Evidence | Real IS data, 2005/2012/2016/2018, 10 books per year, 10 bps + 2%: pre-registered denominator max \|ledger − engine\| 2.31e-6, mean 1.355e-6, residual after the term c·(turnover_ledger − turnover_engine) 3.7e-16; amended denominator max 3.7e-16 at 10 bps/2%, and at most 4.43e-16 over the three cost scenarios (5 bps/1% 4.10e-16, 10 bps/2% 3.68e-16, 20 bps/5% 4.43e-16; all nine bps × borrow combinations ≤ 4.93e-16). `tests/test_ledger.py: test_level_a_with_costs_matches_the_engine`, `test_level_a_with_every_cost_scenario` (≤ 1e-10) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/backtest.py`, `tests/test_backtest.py`, `tests/test_ledger.py`, `docs/preregistration.md` |
+| Amendment | Yes: Amendment 3 C2 |
+
+### S21-10 · Level B criterion (Amendment 3 C1)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Level B differs from the engine by more than the pre-registered 1e-6; what is the pass criterion? |
+| Options considered | (a) \|ledger − engine − dividend-reinvestment term\| ≤ 1e-6 (chosen); (b) raw 1e-6 (fails); (c) cash-dividend accounting in the engine (rejected: larger change, departs from the skeleton's adjusted-price convention) |
+| Decision | (a); the term is computed from the dividend series and prices with the formula of `docs/methods.md`, never back-solved; raw max and mean differences are reported in `docs/methods.md` and the PR |
+| Rationale | The difference is the known reinvestment convention of the adjusted series |
+| Evidence | Real IS data, 2,090 book-weeks, zero cost: raw max 5.86e-5, mean 1.46e-6; term max 5.88e-5; remainder max 5.11e-7 = max difference in weeks without a dividend (Yahoo Adj Close is float32). Synthetic market: remainder ≤ 1e-12. Hand case in `tests/test_ledger.py: test_reinvestment_term_hand_case` (term = 0.25·(1.03 − 1.0302) = −5e-5) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026 (conditional on these numbers); Eliya Allam: PR review |
+| Files affected | `src/ledger.py`, `06_backtest.py`, `tests/test_ledger.py`, `docs/methods.md`, `docs/preregistration.md` |
+| Amendment | Yes: Amendment 3 C1 |
+
+### S21-11 · Ledger years and the XLF spin-off factor
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which In-Sample years does the real-data ledger check replay, and how is XLF 2016-09-19 handled? |
+| Options considered | 2005, 2012, 2018 (prompt example); add 2016 (chosen) |
+| Decision | Years 2005, 2012, 2016, 2018, 10 seeded random books each, in a new additive `ledger:` section of `config.yaml` with the tolerances (1e-6; 1e-10 with costs), read by `06_backtest.py: ledger_settings` (commit 0e12684), which refuses years reaching the OOS, a non-positive book count and any tolerance outside (0, 1e-6], so the pre-registered 1e-6 can never be loosened from the config; `--ledger-years` without years replays `ledger.years`. XLF 2016-09-19 is the real-estate (XLRE) spin-off, which Yahoo books as a 1.231 split factor; it is not a true split. The ledger treats it as a split, which preserves value like the adjusted series. The true 2:1 splits of December 2025 are Out-of-Sample and are not used (`06_backtest.py --ledger-years` refuses years reaching 2019-12-27) |
+| Rationale | 2016 holds the only split factor of the In-Sample data |
+| Evidence | `data/raw/yahoo/XLF.csv` Stock Splits = 1.231 on 2016-09-19 (no other split factor up to 2019-12-27 in the 11 tradables); remainder in the 5 held book-weeks ≤ 1.34e-7 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026 (deviation 1); Eliya Allam: PR review |
+| Files affected | `config.yaml`, `06_backtest.py`, `tests/test_backtest_script.py`, `docs/methods.md` |
+| Amendment | No |
+
+### S21-12 · Sections of `docs/methods.md`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | `docs/methods.md` has no owner in the operating manual's table; who writes the engine and ledger methods? |
+| Options considered | (a) each phase appends its own section in its phase pull request (chosen); (b) one owner for the whole file |
+| Decision | (a). The Phase 2.1 pull request adds the section "Engine and ledger accounting" (ledger conventions, the dividend-reinvestment term of Amendment 3 C1 and the measured numbers); other phases append their own sections and do not edit earlier ones |
+| Rationale | Each method is written by the person who implements it and reviewed by the other owner |
+| Evidence | Operating manual §4 ownership table (no row for `docs/methods.md`); Eliya Allam, review of the 2.1 numbers, 2 Nov 2026: "docs/methods.md has no single owner. Each phase appends its own section; add 'Engine and ledger accounting' in this PR and record it as an S21 entry." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam, 2 Nov 2026; Mattia Cervelli |
+| Files affected | `docs/methods.md` |
+| Amendment | No |
+
+### S21-13 · Turnover at the In-Sample/OOS boundary (Amendment 2 C5)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | In the first OOS week, which turnover is charged and which is reported? |
+| Options considered | Charged: (a) from the drifted In-Sample book (chosen, C5); (b) from cash. Reported in the OOS behaviour statistics: (c) skeleton turnover restarting from flat (chosen); (d) continuing from the last In-Sample week |
+| Decision | `src/backtest.py: run` is one book over both periods: the first OOS trade is costed from the drifted In-Sample positions (turnover Σ\|w_t − w_pre_t\|, never Σ\|w_t\|), and only the first week of the whole book is entered from cash. `src/metrics.py: period_metrics` computes `behaviour` on each period separately, so the reported OOS turnover per year and holding periods start from flat in the first OOS week (signal trades \|s_t − 0\|, target-weight trades \|w_t − 0\|), as in the skeleton. The cost actually charged that week stays in `BacktestResult.costs` and in the OOS net returns |
+| Rationale | C5 fixes the cost; the skeleton fixes how the statistics restart; the two are different quantities and both are kept |
+| Evidence | Amendment 2 C5: "The OOS period does not restart from cash: its first trade is costed from the drifted In-Sample positions. Metrics, equity curves (rebased to 100) and behaviour statistics (turnover, holding periods) are computed separately for each period, following the course skeleton." (commit 303152d); skeleton `docs/metrics.md`: "turnover and holding periods restart at the first week of each period". `06_backtest.py --synthetic` (synthetic market 2011–2020, is_end 2019-12-27, no real data): first OOS week (signal Friday 2019-12-20, realised 2019-12-30) engine turnover 1.380305, cost 0.001380, equal to the recomputed Σ\|w − w_pre\| (max difference over 512 weeks 4.4e-16); turnover 1.0 only in the first week of the book; behaviour counts that week from flat (Σ\|w\| = 1.0). Tests `tests/test_backtest.py` (C5 continuity) and `tests/test_metrics.py` (`period_metrics`) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `src/backtest.py`, `src/metrics.py` |
+| Amendment | No (Amendment 2 C5) |
+
+### S21-14 · No Out-of-Sample return in `06_backtest.py`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | How does `06_backtest.py` make sure that no forward return realised after 2019-12-27 is computed on real data, and does `FROZEN.lock` change that? |
+| Options considered | (a) rely on the In-Sample cut of the raw files; (b) a guard on the realisation dates of every real-data path, independent of `FROZEN.lock` (chosen); (c) the same guard, lifted once `FROZEN.lock` exists |
+| Decision | (b). `refuse_oos_returns(realised_on, is_end)` (commit 0b7226a) stops the run (SystemExit, nothing written) if any forward return on real data is realised after `split.in_sample_end`, before the ledger or the engine runs. It is called on the ledger path after `forward_returns`, behind the cut of the raw files at the In-Sample end and the refusal of `--ledger-years` reaching 2019-12-27; it stays on after `FROZEN.lock` exists, since the OOS run belongs to `08_run_oos.py`. Real-data backtests refuse to run until the vault exists (Phase 2.3). The synthetic mode is not restricted |
+| Rationale | Defence in depth: a failure of the cut cannot leak an OOS return; (c) would be looser than contract 15 |
+| Evidence | Operating manual rule 3: "Before Gate 3 (`FROZEN.lock` exists and is signed), no code may read, compute or print any label, return, metric or plot for a date after 2019-12-27"; `docs/interfaces.md` contract 15: "`OOSAccessError(PermissionError)`: raised for any request touching a date after `is_end` (2019-12-27) while `FROZEN.lock` does not exist, and even then except through the explicit unlock path of `08_run_oos.py`"; §09 "An independent position-and-cash ledger … runs on three In-Sample years". Tests `tests/test_backtest_script.py: test_oos_guard_refuses_a_return_realised_after_the_in_sample_end`, `test_ledger_check_stops_before_any_oos_return_even_with_frozen_lock` (the synthetic market extends to 2020-12-31, the cut is bypassed, a `FROZEN.lock` is present: the run stops before the ledger and writes nothing; the test fails with the guard disabled) |
+| Proposed by | Eliya Allam (guard); Mattia Cervelli (independent of `FROZEN.lock`) |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
