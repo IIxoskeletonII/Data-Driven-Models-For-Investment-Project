@@ -65,7 +65,7 @@ unique, weeks without any session dropped. Weekly prices: `weekly_open[t]` = fir
 | `MOM26_1` | `ln TR(t − 1w) − ln TR(t − 26w)` |
 | `MOM52_4` | `ln TR(t − 4w) − ln TR(t − 52w)` |
 | `REV1` | `ln TR(t) − ln TR(t − 1w)` |
-| `VOL13` | sample std (`ddof=1`) of daily log returns whose end session lies in weeks t−12 … t, × √252 |
+| `VOL13` | sample std (`ddof=1`) of daily simple returns whose end session lies in weeks t−12 … t, × √252 (S22-1) |
 | `DD13` | `TR(t) / max(daily TR over the sessions of weeks t−12 … t) − 1` |
 | `BETA52` | `cov(r_i, r_SPY) / var(r_SPY)` of daily simple returns whose end session lies in weeks t−51 … t (same `ddof` in both) |
 
@@ -291,6 +291,13 @@ class ScoreModel(Protocol):          # src/contracts.py
 | `labels(as_of)` | labels (contract 6), rows with `label_end ≤ as_of` |
 | `run_walkforward(spec)` | weekly scores (contract 8) of a model spec over the In-Sample folds (contract 13); appends one row to `docs/trial_log.csv` |
 
+- Optional keyword arguments (S22-8; they keep the behaviour above): `Vault(..., *, data_dir=ROOT / "data" / "processed",
+  frames=None, cfg=None)` reads `features.csv`, `market_states.csv`, `labels.csv` (and `momentum_variants.csv`) from
+  `data_dir` unless in-memory `frames` are given; `unlock()` raises `OOSAccessError` unless `FROZEN.lock` exists and is
+  called only by `08_run_oos.py`; `run_walkforward(spec, evaluate=None, *, trial_path=...)` fills `is_sharpe` and
+  `is_mdd` only when an evaluator is passed (the engine, from Phase 2.3).
+  A spec holds only `rung`, `feature`, `author`, `kind`, `notes`, `as_of`, `end` (other keys refused); `Vault(is_end)`
+  refuses an `is_end` after `split.in_sample_end`; every failed call is logged as `refused` (S22-12).
 - This access log is separate from `oos_access_log.json`, the single-entry log written only by `08_run_oos.py` (§10),
   which CI checks.
 - Every call appends one JSON line to the access log (git-ignored under `outputs/`): UTC time, method, `as_of` or spec hash,
@@ -341,10 +348,10 @@ may refine in the phase pull request, which the other author reviews.
 | `src/backtest.py` | `forward_returns`, `run`, `BacktestResult` (re-export) | 2.1, Mattia |
 | `src/ledger.py` | `run_ledger` | 2.1, Mattia |
 | `src/metrics.py` | `performance`, `return_stats`, `behaviour`, `market`, `tbill_weekly_returns`, `period_average_rf` | 2.1, Mattia |
-| `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas` | 2.2, Eliya |
-| `src/labels.py` | `make_labels`, `walk_forward_folds` | 2.2, Eliya |
+| `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas`; helpers `weekly_index`, `last_sessions`, `raw_asset_features`, `cross_sectional_zscore` | 2.2, Eliya |
+| `src/labels.py` | `make_labels`, `walk_forward_folds`; helpers `label_end_by_week`, `assert_purged` | 2.2, Eliya |
 | `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial` | 2.2, Eliya |
-| `src/models.py` | `fit_transform_train`, `transform_test`, `M0` (2.2); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `select_m0_star_lookback` (3.1) | Eliya |
+| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `select_m0_star_lookback` (3.1) | Eliya |
 | `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.3, Eliya |
 | `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate` | 3.1, Eliya |
 | `src/plots.py` | `equity_curves`, `drawdowns`, `exposures` (with `07_evaluate.py`) | 3.2, Mattia |
