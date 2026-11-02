@@ -34,7 +34,26 @@ uv run pytest                              # tests on a synthetic fixture
 Scripts marked with a gate are implemented in that gate of the calendar and stop with `NotImplementedError` until then.
 All settings are in [config.yaml](config.yaml); each script refuses outputs built with a different configuration.
 
-Contributors install the repository's git hooks once after cloning: `uv run python tools/install_hooks.py`.
+## Contributing
+
+Team members set up a clone once:
+
+```bash
+git clone https://github.com/IIxoskeletonII/Data-Driven-Models-For-Investment-Project.git
+cd Data-Driven-Models-For-Investment-Project
+uv sync                                    # locked environment
+uv run python tools/install_hooks.py       # commit hooks + local exclusions in .git/info/exclude (safe to re-run)
+```
+
+Then place the raw data snapshot (shared privately, never committed): unzip `ddmi_raw_snapshot_2026-10-16.zip` at the
+repository root, so that `data/raw/manifest.json` exists. Check the zip first; its SHA-256 must be
+`424a7ed3d9f449b6aa2dbee4cddd7ca702b536aea0d6e3fc17003b1ad398e569`
+(`certutil -hashfile <zip> SHA256` on Windows, `shasum -a 256 <zip>` on macOS). Then run
+`uv run python 01_download_data.py`: it verifies every raw file against `data/raw/manifest.json` and
+`data/checksums.json`, downloads nothing, and rebuilds `data/processed/`.
+
+Work on one branch per subphase (`feat/<subphase>-<short-name>`) and open a pull request; `main` changes only through
+reviewed pull requests with green CI. Run `uv run ruff check .` and `uv run pytest -q` before every commit.
 
 ## Reproduction
 
