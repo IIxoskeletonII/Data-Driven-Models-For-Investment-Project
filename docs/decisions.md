@@ -374,6 +374,21 @@ request that implements Session 2.2.
 | Files affected | none (schedule) |
 | Amendment | No: the gate calendar and the hard stops are in the protocol (§15), not in the pre-registration |
 
+### S22-11 · Winsorising level of the continuous states (Amendment 3, C8)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | §06 requires winsorising inside each training fold but states no level; neither the protocol nor `config.yaml` sets one. Which level does the pipeline use? |
+| Options considered | (a) Amendment 3 fixing the 1st/99th percentiles, with the key `features.winsor_quantiles` in `config.yaml` (separate shared pull request); (b) leave the pipeline unimplemented until Phase 3.1; (c) implement 1st/99th from the session prompt without an amendment |
+| Decision | (a). Amendment 3, C8: bounds at the 1st and 99th percentiles of the distinct training weeks, then standardisation with the mean and `ddof=1` standard deviation of the winsorised training values (S22-6). Percentiles use NumPy's default linear interpolation (`numpy.nanquantile`). `config.yaml` gains `features.winsor_quantiles: [0.01, 0.99]` in its own small pull request; `src/models.py` reads it and fails with a clear message if it is missing |
+| Rationale | (c) would add a threshold that is not pre-registered (manual rule 4); (b) would delay M1–M3, which reuse the pipeline. A 1/99 clip limits the influence of the 2008 and 2020 variance spikes on a fold's scaling without changing the ranking within the bulk of the distribution |
+| Evidence | §06 constraints: "Scaling and winsorising fitted inside each training fold"; operating manual §3.4: "Features, thresholds, grids, costs, the split and the selection rule come from `docs/preregistration.md` via `config.yaml`. Don't add, remove or retune anything that isn't pre-registered."; session 2.2 prompt §4.1: "winsorise (1st/99th percentile) and standardise the market states using the training rows only"; `grep -i winsor` over the protocol v4.1 finds only line 251 (the §06 constraint), with no level |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (chose option (a), 2 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `docs/preregistration.md` (Amendment 3), `config.yaml` (`features.winsor_quantiles`), `src/models.py`, `tests/test_models.py` |
+| Amendment | Yes: Amendment 3, C8 |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
