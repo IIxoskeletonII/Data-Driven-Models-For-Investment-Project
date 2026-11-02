@@ -25,7 +25,7 @@ from src.contracts import (
     validate_scores,
 )
 from src.labels import assert_purged, label_end_by_week, walk_forward_folds
-from src.models import M0
+from src.models import M0, walkforward_settings
 
 TRIAL_COLUMNS = ["trial_id", "timestamp", "author", "kind", "rung", "spec_hash", "params_json", "is_sharpe", "is_mdd",
                  "notes"]
@@ -52,9 +52,12 @@ def _spec_json(spec: Mapping[str, object]) -> str:
     return json.dumps(dict(spec), sort_keys=True, separators=(",", ":"), default=str)
 
 
-def spec_hash(spec: Mapping[str, object]) -> str:
-    """SHA-256 (hex) of a model spec's canonical JSON (sorted keys, no spaces): the trial log's spec_hash (S22-8)."""
-    return hashlib.sha256(_spec_json(spec).encode("utf-8")).hexdigest()
+def spec_hash(spec: Mapping[str, object], cfg: dict) -> str:
+    """The trial log's spec_hash (S23-6): SHA-256 (hex) of the canonical JSON (sorted keys, no spaces) of
+    {"config": walkforward_settings(cfg), "spec": spec}. The config sections that determine the scores are part of the
+    trial's identity, so the same spec under a changed config is a new trial.
+    """
+    return hashlib.sha256(_spec_json({"config": walkforward_settings(cfg), "spec": dict(spec)}).encode("utf-8")).hexdigest()
 
 
 def _read_frame(name: str, path: Path) -> pd.DataFrame:
@@ -271,7 +274,8 @@ class Vault:
                         *, trial_path: Path = ROOT / "docs" / "trial_log.csv") -> pd.DataFrame:
         """Weekly scores (contract 8) of a model spec over the In-Sample walk-forward folds (contract 13); appends one row
         to the trial log (docs/trial_log.csv) unless a row with the same spec_hash is already there (S23-2: one row per
-        distinct configuration, so a rerun does not count as a new trial).
+        distinct configuration, so a rerun does not count as a new trial). spec_hash covers the spec and the config
+        sections walkforward_settings(cfg) (S23-6); params_json is the spec's canonical JSON.
 
         spec: {"rung": "M0" (others: Phase 3.1), "feature": default models.M0.feature (MOM26_1), optional "author",
         "kind" ("human"/"agent"), "notes", "as_of", "end"}; any other key is refused (ValueError), and a spec "as_of" or
@@ -280,10 +284,10 @@ class Vault:
         close t. evaluate(scores) -> (In-Sample net Sharpe, max drawdown) fills is_sharpe and is_mdd (S22-8).
         """
         params_json = _spec_json(spec)
-        digest = spec_hash(spec)
+        cfg = load_config() if self._cfg is None else self._cfg
+        digest = spec_hash(spec, cfg)
         try:
             rung = self._check_spec(spec)
-            cfg = load_config() if self._cfg is None else self._cfg
             feature = str(spec.get("feature") or cfg["models"]["M0"]["feature"])
             scores = self._walkforward_scores(feature, cfg)
             validate_scores(scores)

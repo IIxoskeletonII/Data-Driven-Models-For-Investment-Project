@@ -1,2 +1,2 @@
 trial_id,timestamp,author,kind,rung,spec_hash,params_json,is_sharpe,is_mdd,notes
-1,2026-11-02T15:56:31+00:00,Eliya Allam,human,M0,dc69863a7f317b64589752eaa327591917f73fe5a5010e565d15d63f24cf806c,"{""author"":""Eliya Allam"",""feature"":""MOM26_1"",""kind"":""human"",""notes"":""M0 In-Sample walk-forward (Phase 2.3a)"",""rung"":""M0""}",,,M0 In-Sample walk-forward (Phase 2.3a)
+1,2026-11-02T16:12:34+00:00,Eliya Allam,human,M0,6ce1693e508528a6bf2eceacd3fb5e5318d234f84b5c087c5159c146405d420c,"{""author"":""Eliya Allam"",""feature"":""MOM26_1"",""kind"":""human"",""notes"":""M0 In-Sample walk-forward (Phase 2.3a)"",""rung"":""M0""}",,,M0 In-Sample walk-forward (Phase 2.3a)

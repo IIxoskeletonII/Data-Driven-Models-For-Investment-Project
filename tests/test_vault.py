@@ -4,6 +4,7 @@ Every test uses a temporary lock file, access log and trial log, and in-memory f
 business-day calendar 2001-2020 (no real data). Nothing touches FROZEN.lock, outputs/ or docs/trial_log.csv.
 """
 
+import copy
 import csv
 import hashlib
 import json
@@ -16,6 +17,7 @@ import pytest
 from src import contracts
 from src.config import load_config
 from src.data import write_csv
+from src.models import walkforward_settings
 from src.vault import OOSAccessError, Vault, append_trial, logged_spec_hashes
 from src.vault import spec_hash as vault_spec_hash
 
@@ -95,9 +97,11 @@ def trial_rows(path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def spec_hash(spec: dict) -> tuple[str, str]:
+def spec_hash(spec: dict, cfg: dict = CFG) -> tuple[str, str]:
+    """(trial hash over the spec and the config sections (S23-6), params_json = the spec's canonical JSON)."""
     text = json.dumps(spec, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(text.encode("utf-8")).hexdigest(), text
+    keyed = json.dumps({"config": walkforward_settings(cfg), "spec": spec}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(keyed.encode("utf-8")).hexdigest(), text
 
 
 def closes_of(frame: pd.DataFrame) -> pd.DatetimeIndex:
@@ -354,8 +358,38 @@ def test_logged_spec_hashes_reads_the_trial_log(tmp_path):
 
 def test_public_spec_hash_matches_the_trial_log_hash():
     spec = {"rung": "M0", "feature": "MOM26_1", "notes": "x"}
-    assert vault_spec_hash(spec) == spec_hash(spec)[0]
-    assert vault_spec_hash(dict(reversed(list(spec.items())))) == spec_hash(spec)[0]
+    assert vault_spec_hash(spec, CFG) == spec_hash(spec)[0]
+    assert vault_spec_hash(dict(reversed(list(spec.items()))), CFG) == spec_hash(spec)[0]
+
+
+def test_spec_hash_covers_every_walkforward_config_section():
+    """S23-6: changing any section of walkforward_settings changes the trial identity; other sections do not."""
+    spec = {"rung": "M0"}
+    base = vault_spec_hash(spec, CFG)
+    for section in ("seed", "data", "split", "execution", "features", "models"):
+        changed = copy.deepcopy(CFG)
+        changed[section] = {"changed": True} if isinstance(CFG[section], dict) else CFG[section] + 1
+        assert vault_spec_hash(spec, changed) != base, section
+    other = copy.deepcopy(CFG)
+    other["costs"] = {"bps_baseline": 99}
+    assert vault_spec_hash(spec, other) == base
+
+
+def test_same_spec_under_a_changed_config_is_a_new_trial(tmp_path):
+    """S23-6: a rerun with an identical spec but a changed walk-forward config section appends a second row."""
+    frames = {name: frame.copy() for name, frame in FRAMES.items()}
+    trials, log = tmp_path / "trials.csv", tmp_path / "log.jsonl"
+    spec = {"rung": "M0"}
+    Vault(IS_END, lock_path=tmp_path / "FROZEN.lock", log_path=log, frames=frames, cfg=CFG).run_walkforward(
+        spec, trial_path=trials)
+    changed = copy.deepcopy(CFG)
+    changed["seed"] = CFG["seed"] + 1
+    Vault(IS_END, lock_path=tmp_path / "FROZEN.lock", log_path=log, frames=frames, cfg=changed).run_walkforward(
+        spec, trial_path=trials)
+    rows = trial_rows(trials)
+    assert [row["trial_id"] for row in rows] == ["1", "2"]
+    assert rows[0]["spec_hash"] == spec_hash(spec)[0] and rows[1]["spec_hash"] == spec_hash(spec, changed)[0]
+    assert rows[0]["params_json"] == rows[1]["params_json"] == spec_hash(spec)[1]
 
 
 @pytest.mark.parametrize("key", ["as_of", "end"])

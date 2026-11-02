@@ -3,12 +3,12 @@
 
 Phase 2.3a (Eliya): only M0 (rank on MOM26_1, the hurdle); M1-M3, ENS and M0* in Phase 3.1. Every model and label
 access goes through src/vault.py, which refuses any date after the In-Sample end (2019-12-27); every fit asserts the
-purge. No performance metric is computed here (06_backtest.py, Phase 2.3b). Decisions S23-2, S23-3, S23-5.
+purge. No performance metric is computed here (06_backtest.py, Phase 2.3b). Decisions S23-2, S23-3, S23-5, S23-6.
 
 Inputs:  data/processed/features.csv, market_states.csv, labels.csv, momentum_variants.csv (03_build_features.py),
          data/processed/features_config.yaml (check_used)
 Outputs: outputs/walkforward/<rung>/scores.csv (contract 8: weekly scores of the test weeks, known after Friday close t),
-         used.yaml (config sections seed, data, split, features, models; check_used), summary.json (counts, dates, column sums, min, max, fixed spot values, SHA-256);
+         used.yaml (config sections seed, data, split, execution, features, models; check_used), summary.json (counts, dates, column sums, min, max, fixed spot values, SHA-256);
          one row in docs/trial_log.csv for a new spec (S23-2). Two runs give identical files.
 """
 
@@ -37,7 +37,7 @@ FEATURES_CONFIG_NAME = "features_config.yaml"
 
 
 def model_spec(rung: str, cfg: dict) -> dict:
-    """The spec of a rung's walk-forward trial (S23-3); its SHA-256 is the trial log's spec_hash."""
+    """The spec of a rung's walk-forward trial (S23-3); with the config it gives the trial log's spec_hash (S23-6)."""
     if rung != "M0":
         raise NotImplementedError("Phase 3.1, Eliya")
     return {"rung": "M0", "feature": cfg["models"]["M0"]["feature"], "author": AUTHOR, "kind": "human",
@@ -125,7 +125,7 @@ def run(rung: str, cfg: dict, *, data_dir: Path, out_dir: Path, trial_path: Path
     scores = scores[list(universe(cfg).sectors)]
     write_csv(scores, out_dir / "scores.csv")
     save_used(walkforward_settings(cfg), out_dir / "used.yaml")
-    summary = summarise(scores, rung=rung, digest=spec_hash(spec), refits=len(folds),
+    summary = summarise(scores, rung=rung, digest=spec_hash(spec, cfg), refits=len(folds),
                         scores_sha256=sha256(out_dir / "scores.csv"), spots=spots)
     _write_json(summary, out_dir / "summary.json")
     return summary

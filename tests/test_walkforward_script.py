@@ -109,8 +109,11 @@ def read_trials(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def spec_hash(spec: dict) -> str:
-    return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+def spec_hash(spec: dict, cfg: dict) -> str:
+    """Trial hash of S23-6: canonical JSON of the spec and the walk-forward config sections."""
+    keyed = {"config": {key: cfg[key] for key in ("seed", "data", "split", "execution", "features", "models")},
+             "spec": spec}
+    return hashlib.sha256(json.dumps(keyed, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------- constants, spec and settings
@@ -134,10 +137,11 @@ def test_model_spec_of_other_rungs_is_not_implemented(script, rung):
 
 
 def test_walkforward_settings_are_exactly_the_agreed_config_sections():
-    """S23-5: used.yaml holds exactly {seed, data, split, features, models}, each the whole config section."""
+    """S23-5, S23-6: used.yaml holds exactly {seed, data, split, execution, features, models}, whole sections."""
+    sections = ("seed", "data", "split", "execution", "features", "models")
     settings = models.walkforward_settings(CFG)
-    assert set(settings) == {"seed", "data", "split", "features", "models"}
-    assert settings == {key: CFG[key] for key in ("seed", "data", "split", "features", "models")}
+    assert set(settings) == set(sections)
+    assert settings == {key: CFG[key] for key in sections}
 
 
 def test_walkforward_settings_changes_with_the_split():
@@ -219,7 +223,7 @@ def test_run_summary_spots_match_the_scores(built):
 
 
 def test_run_summary_spec_hash_is_the_canonical_json_hash(script, built):
-    assert built["summary"]["spec_hash"] == spec_hash(script.model_spec("M0", SYN_CFG))
+    assert built["summary"]["spec_hash"] == spec_hash(script.model_spec("M0", SYN_CFG), SYN_CFG)
 
 
 def test_run_summary_has_exactly_the_listed_keys_and_no_timestamp(built):
@@ -240,7 +244,7 @@ def test_run_used_yaml_is_the_walkforward_settings(built):
     used = built["where"]["out_dir"] / "used.yaml"
     check_used(models.walkforward_settings(SYN_CFG), used, "05_train_walkforward.py")
     with open(used, encoding="utf-8") as f:
-        assert set(yaml.safe_load(f)) == {"seed", "data", "split", "features", "models"}
+        assert set(yaml.safe_load(f)) == {"seed", "data", "split", "execution", "features", "models"}
 
 
 def test_run_logs_one_trial_row(built):

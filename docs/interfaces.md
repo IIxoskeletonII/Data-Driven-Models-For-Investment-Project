@@ -314,10 +314,14 @@ class ScoreModel(Protocol):          # src/contracts.py
   on In-Sample data, by a human or an agent, is one row; the count feeds the Deflated Sharpe Ratio (§10, §11).
 - One row per distinct configuration (S23-2): `run_walkforward` appends its row only when no row with the same
   `spec_hash` exists (`logged_spec_hashes(path)`); a rerun of an identical spec returns the scores and is logged `ok`
-  but adds no trial. `spec_hash(spec)` is the SHA-256 of the spec's canonical JSON (sorted keys, no spaces).
+  but adds no trial. `spec_hash(spec, cfg)` is the SHA-256 of the canonical JSON (sorted keys, no spaces) of
+  `{"config": walkforward_settings(cfg), "spec": spec}`, so the same spec under a changed walk-forward config is a new
+  trial (S23-6); `params_json` is the spec's canonical JSON. `is_sharpe` and `is_mdd` stay empty until the selection step
+  of Phase 3.1 fills them from the outputs of `06_backtest.py` (S23-6).
 - Walk-forward outputs (S23-3): `05_train_walkforward.py --model M0` writes `outputs/walkforward/<rung>/scores.csv`
   (contract 8, the test weeks of contract 13), `used.yaml` = `src.models.walkforward_settings(cfg)` = exactly the config
-  sections `{seed, data, split, features, models}` (S23-5), which `06_backtest.py` checks with `check_used`, and `summary.json`
+  sections `{seed, data, split, execution, features, models}` (S23-5, S23-6), which `06_backtest.py` checks with
+  `check_used`, and `summary.json`
   (counts, first and last week, column sums, min, max, fixed spot values, `scores_sha256`; no timestamp).
 - Agents reach the vault only through the MCP server `ddmi-vault` (`src/agents/vault_server.py`, protocol section 08)
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
