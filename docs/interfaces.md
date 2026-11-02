@@ -116,6 +116,12 @@ unique, weeks without any session dropped. Weekly prices: `weekly_open[t]` = fir
   unless the Monday of week t+2 is a holiday.
 - Purging (§05): a model fitted at cutoff c uses only rows with `label_end ≤ c − embargo` (contract 13). Every fit asserts it.
 - Validator: `validate_labels`.
+- File (S23-1): `03_build_features.py` writes `data/processed/labels.csv` (git-ignored; checksum in
+  `data/checksums_features.json`) from `forward_returns` on the adjusted daily opens truncated at the In-Sample end, so it
+  holds only rows with `label_end ≤ 2019-12-27`; the last label week is the one ending 2019-12-13 (`label_end` 2019-12-23).
+  `03_build_features.py: build_labels(daily_open, daily_close, is_end)` builds it; its writer refuses a later `label_end`
+  while the vault is sealed. `src.features.features_settings(cfg)` = `{data, features, execution, in_sample_end}` is saved as
+  `data/processed/features_config.yaml` for `check_used`.
 
 ## 7. Forward returns, `realised_on`, `period` (§05, §10)
 
@@ -289,11 +295,12 @@ class ScoreModel(Protocol):          # src/contracts.py
 | `features(as_of)` | asset features (contract 3), rows with `date_close ≤ as_of` |
 | `market_states(as_of)` | market states (contract 4), rows with `date_close ≤ as_of` |
 | `labels(as_of)` | labels (contract 6), rows with `label_end ≤ as_of` |
+| `sizing_betas(as_of)` | sizing betas (contract 10), rows with `date_close ≤ as_of` (S23-4) |
 | `run_walkforward(spec)` | weekly scores (contract 8) of a model spec over the In-Sample folds (contract 13); appends one row to `docs/trial_log.csv` |
 
 - Optional keyword arguments (S22-8; they keep the behaviour above): `Vault(..., *, data_dir=ROOT / "data" / "processed",
-  frames=None, cfg=None)` reads `features.csv`, `market_states.csv`, `labels.csv` (and `momentum_variants.csv`) from
-  `data_dir` unless in-memory `frames` are given; `unlock()` raises `OOSAccessError` unless `FROZEN.lock` exists and is
+  frames=None, cfg=None)` reads `features.csv`, `market_states.csv`, `labels.csv` (and `momentum_variants.csv`,
+  `sizing_betas.csv`) from `data_dir` unless in-memory `frames` are given; `unlock()` raises `OOSAccessError` unless `FROZEN.lock` exists and is
   called only by `08_run_oos.py`; `run_walkforward(spec, evaluate=None, *, trial_path=...)` fills `is_sharpe` and
   `is_mdd` only when an evaluator is passed (the engine, from Phase 2.3).
   A spec holds only `rung`, `feature`, `author`, `kind`, `notes`, `as_of`, `end` (other keys refused); `Vault(is_end)`
@@ -305,6 +312,13 @@ class ScoreModel(Protocol):          # src/contracts.py
 - `append_trial(row, path=ROOT / "docs" / "trial_log.csv")` appends one trial with the columns of `docs/data_dictionary.md`:
   `trial_id, timestamp, author, kind, rung, spec_hash, params_json, is_sharpe, is_mdd, notes`. Every configuration evaluated
   on In-Sample data, by a human or an agent, is one row; the count feeds the Deflated Sharpe Ratio (§10, §11).
+- One row per distinct configuration (S23-2): `run_walkforward` appends its row only when no row with the same
+  `spec_hash` exists (`logged_spec_hashes(path)`); a rerun of an identical spec returns the scores and is logged `ok`
+  but adds no trial. `spec_hash(spec)` is the SHA-256 of the spec's canonical JSON (sorted keys, no spaces).
+- Walk-forward outputs (S23-3): `05_train_walkforward.py --model M0` writes `outputs/walkforward/<rung>/scores.csv`
+  (contract 8, the test weeks of contract 13), `used.yaml` = `src.models.walkforward_settings(cfg)` = exactly the config
+  sections `{seed, data, split, features, models}` (S23-5), which `06_backtest.py` checks with `check_used`, and `summary.json`
+  (counts, first and last week, column sums, min, max, fixed spot values, `scores_sha256`; no timestamp).
 - Agents reach the vault only through the MCP server `ddmi-vault` (`src/agents/vault_server.py`, protocol section 08)
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
   show sectors as anonymised codes A1 … A9 and return summary metrics, never price series.
@@ -350,10 +364,10 @@ may refine in the phase pull request, which the other author reviews.
 | `src/backtest.py` | `forward_returns`, `run`, `BacktestResult` (re-export) | 2.1, Mattia |
 | `src/ledger.py` | `run_ledger` | 2.1, Mattia |
 | `src/metrics.py` | `performance`, `return_stats`, `behaviour`, `market`, `tbill_weekly_returns`, `period_average_rf` | 2.1, Mattia |
-| `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas`; helpers `weekly_index`, `last_sessions`, `raw_asset_features`, `cross_sectional_zscore` | 2.2, Eliya |
+| `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas`; helpers `weekly_index`, `last_sessions`, `raw_asset_features`, `cross_sectional_zscore`; `features_settings` (2.3a) | 2.2, Eliya |
 | `src/labels.py` | `make_labels`, `walk_forward_folds`; helpers `label_end_by_week`, `assert_purged` | 2.2, Eliya |
-| `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial` | 2.2, Eliya |
-| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `select_m0_star_lookback` (3.1) | Eliya |
+| `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a) | 2.2, Eliya |
+| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `select_m0_star_lookback` (3.1) | Eliya |
 | `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.3, Eliya |
 | `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate` | 3.1, Eliya |
 | `src/plots.py` | `equity_curves`, `drawdowns`, `exposures` (with `07_evaluate.py`) | 3.2, Mattia |
