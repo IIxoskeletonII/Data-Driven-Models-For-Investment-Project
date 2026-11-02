@@ -22,7 +22,7 @@ Headline: A fixed ETF universe, adjusted prices and lagged macro states provide 
 - Use adjusted OHLC data, VIX and FRED DGS3MO, DGS10 and BAA10Y. [prereg §04]
 - Show warm-up through 2002, In-Sample through 27 December 2019 and OOS from 30 December 2019 to the data end. [prereg §10]
 - Explain total-return adjustment, split/dividend QA and licensing boundaries. [protocol §04, §12]
-- State that market states enter lagged one equity session. [Amendment 1; interfaces §1, §4]
+- State that market states enter lagged one equity session. [Amendment 1; interfaces, contract 1, contract 4]
 
 Figure/table: coverage, missingness and adjustment QA table from `02_validate_data.py` and `docs/qa_report.md`; no strategy results. [protocol §04, §12]
 
@@ -37,7 +37,7 @@ Headline: Friday-close information is executed at the next session open and eval
 - Explain purging and the one-week embargo at every walk-forward boundary. [prereg §05, §10]
 - Separate In-Sample selection from the single frozen OOS run. [prereg §10]
 
-Figure/table: event-clock timeline and fold diagram from `05_train_walkforward.py` and `docs/interfaces.md`; no OOS result values. [interfaces §6, §13]
+Figure/table: event-clock timeline and fold diagram from `05_train_walkforward.py` and `docs/interfaces.md`; no OOS result values. [interfaces, contract 6, contract 13]
 
 Presenter: `[owner placeholder]`. Course requirement: execution timing and no lookahead. [instructions, Evaluation Framework]
 
@@ -74,7 +74,9 @@ Headline: The strategy selects the top two and bottom two sectors, then uses a c
 
 - Sort scores descending and break exact ties alphabetically by ticker. [prereg §09]
 - Assign `+1` to ranks 1–2, `−1` to the two lowest ranks and `0` otherwise. [prereg §09]
-- Explain the dollar-neutral core, beta hedge, cap, dead-band and discrete IVV signal. [prereg §09]
+- Core weight is `0.25` per name; the beta hedge is `h = clip(−β_c/β̂_IVV, −0.5, 0.5)`. [prereg §09]
+- The IVV signal is `0` when the final IVV weight is below 2% of capital, `|h|/(1+|h|) < 0.02`; all weights are divided by `(1+|h|)`. [Amendment 2 C2; prereg §09]
+- The book is 100% gross with no leverage. [prereg §09]
 - State baseline 10 bps trading cost, 2% annual borrow and the 5/20 bps and 1%/5% stress cases. [prereg §09]
 
 Figure/table: signal-to-weight worked schematic and cost bridge from `06_backtest.py` and `07_evaluate.py`; exact result values are placeholders until outputs are committed. [prereg §09, §11]
@@ -100,8 +102,8 @@ Presenter: `[owner placeholder]`. Course requirement: pitfall analysis and evalu
 Headline: The results compare the selected system with matched M0 and fixed benchmarks on identical period axes. [prereg §07, §11]
 
 - Show In-Sample and OOS equity curves starting at 100 on shared dated log axes. [prereg §11]
-- Report net-of-cost metrics, both Sharpe conventions, drawdown and rank IC. [prereg §09, §11]
-- Compare with T-bill, matched M0, equal-weight sectors and SPY context. [prereg §11]
+- Report net-of-cost metrics, both Sharpe conventions, drawdown and rank IC. The risk-free rate is the weekly FRED 3-month T-bill (`DGS3MO`) with its period average, alongside the skeleton's constant 2%; no cash interest is credited. The skeleton convention (minus rf) is the headline Sharpe, with the zero-cost convention also shown. [prereg §09, §11]
+- Compare with the T-bill as the primary benchmark for a hedged, dollar-neutral book, plus matched M0, equal-weight sectors and SPY context. Add the placebo benchmark: 1,000 random ±2/±2 portfolios, the same hedge rule and fixed seeds. [prereg §11]
 - Show gross → after-costs → after-borrow decomposition. [prereg §11]
 
 Figure/table: equity curves and metrics from `07_evaluate.py`; all numeric cells are `TBD (Gate 3)` or `TBD (Gate 4)` until committed outputs exist. [protocol §16]
@@ -115,7 +117,8 @@ Headline: Robustness is assessed through costs, regimes, selection-bias diagnost
 - Show optimistic, baseline and adverse cost/borrow scenarios. [prereg §09]
 - Show bull/bear, VIX, rates and crisis-window cuts. [prereg §11]
 - Report DSR with the full trial count, PBO as an auxiliary diagnostic and the paired bootstrap. [prereg §10, §11]
-- Test OOS beta, correlation, down-market means and consistency over time. [prereg §11]
+- Market-neutral bonus thresholds: `|β| < 0.10` with a 95% HAC interval containing 0; `|ρ| < 0.20`; mean return in SPY-down weeks > 0 with a bootstrap interval, and the same for down months; and consistency measured by OOS mean weekly return > 0, the share of positive rolling 52-week windows and the return in each OOS year. [prereg §11]
+- Secondary bonus: higher Sharpe and lower max drawdown than SPY, tested with Ledoit–Wolf (2008). We claim at most one bonus point; market-neutral is the primary target. [prereg §11]
 
 Figure/table: regime and cost panels, DSR/PBO summary and bonus-test table from `07_evaluate.py`, `src/stats.py` and `docs/trial_log.csv`; result cells are placeholders until Gate 4. [prereg §11]
 
@@ -160,7 +163,7 @@ Presenter: `[owner placeholder]`. Course requirement: conclusion, weaknesses, co
 - Formula sheet: label, forward return, hedge, weights, turnover, costs and borrow. [prereg §05, §09]
 - Cost bridge: gross, after trading costs, after borrow, with stress cases. [prereg §09, §11]
 - Regime cuts: bull/bear, VIX, rates and crisis windows. [prereg §11]
-- Agent-lab trial log: proposals, approvals, rejections, hashes, budget and DSR count. [protocol §08; interfaces §15]
+- Agent-lab trial log: proposals, approvals, rejections, hashes, budget and DSR count. [protocol §08; interfaces, contract 15]
 - Leakage audit: timestamp checks, lag tests, purge assertions, vault refusal and OOS access log. [protocol §10, §12]
 - Parameter neighbourhood: fixed ridge and LightGBM grids, M0* lookbacks and sensitivity settings. [prereg §07, §09]
 - Q&A prompts: momentum persistence; ranking versus scale; sparse BEAR24; IVV versus SPY; no collateral interest; dropped news; agent knowledge; trial count; dollar-neutral versus market-neutral; failure to beat M0; effective sample size; T-bill benchmark. [protocol §16]
