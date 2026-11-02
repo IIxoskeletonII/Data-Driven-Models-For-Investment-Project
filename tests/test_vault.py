@@ -16,11 +16,13 @@ import pytest
 from src import contracts
 from src.config import load_config
 from src.data import write_csv
-from src.vault import OOSAccessError, Vault, append_trial
+from src.vault import OOSAccessError, Vault, append_trial, logged_spec_hashes
+from src.vault import spec_hash as vault_spec_hash
 
 CFG = load_config()
 UNIVERSE = contracts.universe(CFG)
 SECTORS = list(UNIVERSE.sectors)
+TRADED = list(UNIVERSE.traded)
 ASSET = list(CFG["features"]["asset"])
 STATES = list(CFG["features"]["states"])
 VARIANTS = [f"MOM{lookback}_1" for lookback in CFG["models"]["M0_star"]["lookback_weeks"]]
@@ -37,7 +39,7 @@ def ts(day) -> pd.Timestamp:
 
 
 def build_frames() -> dict[str, pd.DataFrame]:
-    """Features, market states, labels and momentum variants (contracts 3, 4, 6) on weeks 2001-2020."""
+    """Features, market states, labels, momentum variants and sizing betas (contracts 3, 4, 6, 10) on weeks 2001-2020."""
     sessions = pd.bdate_range("2001-01-01", "2020-12-31").difference(pd.DatetimeIndex(HOLIDAYS))
     fridays = pd.DatetimeIndex(np.unique((sessions + pd.to_timedelta(4 - sessions.day_of_week, unit="D")).values))
     weeks = pd.MultiIndex.from_arrays([fridays - 4 * DAY, fridays], names=["date_open", "date_close"])
@@ -63,8 +65,12 @@ def build_frames() -> dict[str, pd.DataFrame]:
     contracts.validate_features(features)
     contracts.validate_features(variants, columns=VARIANTS)
     contracts.validate_market_states(states)
+    betas = pd.DataFrame(rng.uniform(0.5, 1.5, (len(weeks), len(TRADED))), index=weeks, columns=TRADED)
+    betas.iloc[:52] = np.nan  # BETA52 warm-up
     contracts.validate_labels(labels)
-    return {"features": features, "market_states": states, "labels": labels, "momentum_variants": variants}
+    contracts.validate_betas(betas)
+    return {"features": features, "market_states": states, "labels": labels, "momentum_variants": variants,
+            "sizing_betas": betas}
 
 
 FRAMES = build_frames()
@@ -209,6 +215,69 @@ def test_vault_reads_csv_files_from_data_dir(tmp_path):
                                FRAMES["market_states"][closes_of(FRAMES["market_states"]) <= as_of].to_numpy(), rtol=1e-15)
 
 
+# ---------------------------------------------------------------- sizing betas (S23-4)
+
+
+def test_sizing_betas_returns_rows_up_to_as_of_and_logs_ok(env):
+    vault, paths = env
+    as_of = ts("2015-06-05")
+    got = vault.sizing_betas(as_of)
+    contracts.validate_betas(got)
+    expected = FRAMES["sizing_betas"][closes_of(FRAMES["sizing_betas"]) <= as_of]
+    pd.testing.assert_frame_equal(got, expected, check_exact=True)
+    last = log_lines(paths["log"])[-1]
+    assert (last["method"], last["as_of"], last["result"]) == ("sizing_betas", "2015-06-05", "ok")
+
+
+def test_sizing_betas_at_the_in_sample_end_stops_there(env):
+    vault, _ = env
+    assert closes_of(vault.sizing_betas(IS_END)).max() == IS_END
+
+
+@pytest.mark.parametrize("day", ["2019-12-28", "2019-12-30", "2020-01-03", "2026-10-16"])
+def test_sizing_betas_after_the_in_sample_end_is_refused_and_logged(env, day):
+    vault, paths = env
+    with pytest.raises(OOSAccessError):
+        vault.sizing_betas(ts(day))
+    last = log_lines(paths["log"])[-1]
+    assert (last["method"], last["as_of"], last["result"]) == ("sizing_betas", day, "refused")
+
+
+def test_sizing_betas_after_the_in_sample_end_is_refused_with_the_lock_but_without_unlock(env):
+    vault, paths = env
+    paths["lock"].write_text("signed\n", encoding="utf-8")
+    with pytest.raises(OOSAccessError):
+        vault.sizing_betas(ts("2020-01-03"))
+
+
+def test_sizing_betas_open_after_lock_and_unlock(env):
+    vault, paths = env
+    paths["lock"].write_text("signed\n", encoding="utf-8")
+    vault.unlock()
+    assert closes_of(vault.sizing_betas(ts("2020-06-26"))).max() == ts("2020-06-26")
+
+
+def test_sizing_betas_failing_validation_is_refused_and_logged(tmp_path):
+    frames = {name: frame.copy() for name, frame in FRAMES.items()}
+    frames["sizing_betas"] = frames["sizing_betas"].drop(columns=["IVV"])
+    log = tmp_path / "log.jsonl"
+    vault = Vault(IS_END, lock_path=tmp_path / "FROZEN.lock", log_path=log, frames=frames, cfg=CFG)
+    with pytest.raises(contracts.ContractError):
+        vault.sizing_betas(ts("2015-06-05"))
+    assert log_lines(log)[-1]["result"] == "refused"
+
+
+def test_sizing_betas_read_from_csv_in_data_dir(tmp_path):
+    data_dir = tmp_path / "processed"
+    write_csv(FRAMES["sizing_betas"], data_dir / "sizing_betas.csv")
+    vault = Vault(IS_END, lock_path=tmp_path / "FROZEN.lock", log_path=tmp_path / "log.jsonl", data_dir=data_dir, cfg=CFG)
+    got = vault.sizing_betas(ts("2012-03-09"))
+    expected = FRAMES["sizing_betas"][closes_of(FRAMES["sizing_betas"]) <= ts("2012-03-09")]
+    assert list(got.index) == list(expected.index)
+    assert all(got[column].dtype == np.float64 for column in TRADED)
+    np.testing.assert_array_equal(got.to_numpy(), expected.to_numpy())
+
+
 # ---------------------------------------------------------------- run_walkforward and the trial log
 
 
@@ -257,6 +326,36 @@ def test_run_walkforward_momentum_variant_and_evaluator(env):
     assert float(rows[0]["is_sharpe"]) == 0.75 and float(rows[0]["is_mdd"]) == -0.125
     assert rows[0]["author"] == "Eliya" and rows[0]["kind"] == "human" and rows[0]["notes"] == "variant check"
     assert rows[0]["spec_hash"] == spec_hash(spec)[0]
+
+
+def test_rerun_of_the_same_spec_adds_no_trial_row(env):
+    """S23-2: one trial row per distinct spec_hash; the rerun still returns identical scores and is logged ok."""
+    vault, paths = env
+    spec = {"rung": "M0", "author": "Eliya", "kind": "human", "notes": "first"}
+    first = vault.run_walkforward(spec, trial_path=paths["trials"])
+    second = vault.run_walkforward(dict(reversed(list(spec.items()))), trial_path=paths["trials"])
+    pd.testing.assert_frame_equal(first, second, check_exact=True)
+    assert len(trial_rows(paths["trials"])) == 1
+    last = log_lines(paths["log"])[-1]
+    assert last["method"] == "run_walkforward" and last["result"] == "ok" and last["spec_hash"] == spec_hash(spec)[0]
+    vault.run_walkforward(spec | {"notes": "second"}, trial_path=paths["trials"])
+    rows = trial_rows(paths["trials"])
+    assert [row["trial_id"] for row in rows] == ["1", "2"]
+    assert [row["notes"] for row in rows] == ["first", "second"]
+
+
+def test_logged_spec_hashes_reads_the_trial_log(tmp_path):
+    path = tmp_path / "trials.csv"
+    assert logged_spec_hashes(path) == set()
+    append_trial({"rung": "M0", "spec_hash": "abc"}, path=path)
+    append_trial({"rung": "M0", "spec_hash": "def"}, path=path)
+    assert logged_spec_hashes(path) == {"abc", "def"}
+
+
+def test_public_spec_hash_matches_the_trial_log_hash():
+    spec = {"rung": "M0", "feature": "MOM26_1", "notes": "x"}
+    assert vault_spec_hash(spec) == spec_hash(spec)[0]
+    assert vault_spec_hash(dict(reversed(list(spec.items())))) == spec_hash(spec)[0]
 
 
 @pytest.mark.parametrize("key", ["as_of", "end"])
