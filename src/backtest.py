@@ -10,7 +10,6 @@ import pandas as pd
 
 from src.config import load_config
 from src.contracts import (
-    TOLERANCE,
     BacktestResult,
     ContractError,
     SizingResult,
@@ -18,7 +17,6 @@ from src.contracts import (
     validate_backtest_result,
     validate_forward_returns,
     validate_weekly_index,
-    validate_weights,
 )
 
 __all__ = ["BacktestResult", "forward_returns", "run"]
@@ -83,8 +81,8 @@ def run(sizing: SizingResult, fwd: pd.DataFrame, period: pd.Series, cost_bps: fl
     weights and a realised forward return for every traded ticker: one continuous book across IS and OOS
     (Amendment 2 C5).
 
-    core_weight: the per-name core weight of the sizing (signal.core_weight by default; 0.5 / k for the sensitivity
-    runs, Amendment 2 C4), used only to validate the weights.
+    core_weight: the per-name core weight of the sizing (signal.core_weight by default; core_weight_for(k) = 0.5 / k for
+    the sensitivity runs, Amendment 2 C4), passed to validate_backtest_result.
     """
     traded = list(universe().traded)
     weeks = _evaluated_weeks(sizing.weights, fwd[traded])
@@ -126,29 +124,6 @@ def run(sizing: SizingResult, fwd: pd.DataFrame, period: pd.Series, cost_bps: fl
         hedge=series(sizing.hedge.loc[weeks], "hedge"),
         period=weeks_period.astype(object).rename("period"),
     )
-    _validate(result, cost_bps, borrow_annual, core_weight)
+    validate_backtest_result(result, cost_bps=cost_bps, borrow_annual=borrow_annual, core_weight=core_weight)
     return result
 
-
-def _validate(result: BacktestResult, cost_bps: float, borrow_annual: float, core_weight: float | None) -> None:
-    """validate_backtest_result for the pre-registered core weight; for a sensitivity core weight (Amendment 2 C4),
-    whose sizes validate_backtest_result cannot check yet, the weights are validated with that core weight and the
-    accounting identities of contract 12 are checked here."""
-    default = load_config()["signal"]["core_weight"]
-    if core_weight is None or abs(core_weight - default) <= TOLERANCE:
-        validate_backtest_result(result, cost_bps=cost_bps, borrow_annual=borrow_annual)
-        return
-    validate_weights(result.weights, core_weight=core_weight)
-    w = result.weights.to_numpy()
-    hedge = result.hedge.to_numpy()
-    checks = {
-        "net = gross - costs - borrow": result.net - (result.gross - result.costs - result.borrow),
-        "costs = cost_bps / 10 000 * turnover": result.costs - cost_bps / 10_000 * result.turnover,
-        "borrow = borrow_annual * 7/365 * short gross": result.borrow - borrow_annual * 7 / 365 * np.where(w < 0, -w, 0).sum(1),
-        "net_exposure = sum of w": result.net_exposure - w.sum(axis=1),
-        "w_IVV = hedge / (1 + |hedge|)": result.weights[universe().hedge] - hedge / (1 + np.abs(hedge)),
-        "first turnover = sum of |w|": result.turnover.iloc[:1] - np.abs(w[:1]).sum(axis=1),
-    }
-    for rule, residual in checks.items():
-        if (np.abs(np.asarray(residual)) > TOLERANCE).any():
-            raise ContractError(f"backtest result: {rule} fails")

@@ -5,7 +5,7 @@ Interfaces: docs/interfaces.md, contracts 8 to 11. Rules settled by Amendment 2 
 - C2 dead-band: the hedge is set to 0 (IVV signal 0) when the IVV weight |h| / (1 + |h|) is below signal.hedge_deadband;
 - C3 missing input after the first valid week: last week's signals and target weights are carried forward (the engine
   rebalances back to them) and the event is logged; the book is flat (no row) before the first valid week;
-- C4 sensitivity k = 1 or 3: core weight 0.5 / k per name, i.e. signal.core_weight * signal.top_k / k.
+- C4 sensitivity k = 1 or 3: core weight 0.5 / k per name (src.contracts.core_weight_for).
 """
 
 import logging
@@ -14,7 +14,15 @@ import numpy as np
 import pandas as pd
 
 from src.config import load_config
-from src.contracts import SizingResult, universe, validate_betas, validate_scores, validate_signals, validate_weights
+from src.contracts import (
+    SizingResult,
+    core_weight_for,
+    universe,
+    validate_betas,
+    validate_scores,
+    validate_signals,
+    validate_weights,
+)
 
 log = logging.getLogger(__name__)
 
@@ -165,18 +173,6 @@ def target_weights(sector_signals: pd.DataFrame, betas: pd.DataFrame, core_weigh
         validate_signals(out_signals, top_k=long_count, bottom_k=short_count)
     validate_weights(weights, out_signals, core_weight=core_weight, cap=cap)
     return result
-
-
-def core_weight_for(k: int | None = None, cfg: dict | None = None) -> float:
-    """Core weight per name for k longs and k shorts (Amendment 2 C4): signal.core_weight · signal.top_k / k.
-
-    With k = signal.top_k (2) or None it is signal.core_weight (0.25); k = 1 gives 0.5 and k = 3 gives 1/6, so the core
-    stays 50% long and 50% short before the hedge scaling.
-    """
-    signal = (cfg or load_config())["signal"]
-    if k is None or k == signal["top_k"]:
-        return float(signal["core_weight"])
-    return float(signal["core_weight"]) * signal["top_k"] / k
 
 
 def size_book(scores: pd.DataFrame, betas: pd.DataFrame, cfg: dict | None = None, k: int | None = None) -> SizingResult:

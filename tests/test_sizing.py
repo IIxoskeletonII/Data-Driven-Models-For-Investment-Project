@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 
 from src.config import load_config
-from src.contracts import ContractError, validate_signals, validate_weights
-from src.sizing import core_weight_for, signals_from_scores, size_book, target_weights
+from src.contracts import ContractError, core_weight_for, validate_signals, validate_weights
+from src.sizing import signals_from_scores, size_book, target_weights
 
 CFG = load_config()
 SECTORS = list(CFG["data"]["tickers"])
