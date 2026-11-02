@@ -359,6 +359,21 @@ request that implements Session 2.2.
 | Files affected | `03_build_features.py`, `data/checksums_features.json` |
 | Amendment | No |
 
+### S22-10 · Gate 2 scope and the re-baselined calendar
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Protocol §15 lists Gate 2 (2 Nov) as including "M0 In-Sample walk-forward reproduced by the reviewer; agent planted-signal test passes", with the hard stop "If Gate 2 slips past 3 November, cut M3 first". The team manual re-baselined the calendar on 2 Nov (S2-6). What do Gate 2 and the hard stop mean now? |
+| Options considered | (a) apply §15 literally: the planted-signal test (agent lab, Phase 3.3) cannot pass by 3 Nov, so M3 is cut; (b) keep the 3 Nov trigger for Gate 2's core and move only the planted-signal test to Gate 3 |
+| Decision | (b). Gate 2 core, by the end of Tue 3 Nov: engine hand cases and ledger reconciliation pass; features, labels, folds and vault done; M0 In-Sample walk-forward reproduced by the reviewer (Mattia). If the core slips past 3 Nov, the hard stop applies as written: cut M3 first, then reduce agent candidates from ~40 to ~20. The planted-signal test moves to Gate 3 (Fri 6 Nov) and is still never cut. Re-baselined calendar: Gate 3 Fri 6 Nov, Gate 4 Sat 7 Nov, Gate 5 Wed 11 Nov (protocol §15: 5, 6 and 10 Nov). The 16 Nov submission deadline is unchanged |
+| Rationale | The hard stop protects the core, and its own text lists the validation protocol, the ledger reconciliation and the planted-signal test as never cut. The planted-signal test checks the agent lab, which M0 and Gate 2's other items do not depend on, so cutting M3 over its timing would shrink the AI ladder without protecting anything. The 3 Nov trigger is kept unchanged, so the pre-commitment stays binding |
+| Evidence | Protocol §15 table: "\| 2 \| 2 Nov \| Engine matches hand-computed cases (long, short, hedge, costs, drift); ledger reconciliation passes; M0 In-Sample walk-forward reproduced by the reviewer; agent planted-signal test passes \|"; protocol §15 "Hard stops": "The extensions are already dropped. If Gate 2 slips past 3 November, cut M3 first, then reduce agent candidates from \~40 to \~20. The validation protocol, the ledger reconciliation and the agent planted-signal test are never cut. After Gate 4, no strategy changes."; team operating manual §8 (re-baselined 2 Nov): "\| 2 \| Tue 3 Nov \| Engine verified (hand cases + ledger reconciliation); features, labels and vault done; M0 runs In-Sample walk-forward \|", "\| 3 \| Fri 6 Nov \| M1–M3, ENS, agent lab done; selection rule applied; `FROZEN.lock` signed \|", "\| 4 \| Sat 7 Nov \| `08_run_oos.py` executed once \|", "\| 5 \| Wed 11 Nov \| Slides, docs and `group_7.zip`; clean runs on macOS and Windows; rehearsal \|". `docs/preregistration.md` contains neither the gate calendar nor the hard-stop rule; it names Gate 3 (§10 vault protocol) and Gate 4 (amendment policy) only by their content, which this entry does not change |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam and Mattia Cervelli (agreed 2 Nov 2026; confirmed through Mattia's review of this pull request) |
+| Files affected | none (schedule) |
+| Amendment | No: the gate calendar and the hard stops are in the protocol (§15), not in the pre-registration |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
