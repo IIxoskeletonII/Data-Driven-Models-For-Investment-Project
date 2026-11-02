@@ -12,11 +12,6 @@ STUB_FUNCTIONS = [
     ("src.ledger", ["run_ledger"], "2.1", "Mattia"),
     ("src.metrics", ["performance", "return_stats", "behaviour", "market", "tbill_weekly_returns", "period_average_rf"],
      "2.1", "Mattia"),
-    ("src.features", ["lag_one_session", "asset_features", "momentum_variants", "market_states", "sizing_betas"],
-     "2.2", "Eliya"),
-    ("src.labels", ["make_labels", "walk_forward_folds"], "2.2", "Eliya"),
-    ("src.vault", ["append_trial"], "2.2", "Eliya"),
-    ("src.models", ["fit_transform_train", "transform_test"], "2.2", "Eliya"),
     ("src.models", ["ensemble_scores", "select_m0_star_lookback"], "3.1", "Eliya"),
     ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history"], "3.3", "Eliya"),
     ("src.agents.graph", ["build_graph", "run_lab"], "3.3", "Eliya"),
@@ -26,6 +21,15 @@ STUB_FUNCTIONS = [
 ]
 
 STUBS = [(module, name, phase, owner) for module, names, phase, owner in STUB_FUNCTIONS for name in names]
+
+# public functions implemented in their phase: they must exist, be callable and documented
+IMPLEMENTED = [
+    ("src.features", ["lag_one_session", "asset_features", "momentum_variants", "market_states", "sizing_betas"]),
+    ("src.labels", ["make_labels", "walk_forward_folds"]),
+    ("src.vault", ["append_trial"]),
+    ("src.models", ["fit_transform_train", "transform_test"]),
+]
+IMPLEMENTED_NAMES = [(module, name) for module, names in IMPLEMENTED for name in names]
 
 # classes of the table: (module, class, methods it must define)
 CLASSES = [
@@ -71,6 +75,13 @@ def test_stub_raises_with_phase_and_owner(module, name, phase, owner):
     message = str(raised.value)
     assert f"Phase {phase}" in message, message
     assert owner in message, message
+
+
+@pytest.mark.parametrize("module,name", IMPLEMENTED_NAMES, ids=[f"{m}.{n}" for m, n in IMPLEMENTED_NAMES])
+def test_implemented_functions_exist(module, name):
+    func = getattr(importlib.import_module(module), name)
+    assert callable(func)
+    assert inspect.getdoc(func), f"{module}.{name} has no docstring"
 
 
 @pytest.mark.parametrize("module,name,methods", CLASSES, ids=[f"{m}.{n}" for m, n, _ in CLASSES])
