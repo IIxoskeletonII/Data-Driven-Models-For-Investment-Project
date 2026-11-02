@@ -404,6 +404,21 @@ request that implements Session 2.2.
 | Files affected | `src/features.py` (docstring states the rule), `src/vault.py`, `tests/test_vault.py`, `docs/interfaces.md` (contract 15) |
 | Amendment | No |
 
+### S22-13 · The winsorising amendment is Amendment 4, clause C1
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Two pull requests each appended an "Amendment 3" to `docs/preregistration.md` on 2 Nov: Mattia's ledger corrections (pull request #5, merged first, clauses C1 and C2) and the winsorising level of this pull request (commit 80d822c, clause numbered C8). Which number does the winsorising amendment take? |
+| Options considered | (a) keep two amendments numbered 3; (b) renumber the unmerged one as Amendment 4, with its clause numbered C1 as in the merged Amendment 3 |
+| Decision | (b). The winsorising amendment becomes "Amendment 4 … C1 (§06, in-fold winsorising and standardisation)"; its clause text is unchanged, its header now records the first commit, the renumbering and what had been computed at each point (In-Sample features built; no label, score, signal or strategy result on real data), and it is placed after Mattia's Amendment 3. Every reference "Amendment 3, C8" or "Amendment 3 C8" in S22-6, S22-11, `src/models.py`, `tests/test_models.py` and the `config.yaml` comment of the separate configuration pull request now reads "Amendment 4 C1". S22-6 and S22-11 are not edited (this log is append-only); this entry supersedes their amendment references |
+| Rationale | Amendments are numbered in the order they enter `main`; two amendments with the same number would make every citation ambiguous. The renumbering happens before the winsorising amendment is merged, so no merged text changes |
+| Evidence | `git show ce9bfa7:docs/preregistration.md`: "Amendment 3 (2 Nov 2026): accounting corrections found by the independent ledger. Proposed by Mattia Cervelli"; commit 80d822c: "Amendment 3 (2 Nov 2026): clarification of §06 (winsorising level)"; pre-registration, amendment policy: "A later change to anything pre-registered above is added at the end, as a dated amendment" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `docs/preregistration.md`, `docs/decisions.md`, `src/models.py`, `tests/test_models.py`, `config.yaml` (comment, separate pull request) |
+| Amendment | No new amendment: renumbering of an unmerged one |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
