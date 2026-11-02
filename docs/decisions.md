@@ -389,6 +389,21 @@ request that implements Session 2.2.
 | Files affected | `docs/preregistration.md` (Amendment 3), `config.yaml` (`features.winsor_quantiles`), `src/models.py`, `tests/test_models.py` |
 | Amendment | Yes: Amendment 3, C8 |
 
+### S22-12 · Calendar-start rule for every window; vault hardening after the audit
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | The session 2.2 audit found four judgement calls not stated in S22-4 or S22-8: (1) does the "calendar starts before the window" condition apply to DD13, which needs no prior close? (2) may a `Vault` be built with an `is_end` later than `split.in_sample_end`? (3) are failures other than seal refusals (missing file, failed validation, unknown feature) logged? (4) what happens to spec keys other than those listed in S22-8? |
+| Options considered | (1) apply the calendar-start condition (a) to return windows only or (b) to every window; (2) (a) accept any `is_end` or (b) refuse one after `split.in_sample_end`; (3) (a) log only seal refusals or (b) log every failed call as `refused`; (4) (a) ignore unknown keys or (b) refuse them |
+| Decision | (1b): a 13- or 52-week window is defined only when the session calendar has a session dated on or before F − 91 (F − 364) days, for DD13 as for the return windows; it affects only warm-up weeks of 1999. (2b): `Vault(is_end)` raises `OOSAccessError` (logged) when `is_end` is after `split.in_sample_end`; Out-of-Sample dates open only through `unlock()`. (3b): every public vault call writes exactly one access-log line, `ok` or `refused`, whatever the failure. (4b): a spec may hold only `rung`, `feature`, `author`, `kind`, `notes`, `as_of`, `end`; any other key raises `ValueError` and is logged as `refused`, with no trial row |
+| Rationale | (1b) treats every window alike: a window the calendar does not cover is not full, whatever the statistic. (2b) the seal would otherwise depend on an argument any caller can set. (3b) contract 15 says every call is logged. (4b) a key the vault does not read (for example a start date) would be silently ignored instead of checked against the seal |
+| Evidence | S22-4: "A window value is NaN unless every close it needs is present"; contract 3 (commit 89a73eb): "`NaN` only while a window is not yet full (warm-up)"; contract 15 (commit 89a73eb): "Every call appends one JSON line to the access log … result (`ok` or `refused`)" and "raised for any request touching a date after `is_end` (2019-12-27) while `FROZEN.lock` does not exist"; S22-8: "any spec asking for weeks after it, raises `OOSAccessError`" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/features.py` (docstring states the rule), `src/vault.py`, `tests/test_vault.py`, `docs/interfaces.md` (contract 15) |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
