@@ -34,6 +34,7 @@ features: # section 06
   bear_weeks: 104 # BEAR24: SPY cumulative total return over the prior 104 weeks < 0
   mkt_var_days: 126 # MKT_VAR: variance of daily SPY returns over the prior 126 trading days
   beta_weeks: 52 # BETA52: daily cov(asset, SPY) / var(SPY) over 52 weeks
+  winsor_quantiles: [0.01, 0.99] # in-fold winsorising of MKT_VAR, VIX, TERM, CREDIT on training weeks (Amendment 3 C8)
   interactions: # M2, pre-registered, no search over others
     - [BETA52, BEAR24, MKT_VAR] # primary
     - [BETA52, BEAR24]
