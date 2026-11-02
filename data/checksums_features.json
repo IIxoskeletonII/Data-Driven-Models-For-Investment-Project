@@ -14,6 +14,17 @@
     "rows": 9900,
     "sha256": "096500eb028722c84afdfc8b138b07635b8ee9287812d6bdd71f819b4755829d"
   },
+  "labels.csv": {
+    "bytes": 473507,
+    "columns": [
+      "y",
+      "label_end"
+    ],
+    "first_date_close": "1998-12-18",
+    "last_date_close": "2019-12-13",
+    "rows": 9864,
+    "sha256": "c9c3ff484055fa228c22d16bbfe9aa43fdf62e8489332b1aca27e2135a90c04f"
+  },
   "market_states.csv": {
     "bytes": 107517,
     "columns": [
