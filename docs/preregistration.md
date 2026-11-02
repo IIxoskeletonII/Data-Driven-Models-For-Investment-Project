@@ -314,4 +314,7 @@ been seen. The text above is never edited in place. Each amendment is also logge
 
 ## Amendments
 
-None.
+Amendment 1 (2 Nov 2026): clarification of §04/§05. All market-state series (^VIX, DGS3MO, DGS10, BAA10Y) enter features
+lagged one equity session. Reason: VIX settles after the 16:00 ET decision time; FRED values publish after the close. No
+feature has been computed before this amendment. Proposed by Eliya; approved by Eliya and Mattia on 2 Nov 2026. No
+In-Sample or Out-of-Sample result had been seen.
