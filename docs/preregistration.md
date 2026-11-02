@@ -318,3 +318,21 @@ Amendment 1 (2 Nov 2026): clarification of §04/§05. All market-state series (^
 lagged one equity session. Reason: VIX settles after the 16:00 ET decision time; FRED values publish after the close. No
 feature has been computed before this amendment. Proposed by Eliya; approved by Eliya and Mattia on 2 Nov 2026. No
 In-Sample or Out-of-Sample result had been seen.
+
+Amendment 2 (2 Nov 2026): clarifications before feature, signal and sizing code.
+Proposed by Eliya Allam; approved by Mattia Cervelli through the review of this pull request.
+No feature, score, signal, sizing or backtest result had been computed when it was committed.
+
+C1 (§06, indicator state). BEAR24 is an indicator and is used as 0/1 everywhere. It is never winsorised or standardised. The in-fold winsorising and standardisation in §06 apply only to the continuous market states MKT_VAR, VIX, TERM and CREDIT. Reason: the pre-registered interactions BETA52 × BEAR24 and BETA52 × BEAR24 × MKT_VAR are meant to act only in the bear state (Daniel & Moskowitz, 2016); a standardised indicator would make them non-zero outside it.
+
+C2 (§09 step 4, hedge dead-band). "Below 2% of capital" refers to the final IVV weight: if |h| / (1 + |h|) < 0.02, then h = 0 and the IVV signal is 0. Any shorthand "|h| < 0.02" in team notes is superseded by this wording.
+
+C3 (§09 step 5, missing inputs). After the warm-up, if any sector score or any required BETA52 (9 sectors and IVV) is missing in week t, the previous week's signals and target weights are carried forward unchanged and the book is rebalanced to those same targets; turnover from drift is therefore still charged. The event is logged with the week and the missing fields. Before the first fully valid week, the book is flat.
+
+C4 (§09 step 3, sensitivity counts). In the k = 1 and k = 3 sensitivity runs, each selected long or short name receives core weight 0.5 / k, keeping the core dollar-neutral with gross exposure 1 before hedge scaling; k = 2 gives the pre-registered 0.25.
+
+C5 (§10–§11, period boundary). The backtest is one continuous book from the first scored week to the data end. The OOS period does not restart from cash: its first trade is costed from the drifted In-Sample positions. Metrics, equity curves (rebased to 100) and behaviour statistics (turnover, holding periods) are computed separately for each period, following the course skeleton.
+
+C6 (§05 step 1 vs Amendment 1). Amendment 1 supersedes §05 step 1 for ^VIX, DGS3MO, DGS10 and BAA10Y: in features dated Friday t, these series enter at their previous-session value, not their Friday value.
+
+C7 (§06, naming). The weekly market-state frame stores the lagged VIX level in a column named VIX. VIX_Z denotes its in-fold standardisation inside the model pipeline and is used in the interaction VOL13 × VIX_Z.

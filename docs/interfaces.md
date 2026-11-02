@@ -8,9 +8,10 @@ The single authoritative description of every boundary between modules. Together
 `config.yaml`; section numbers below (§05, §06, …) are the pre-registration's. If this file and the pre-registration ever
 disagree, the pre-registration governs and the disagreement is a bug in this file. "Contract n" refers to section n of this file.
 
-**Changes.** This contract changes only through a pull request approved by both Eliya and Mattia, logged in
-`docs/decisions.md`. Adding an optional keyword argument with a default that keeps the old behaviour is not a contract
-change. Renaming, removing, reordering or retyping anything below is.
+**Changes.** A change to a signature, name or format below ships in the same pull request as the code that needs it,
+updates `src/contracts.py` and its tests, is logged in `docs/decisions.md`, and is approved by the other owner. Nobody
+adapts silently to the other side's code. Adding an optional keyword argument with a default that keeps the old
+behaviour is not a contract change. Renaming, removing, reordering or retyping anything below is.
 
 ## 0. Conventions
 
@@ -73,32 +74,33 @@ unique, weeks without any session dropped. Weekly prices: `weekly_open[t]` = fir
   six-column frame above.
 - Validator: `validate_features` (pass `columns=` for frames other than the six pre-registered columns).
 
-## 4. Market states (§06, Amendment 1)
+## 4. Market states (§06, Amendments 1 and 2)
 
-- `pd.DataFrame` indexed by the weekly index; columns exactly `BEAR24`, `MKT_VAR`, `VIX_Z`, `TERM`, `CREDIT`
+- `pd.DataFrame` indexed by the weekly index; columns exactly `BEAR24`, `MKT_VAR`, `VIX`, `TERM`, `CREDIT`
   (`features.states`); `float64`; `NaN` only in the warm-up. Common to all assets.
-- Values are **unscaled**. Scaling is fitted on training rows only, inside the model pipeline (§06 "scaling fitted on
-  training folds only"). `VIX_Z` therefore holds the lagged VIX *level* here; it becomes the pre-registered z-score only
-  after in-fold scaling. Whether `BEAR24` is scaled at all is open point P1 (proposal: keep it a raw 0/1 indicator, so the
-  BEAR24 interactions are zero outside bear states).
+- Values are **unscaled**. `BEAR24` is a 0/1 indicator and is never winsorised or standardised (Amendment 2 C1). The
+  continuous states `MKT_VAR`, `VIX`, `TERM`, `CREDIT` are winsorised and standardised on training rows only, inside the
+  model pipeline (§06 "scaling fitted on training folds only"). `VIX_Z`, the pre-registered state, is that in-fold
+  standardisation of `VIX`; it exists only inside the pipeline and never as a column of this frame (Amendment 2 C7).
 
 | Column | Value on row t |
 | --- | --- |
 | `BEAR24` | `1.0` if SPY's total return over the prior 104 weeks is negative, `TR_SPY(t) / TR_SPY(t − 104w) − 1 < 0`, else `0.0` |
 | `MKT_VAR` | sample variance (`ddof=1`) of daily SPY simple returns over the 126 sessions ending at the last session of week t |
-| `VIX_Z` | VIX close of the session before the last session of week t (lagged one session) |
+| `VIX` | VIX close of the session before the last session of week t (lagged one session; Amendment 1, Amendment 2 C6) |
 | `TERM` | `DGS10 − DGS3MO` (percentage points), each lagged one session |
 | `CREDIT` | `BAA10Y` (percentage points), lagged one session |
 
-- Validator: `validate_market_states`.
+- Validator: `validate_market_states` (also requires `BEAR24` in {0, 1}, a `VIX` column and no `*_Z` column).
 
 ## 5. Model inputs and interactions (§06, §07)
 
 - Design matrix `X`: index `["date_close", "ticker"]` as in contract 3; `float64` columns.
   M0 and M0\*: one momentum column. M1: the six asset features. M2 and M3: the six asset features plus the five
   interactions below. M5: the M-rung it extends plus approved agent features (§06 "Agent-proposed features").
-- Interaction columns are the product of the z-scored asset feature and the in-fold-scaled state(s), built in the
-  model pipeline after scaling. Names are the terms joined by `_x_` (`src.contracts.interaction_name`), in
+- Interaction columns are the product of the z-scored asset feature and the state(s), built in the model pipeline
+  after in-fold scaling: `BEAR24` enters as its raw 0/1 value (Amendment 2 C1); `MKT_VAR` and `VIX_Z` (the in-fold
+  standardised `VIX`, C7) enter scaled. Names are the terms joined by `_x_` (`src.contracts.interaction_name`), in
   `features.interactions` order:
   `BETA52_x_BEAR24_x_MKT_VAR` (primary), `BETA52_x_BEAR24`, `MOM26_1_x_BEAR24`, `MOM26_1_x_MKT_VAR`, `VOL13_x_VIX_Z`.
   No other interaction exists.
@@ -132,8 +134,11 @@ Monday 2019-12-30; the last In-Sample signal week is the one ending 2019-12-13. 
 ## 8. Scores (§07, §09)
 
 - `pd.DataFrame` indexed by the weekly index (the weeks a model scores), columns `SECTORS`, `float64`; higher means more
-  attractive; `NaN` marks a missing score; §09 step 5 then keeps last week's positions and logs the event (exact rule: open point
-  P3); no `±inf`.
+  attractive; `NaN` marks a missing score; no `±inf`. Missing inputs (Amendment 2 C3): after the warm-up, if any sector
+  score or any required `BETA52` (9 sectors and IVV) is missing in week t, the previous week's signals and target weights
+  are carried forward unchanged and the book is rebalanced to them (drift turnover still charged); the event is logged with
+  the week and the missing fields. A carried week also carries the previous `hedge`, `residual_beta`, `net_exposure` and
+  `cap_binds`, so `w_IVV = h / (1 + |h|)` still holds. Before the first fully valid week the book is flat.
 - From a model's output: `ScoreModel.score` returns a `pd.Series` on `["date_close", "ticker"]`; unstack `ticker` and
   attach `date_open = date_close − 4 days` to obtain the weekly index.
 - Validator: `validate_scores`.
@@ -144,9 +149,9 @@ Monday 2019-12-30; the last In-Sample signal week is the one ending 2019-12-13. 
   missing values.
 - Sectors: sort scores descending; exact ties are broken alphabetically by ticker (the earlier ticker ranks higher); ranks 1
   to `signal.top_k` (2) get +1, the `signal.bottom_k` (2) lowest ranks get −1, the rest 0. Every row has exactly two +1 and
-  two −1 among the sectors. (k = 1 and 3 are sensitivity runs only; their validator call passes `top_k=`/`bottom_k=`; their sizing is open point
-  P4.)
-- IVV: `sign(h)` from contract 11, 0 when the hedge is inside the dead-band (open point P2).
+  two −1 among the sectors. (k = 1 and 3 are sensitivity runs only, never selected; their validator calls pass
+  `top_k=k, bottom_k=k` to `validate_signals` and `k=k` to `validate_weights`; sizing per Amendment 2 C4, contract 11.)
+- IVV: `sign(h)` from contract 11, 0 when the hedge is inside the dead-band (Amendment 2 C2).
 - Validator: `validate_signals`.
 
 ## 10. Betas for sizing (§06, §09)
@@ -162,8 +167,8 @@ Validator: `validate_betas`.
 `config.yaml` (`signal.*`). With `s_i` the sector signals and `β̂` the betas of row t:
 
 ```text
-β_c   = Σ_i core_weight · s_i · β̂_i                       core_weight = 0.25
-h     = clip(−β_c / β̂_IVV, −cap, cap)                      cap = 0.5;  h = 0 inside the dead-band (0.02, open point P2)
+β_c   = Σ_i core_weight · s_i · β̂_i                       core_weight = 0.25 (k = 2); 0.5 / k for k = 1, 3 (Amendment 2 C4)
+h     = clip(−β_c / β̂_IVV, −cap, cap)                      cap = 0.5;  h = 0 if |h| / (1 + |h|) < 0.02 (Amendment 2 C2)
 w_i   = core_weight · s_i / (1 + |h|)                       w_IVV = h / (1 + |h|)
 β_res = (β_c + h · β̂_IVV) / (1 + |h|)                       net exposure = Σ w = h / (1 + |h|)
 ```
@@ -181,7 +186,9 @@ w_i   = core_weight · s_i / (1 + |h|)                       w_IVV = h / (1 + |h
 
 Weight invariants (`validate_weights`): `Σ|w| = 1` within 1e-12 on every row with positions (an all-zero row is flat);
 `sign(w) = signal` element-wise when signals are given; the sector legs are dollar-neutral (`Σ_sectors w = 0` within
-1e-12) and of equal size `core_weight · (1 − |w_IVV|)`; `|w_IVV| ≤ cap / (1 + cap)`.
+1e-12) and of equal size `core_weight · (1 − |w_IVV|)`, with `core_weight = core_weight_for(k)` (0.25 for k = 2,
+`0.5 / k` in the sensitivity runs, C4); `|w_IVV| ≤ cap / (1 + cap)`; `w_IVV` is 0 or at least `signal.hedge_deadband`
+(2% of capital, C2). In dead-band weeks the residual beta is `β_c`, reported with the cap weeks.
 
 ## 12. Backtest (§09) → `BacktestResult`
 
@@ -207,7 +214,7 @@ the same weekly index: the consecutive weeks that have weights and a realised fo
 | `weights` | `DataFrame[TRADED]`, `float64` | target weights `w_t` (passes `validate_weights`) |
 | `gross` | `Series` `float64` | `gross_t` |
 | `net` | `Series` `float64` | `net_t` |
-| `turnover` | `Series` `float64` | `turnover_t ≥ 0` (1.0 in the first week of a run, entered from cash; open point P5) |
+| `turnover` | `Series` `float64` | `turnover_t ≥ 0` (1.0 in the first scored week, entered from cash; the OOS period continues the same book, Amendment 2 C5) |
 | `costs` | `Series` `float64` | `costs_t ≥ 0` |
 | `borrow` | `Series` `float64` | `borrow_t ≥ 0` |
 | `residual_beta` | `Series` `float64` | from `SizingResult` |
@@ -215,8 +222,10 @@ the same weekly index: the consecutive weeks that have weights and a realised fo
 | `hedge` | `Series` `float64` | `h` from `SizingResult`; `w_IVV = h / (1 + \|h\|)` within 1e-12 |
 | `period` | `Series` of `"IS"`/`"OOS"` | from contract 7 |
 
-Validator: `validate_backtest_result(result, cost_bps=None, borrow_annual=None)`; with the rates given it also checks the
-cost and borrow formulas within 1e-12.
+Validator: `validate_backtest_result(result, cost_bps=None, borrow_annual=None, *, k=None, core_weight=None)`; with the
+rates given it also checks the cost and borrow formulas within 1e-12. Sensitivity books (k = 1, 3) pass `k=k` or
+`core_weight=0.5 / k` (`core_weight_for(k)`), here and in `validate_weights`; an explicit `core_weight` takes precedence. The backtest is one continuous book from the first scored week to the data
+end; metrics, equity curves (rebased to 100) and behaviour statistics are computed per period (Amendment 2 C5).
 
 ## 13. Walk-forward folds (§07, §10) → `WalkForwardFold`
 
@@ -293,18 +302,18 @@ class ScoreModel(Protocol):          # src/contracts.py
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
   show sectors as anonymised codes A1 … A9 and return summary metrics, never price series.
 
-## Open points (to be confirmed by Eliya and Mattia before code relies on them)
+## Resolved points
 
-Found by the contract audit on 2 Nov 2026. Each answer is logged in `docs/decisions.md`; an answer that changes the meaning
-of a pre-registered rule needs a dated amendment. Until then, code must not silently pick one.
+Found by the contract audit on 2 Nov 2026 and resolved by Amendment 2 to `docs/preregistration.md` (C1–C7), with decision
+entries S2-8 to S2-14 in `docs/decisions.md`. The table keeps the original questions for the record.
 
-| ID | Question | Pre-registration text | Proposal |
+| ID | Question | Pre-registration text | Resolution |
 | --- | --- | --- | --- |
-| P1 | Is the 0/1 `BEAR24` standardised in-fold? A standardised indicator is non-zero in normal weeks, so the BEAR24 interactions would be active every week. | §06: states scaled on training folds; BEAR24 is "crash insurance", H3 reports "the exact weeks it was active" | Keep `BEAR24` raw 0/1; winsorise and standardise only the continuous states |
-| P2 | Dead-band test: `\|h\| < 0.02` (operating manual) or hedge weight `\|h\| / (1 + \|h\|) < 0.02` ("below 2% of capital")? With the dead-band, residual beta is not exactly zero in those weeks. | §09 step 4: "0 if the hedge rounds to zero (below 2% of capital)"; "ex-ante beta is exactly zero unless the cap binds" | Follow §09: `\|w_IVV\| < 0.02`; report the residual beta of dead-band weeks with the cap weeks |
-| P3 | Missing score or beta: keep last week's target weights (`w_t = w_{t−1}`), or keep the signals and re-size? Any NaN sector, or all? | §09 step 5: "last week's positions are kept and the event is logged" | `w_t = w_{t−1}` and signals, hedge, residual beta carried, if any sector score or any needed beta is missing |
-| P4 | Sensitivity k = 1 or 3: with core weight 0.25 the gross would be 0.5 or 1.5. | §09: "1 and 3 are reported as sensitivity" | Core weight `0.5 / k`, so the core stays 50% long, 50% short |
-| P5 | Does the OOS run start from cash (turnover 1.0 at 2019-12-30) or continue the In-Sample book? | §09, §10: silent | Continue the book (one run over IS and OOS, metrics split by `period`); the skeleton restarts each period's equity at 100, not the positions |
+| P1 | Is the 0/1 `BEAR24` standardised in-fold? A standardised indicator is non-zero in normal weeks, so the BEAR24 interactions would be active every week. | §06: states scaled on training folds; BEAR24 is "crash insurance", H3 reports "the exact weeks it was active" | **Resolved: Amendment 2 C1** (S2-8). `BEAR24` stays 0/1; only the continuous states are scaled in-fold |
+| P2 | Dead-band test: `\|h\| < 0.02` (operating manual) or hedge weight `\|h\| / (1 + \|h\|) < 0.02` ("below 2% of capital")? With the dead-band, residual beta is not exactly zero in those weeks. | §09 step 4: "0 if the hedge rounds to zero (below 2% of capital)"; "ex-ante beta is exactly zero unless the cap binds" | **Resolved: Amendment 2 C2** (S2-9). `h = 0` if `\|h\| / (1 + \|h\|) < 0.02` |
+| P3 | Missing score or beta: keep last week's target weights (`w_t = w_{t−1}`), or keep the signals and re-size? Any NaN sector, or all? | §09 step 5: "last week's positions are kept and the event is logged" | **Resolved: Amendment 2 C3** (S2-10). Previous signals and target weights carried forward and rebalanced to; event logged; flat before the first valid week |
+| P4 | Sensitivity k = 1 or 3: with core weight 0.25 the gross would be 0.5 or 1.5. | §09: "1 and 3 are reported as sensitivity" | **Resolved: Amendment 2 C4** (S2-11). Core weight `0.5 / k` per name |
+| P5 | Does the OOS run start from cash (turnover 1.0 at 2019-12-30) or continue the In-Sample book? | §09, §10: silent | **Resolved: Amendment 2 C5** (S2-12). One continuous book; statistics per period |
 
 ## 16. Metrics and inference
 
@@ -327,7 +336,7 @@ may refine in the phase pull request, which the other author reviews.
 
 | Module | Public names | Phase, owner |
 | --- | --- | --- |
-| `src/contracts.py` | `ContractError`, `Universe`, `universe`, `interaction_name`, `interaction_columns`, `SizingResult`, `BacktestResult`, `WalkForwardFold`, `ScoreModel`, `validate_*` | 2.0, Eliya (done) |
+| `src/contracts.py` | `ContractError`, `Universe`, `universe`, `interaction_name`, `interaction_columns`, `core_weight_for`, `SizingResult`, `BacktestResult`, `WalkForwardFold`, `ScoreModel`, `validate_*` | 2.0, Eliya (done) |
 | `src/sizing.py` | `signals_from_scores`, `target_weights` | 2.1, Mattia |
 | `src/backtest.py` | `forward_returns`, `run`, `BacktestResult` (re-export) | 2.1, Mattia |
 | `src/ledger.py` | `run_ledger` | 2.1, Mattia |
@@ -336,9 +345,9 @@ may refine in the phase pull request, which the other author reviews.
 | `src/labels.py` | `make_labels`, `walk_forward_folds` | 2.2, Eliya |
 | `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial` | 2.2, Eliya |
 | `src/models.py` | `fit_transform_train`, `transform_test`, `M0` (2.2); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `select_m0_star_lookback` (3.1) | Eliya |
-| `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.2, Eliya |
-| `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate` | 3.3, Eliya |
-| `src/plots.py` | `equity_curves`, `drawdowns`, `exposures` | 3.3, Mattia |
+| `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.3, Eliya |
+| `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate` | 3.1, Eliya |
+| `src/plots.py` | `equity_curves`, `drawdowns`, `exposures` (with `07_evaluate.py`) | 3.2, Mattia |
 
 ### Validators and helpers of `src/contracts.py` (exact signatures)
 
@@ -368,11 +377,15 @@ validate_labels(labels: pd.DataFrame) -> None
 validate_scores(scores: pd.DataFrame) -> None
 validate_signals(signals: pd.DataFrame, top_k: int | None = None, bottom_k: int | None = None) -> None
 validate_betas(betas: pd.DataFrame) -> None
+core_weight_for(k: int | None = None, cfg: dict | None = None) -> float   # 0.25 for k = 2 (or None), 0.5 / k (Amendment 2 C4)
+
 validate_weights(weights: pd.DataFrame, signals: pd.DataFrame | None = None, *,
-                 core_weight: float | None = None, cap: float | None = None) -> None   # signal.core_weight, signal.hedge_cap
+                 core_weight: float | None = None, cap: float | None = None,
+                 k: int | None = None, dead_band: float | None = None) -> None   # core_weight_for(k), hedge_cap, hedge_deadband
 validate_forward_returns(fwd: pd.DataFrame, realised_on: pd.Series, period: pd.Series,
                          is_end: pd.Timestamp | None = None) -> None
-validate_backtest_result(result: BacktestResult, cost_bps: float | None = None, borrow_annual: float | None = None) -> None
+validate_backtest_result(result: BacktestResult, cost_bps: float | None = None, borrow_annual: float | None = None,
+                         *, k: int | None = None, core_weight: float | None = None) -> None   # core_weight_for(k)
 validate_folds(folds: Sequence[WalkForwardFold], embargo_weeks: int | None = None,
                label_end: pd.Series | None = None) -> None   # label_end: per-week series on the weekly index
 ```

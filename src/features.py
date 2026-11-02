@@ -1,5 +1,6 @@
 """Asset-level features (MOM26_1, MOM52_4, REV1, VOL13, DD13, BETA52) and market states (BEAR24, MKT_VAR,
-VIX_Z, TERM, CREDIT) of protocol section 06, using only data known at the Friday close.
+VIX, TERM, CREDIT) of protocol section 06, using only data known at the Friday close. VIX is the lagged level;
+VIX_Z is its in-fold standardisation inside the model pipeline (Amendment 2 C7).
 
 Not implemented yet: Phase 2.2 (Eliya). Interfaces: docs/interfaces.md, contracts 1, 3, 4 and 10.
 """
@@ -41,9 +42,10 @@ def momentum_variants(daily_close: pd.DataFrame, lookbacks: Sequence[int] | None
 def market_states(daily_close: pd.DataFrame, vix: pd.Series, fred: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
     """The five unscaled market states of §06 (contract 4) on the weekly index.
 
-    BEAR24 from SPY's 104-week total return, MKT_VAR from 126 daily SPY returns, VIX_Z = VIX level, TERM = DGS10 −
-    DGS3MO, CREDIT = BAA10Y; VIX and FRED values lagged one session (Amendment 1), so row t is known after Friday close
-    t. Scaling happens in the model pipeline on training rows only. Passes validate_market_states.
+    BEAR24 (0/1) from SPY's 104-week total return, MKT_VAR from 126 daily SPY returns, VIX = VIX level, TERM = DGS10 −
+    DGS3MO, CREDIT = BAA10Y; VIX and FRED values lagged one session (Amendment 1; Amendment 2 C6), so row t is known
+    after Friday close t. In-fold scaling of the continuous states happens in the model pipeline on training rows only;
+    BEAR24 is never scaled (Amendment 2 C1). Passes validate_market_states.
     """
     raise NotImplementedError("Phase 2.2, Eliya")
 
