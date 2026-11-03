@@ -71,7 +71,7 @@ def test_evaluate_writes_one_row_per_model_and_every_plot(script, layout):
     assert row["max_drawdown"] == pytest.approx(summary["max_drawdown"], rel=1e-12)
     assert row["gross_return_annual"] - row["costs_annual"] - row["borrow_annual"] == pytest.approx(
         script.read_weekly(root / "outputs" / "backtests" / "M0" / "weekly.csv")["net"].mean() * 52, abs=1e-12)
-    assert np.isnan(row["rank_ic_mean"])  # src.stats.rank_ic is a Phase 3.1 stub
+    assert np.isfinite(row["rank_ic_mean"])  # src.stats.rank_ic (Phase 3.1)
     books = pd.read_csv(root / "outputs" / "diagnostics" / "placebo" / "books.csv", index_col=0)
     assert row["placebo_percentile"] == script.bt.placebo_percentile(books["net_sharpe_rf_tbill"], row["net_sharpe_rf_tbill"])
     assert {"net_sharpe_rf_tbill_5bps_1pct", "net_sharpe_rf_tbill_20bps_5pct"} <= set(table.columns)
@@ -82,7 +82,9 @@ def test_evaluate_writes_one_row_per_model_and_every_plot(script, layout):
     benchmarks = pd.read_csv(metrics / "is_benchmarks.csv", index_col=0)
     assert list(benchmarks.index) == ["T-bill", "SPY", "Equal weight"]
     shift = pd.read_csv(metrics / "shift_check.csv", index_col=0)
-    assert shift.loc["M0", "verdict"] in {"PASS", "PENDING"}
+    p = shift.loc["M0", "p_delayed_better"]  # src.stats.paired_block_bootstrap (Phase 3.1)
+    assert isinstance(p, float) and 0.0 <= p <= 1.0
+    assert shift.loc["M0", "verdict"] in {"PASS", "FAIL"}  # the bootstrap is available: never PENDING
     plots = root / "outputs" / "plots"
     for model in ("M0", "M0_L13"):
         for chart in ("equity", "drawdown", "exposure", "bridge"):

@@ -1158,6 +1158,26 @@ session (3 Nov 2026). "Approved by" is completed by Mattia's approving review of
 | Files affected | later `08_run_oos.py`, `FROZEN.lock` |
 | Amendment | Yes: Amendment 6 C2 |
 
+## 2026-11-03 · Session 3.2 follow-up: `06_backtest.py` aligned with `src/stats.py`
+
+"Instruction" quotes Mattia's follow-up prompt of 3 Nov 2026, run on the branch `feat/3.1-ladder` after Eliya merged
+`main` (with the 3.2 pull request) into it.
+
+### S32-9 · Dotted model names, and the shift-check bootstrap on the gate's Sharpe
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) The `--fixed` names of `05_train_walkforward.py` hold the grid value (`M1_a0.1`, `M2_a0.1`; S31-10), which the S32-1 pattern `[A-Za-z0-9][A-Za-z0-9_]*` refuses. Which names does `06_backtest.py` accept now? (2) Which Sharpe convention does the shift check's paired bootstrap use, now that `src.stats.paired_block_bootstrap` exists and takes `rf`? |
+| Options considered | (1) (a) letters, digits and underscores with single dots between them, `[A-Za-z0-9][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*` (chosen); (b) any character but `/`, `\` and `..`; (c) the closed list of `fixed_names(cfg)`. (2) (d) the §09 headline with the weekly T-bill over the common weeks, as the gate (chosen); (e) the zero-cost convention (`rf` None, the S32-3 call) |
+| Decision | (1a). `MODEL_NAME` accepts `M1_a0.1`, `M2_a0.1`, `M1_a10`, `M3_d2`, `M0_L13`; it refuses `..`, `.`, any `/` or `\`, `:`, a space, `-`, the empty name, two dots in a row, and a leading or trailing dot (Windows drops a trailing dot from a folder name, so `M1.` would open `M1`). `walkforward_models` and `check_model` use the same pattern, so `--model`, `--all` and `--shift-check` agree. (2d). `shift_check` passes `rf` = `inputs.rf_weekly` on the common weeks to `paired_block_bootstrap`; its observed uplift equals the reported `sharpe_difference_delayed_minus_base` of the T-bill Sharpes (tested). Settings unchanged: `selection.bootstrap_resamples`, `selection.bootstrap_block`, `seed`, delayed as candidate, base as baseline. The keys `p_uplift_positive` and `mean` of S32-3 are those of `src/stats.py` (S31-8, S31-9). The tests that asserted the Phase 3.1 stub now assert real values: `p_delayed_better` a float in [0, 1], `rank_ic_mean` finite |
+| Rationale | (1a) is the smallest change that admits every name 05 writes and still cannot leave `outputs/walkforward/`; (c) would tie 06 to the grids of 05. (2d) the §12 verdict reuses the gate's bootstrap threshold (S32-3), so it must use the gate's Sharpe |
+| Evidence | Instruction: "06_backtest.py: allow '.' in model folder names (e.g. M1_a0.1, M2_a0.1), while still refusing path-like names ('..', '/', '\\'). Add tests for both."; "The shift check's bootstrap uses the headline Sharpe with the T-bill rf (Amendment 6 C1), for consistency with the gate."; Amendment 6 C1: "The gate's 'net Sharpe' is the headline convention of §09 … with rf the weekly FRED 3-month T-bill over the same weeks"; `05_train_walkforward.py` `FIXED_PREFIX` ("--fixed names: M1_a0.1, M3_d2, M0_L13 (S31-10)"); S31-13. Tests `test_a_model_name_may_hold_single_inner_dots`, `test_a_path_like_model_name_is_refused`, `test_a_dotted_variant_folder_is_backtested`, `test_shift_check_writes_both_books_on_common_weeks` |
+| Proposed by | Mattia Cervelli (instruction) |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: applies Amendment 6 C1; the name pattern is an implementation detail of S32-1 |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
