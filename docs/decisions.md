@@ -1195,6 +1195,148 @@ session (3 Nov 2026). "Approved by" is completed by Mattia's approving review of
 | Files affected | `.github/workflows/ci.yml`, `README.md` |
 | Amendment | No |
 
+## 2026-11-03 · Session 3.3: multi-agent research lab and M5
+
+Format of the operating manual's evidence standard. "Session 3.3 instructions" quotes the task list Eliya set for the
+session (3 Nov 2026); "Answer" quotes Eliya's answers to the four questions asked at its start (3 Nov 2026). "Approved
+by" is completed by Mattia's approving review of the pull request from branch `feat/3.3-agent-lab`, which also carries
+Amendment 7 (committed alone, before any code of this session).
+
+### S33-1 · Model id, prices and the budget meter
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Is the §08 model available, at what price, and how does the code compute the USD 5 hard stop? |
+| Options considered | Prices: (a) peak rates whatever the time of day; (b) time-of-day rates. Mode: (c) thinking (the API default); (d) non-thinking. Tokens: (e) price every prompt token at the cache-miss rate; (f) use the cache-hit discount |
+| Decision | DeepSeek's `/models` endpoint (3 Nov 2026) lists `deepseek-flash` and `deepseek-v4-pro`; `deepseek-flash` (model version DeepSeek-V4.1-Flash-1017) is used. (a), (d), (e). The meter charges each live call `prompt_tokens` × USD 0.30 / 1M + `completion_tokens` × USD 1.20 / 1M (the peak cache-miss input and peak output rates), from the `usage` the API returns. Before each live call the lab adds a worst-case bound of that call (prompt characters as tokens, plus `max_tokens` output tokens) to everything already spent, summed over every committed cache file under `agent_lab/cache/`; if the total would exceed `agent_lab.budget_usd` (5), the call is not made and the run stops. Calls use `extra_body={"thinking": {"type": "disabled"}}`, `response_format={"type": "json_object"}` and `max_tokens` 1,500; temperature is not sent (ignored by the API). Live calls are allowed for the planted-signal test only; Eliya is asked again before the real In-Sample run |
+| Rationale | (a) and (e) can only over-count, so the stop is never late; (d) is cheaper, and replay makes the run reproducible whatever the sampling |
+| Evidence | `/models` response (3 Nov 2026): `['deepseek-flash', 'deepseek-v4-pro']`; DeepSeek pricing page (https://api-docs.deepseek.com/quick_start/pricing, read 3 Nov 2026), deepseek-flash: "1M INPUT TOKENS (CACHE HIT)" off-peak "$0.003", peak "$0.006"; "1M INPUT TOKENS (CACHE MISS)" off-peak "$0.15", peak "$0.3"; "1M OUTPUT TOKENS" off-peak "$0.6", peak "$1.2"; "Off-peak rates are half of the peak rates. Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC, Monday through Friday"; thinking-mode guide: "Thinking mode is enabled by default", "Thinking mode does not support the `temperature` … parameters"; §08 "DeepSeek V4.1 Flash (`deepseek-flash`) … with a hard stop in code at USD 5"; `config.yaml` `agent_lab.budget_usd: 5`; Answer 4: "Live calls allowed now for the planted-signal test only, with the meter at peak prices (the conservative option). Ask me again before the real In-Sample run." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (Answer 4, 3 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/llm.py`, `tests/test_agents_llm.py` |
+| Amendment | No |
+
+### S33-2 · Two vault spec gaps from the session 3.1 audit
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) A spec's `as_of` or `end` is checked against the seal and then ignored by the walk-forward. (2) An M0 spec accepts any column of `features.asset` (e.g. `BETA52`) and any `MOM{L}_1` variant in the file. Should these be refused? |
+| Options considered | (1) (a) keep the keys; (b) refuse any spec carrying them. (2) (c) keep; (d) accept only `models.M0.feature` and `MOM{L}_1` for L in `models.M0_star.lookback_weeks` |
+| Decision | (1b): `as_of` and `end` leave the allowed spec keys. A spec carrying either raises `OOSAccessError` when the date is after `is_end` (the seal, as before) and `ValueError` otherwise; both are logged `refused` and add no trial row. (2d): an M0 spec's `feature` must be `MOM26_1` (models.M0.feature) or `MOM13_1`, `MOM26_1`, `MOM52_1` (the M0\* grid), read from `config.yaml`; any other name raises `ValueError` |
+| Rationale | (1) a key the walk-forward does not use must not look as if it restricted the dates (S22-12 (4b) refused unknown keys for the same reason). (2) M0 on another column is not a pre-registered configuration and would add an unregistered trial |
+| Evidence | Session 3.3 instructions §1: "specs carrying as_of/end are refused (not silently ignored), and M0 specs accept only MOM26_1 and the MOM{13,26,52}_1 variants"; S22-12 (4b); §07 table rows M0 and M0\*; `src/vault.py` at commit 2e2a4f7: `SPEC_KEYS = (...) + SPEC_DATE_KEYS` and `_feature_column` accepting `cfg["features"]["asset"]` |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contract 15) |
+| Files affected | `src/vault.py`, `tests/test_vault.py`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S33-3 · The feature DSL
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | What exactly can an agent feature express, and how is it evaluated without look-ahead? |
+| Options considered | (a) a JSON expression tree on weekly samples with a closed list of operations (chosen); (b) daily-resolution operations; (c) raw Python (excluded by §08) |
+| Decision | A spec is JSON `{"name": str, "expr": node}`. Leaves: `{"input": "close"}` (the asset's adjusted close) and `{"input": "spy"}` (SPY's, the same value for every sector), each sampled at the last session on or before Friday t (TR(t) of S22-3; NaN when the week has no session). Operations: `lag` (n weeks), `rolling` with `stat` in mean, std (ddof = 1), sum, min, max over the n weekly values ending at t, `diff` (x(t) − x(t − n)), `log`, `ratio` (a / b), `cs_rank` and `cs_z` (across the 9 sectors each Friday; `cs_z` is `src.features.cross_sectional_zscore`, `cs_rank` the average rank mapped linearly to [−1, 1]) and `mul_state` with `state` one or two of BEAR24, MKT_VAR, VIX, TERM, CREDIT. n is an integer, 1 ≤ n ≤ 104 for `lag` and `diff`, 2 ≤ n ≤ 104 for `rolling`. Root rule (Amendment 7 C2): the root is `cs_rank` or `cs_z`, or `mul_state` whose child is `cs_rank` or `cs_z`; `mul_state` appears only at the root, and the evaluator returns the cross-sectional asset part, the product being formed in-fold by the model pipeline. A window value is NaN unless all n inputs are finite; `log` of a non-positive value and a ratio with a zero or non-finite denominator give NaN. Each window is computed on its own n values (`numpy.lib.stride_tricks.sliding_window_view`), so nothing after t can change a value at t. Limits: at most 25 nodes and depth 10; unknown keys or operations raise `DSLError`. Output: float64 on the (date_close, ticker) index of contract 3, known after Friday close t |
+| Rationale | Weekly samples make every window end at t by construction; the root rule follows §06 (a market state alone cannot reorder the ranking) and Amendment 7 C2 |
+| Evidence | Session 3.3 instructions §2: "Inputs: daily adjusted closes of the asset and SPY, and the lagged market states. Operations: lag, rolling mean/std/sum/min/max over ≤ 104 weeks ending at t, diff, log, ratio, cross-sectional rank and z-score, and product with a market state. Output: a weekly feature (contract 3), known after Friday close t. The evaluator refuses any window past t."; §08 Coder "Turns the spec into DSL operations (lag, rolling, rank, ratio); no raw Python"; §06 "Why a market state alone cannot reorder a ranking"; Amendment 7 C2 |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/dsl.py`, `tests/test_dsl.py` |
+| Amendment | Amendment 7 C2 |
+
+### S33-4 · Agent features in the vault and the model pipeline
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How does the vault evaluate a DSL feature and add it to the base rung, and how is the headline Sharpe computed without reading data outside the vault? |
+| Options considered | (a) new sealed vault tables for the daily closes and the T-bill yield (chosen); (b) read the raw files in the lab, as `06_backtest.py` does |
+| Decision | New spec key `agent_features` (a list of DSL specs), allowed only with rung M1, M2 or M3 and either `params` or `tuning`. New sealed, logged vault methods: `Vault.daily_closes(as_of)` (adjusted daily closes of the 9 sectors and SPY from `data/processed/daily_close.csv`, cut at `is_end` right after reading, then at `as_of`) and `Vault.tbill_weekly(as_of)` (the weekly T-bill return of Mattia's `src.metrics.tbill_weekly_returns`, DGS3MO lagged one session, from `data/raw/fred/DGS3MO.csv` cut at `is_end` right after reading, on the weeks of the forward returns realised by `as_of`). In-memory `frames` may hold them under `daily_close` and `dgs3mo`. The vault evaluates each DSL spec on the In-Sample closes (column `AG<k>`, k = 1, 2, … in list order) and adds it to the features; `src.models` builds the design as the base rung's design plus `AG<k>` and, for `mul_state`, the product `AG<k>_x_<state>` with the in-fold scaled state (VIX as VIX_Z), formed like the pre-registered interactions. A row with a missing agent value gets a NaN score (Amendment 2 C3). `run_walkforward(spec, evaluate)` may return a third value from `evaluate`, the trial row's notes (default: the spec's notes) |
+| Rationale | (a) keeps every model and research input behind the seal and the access log (manual §3.3); (b) would put a second data path in the lab |
+| Evidence | Manual §3.3 "All model and research data access goes through `src/vault.py`"; S23-4 (sizing betas through the vault); S23-8 (DGS3MO cut at the In-Sample end right after reading); Amendment 6 C1 (gate Sharpe with the weekly T-bill); Amendment 7 C2 |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contracts 14, 15 and 17) |
+| Files affected | `src/vault.py`, `src/models.py`, `tests/test_vault.py`, `tests/test_ladder.py`, `docs/interfaces.md` |
+| Amendment | Amendment 7 C2 |
+
+### S33-5 · The `ddmi-vault` MCP server
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | What do the three tools return, how are the sectors anonymised, and how are refusals recorded? |
+| Options considered | As below (chosen) |
+| Decision | `src/agents/vault_server.py` builds an MCP server named `ddmi-vault` (`mcp.server.mcpserver.MCPServer`, mcp 2.3) with three tools; the graph calls them in process through the server's `call_tool`, and `python -m src.agents.vault_server` serves them over stdio. `IN_SAMPLE_END = "2019-12-27"` is a constant; the server refuses to start if `split.in_sample_end` differs, and any tool argument dated after it is refused. Anonymisation: sector `universe(cfg).sectors[i]` gets code `A<j+1>` with j its position in `numpy.random.default_rng(seed).permutation(9)`; the mapping never leaves the server. `get_features(as_of)`: per code, the six z-scored asset features at the last week ≤ `as_of` and their mean and standard deviation over the 104 weeks ending there, the market states of that week, and the pooled correlation matrix of the six features over those weeks, rounded to 3 decimals; no price, return or series. `run_walkforward(spec)`: validates the DSL spec, runs the Validator checks of S33-6, adds the feature to the base rung (S33-10) and returns `checks`, `net_sharpe` (headline, Amendment 6 C1), `net_sharpe_zero_cost`, `uplift` and `max_drawdown_change` against the base rung on the same weeks, `p_uplift_positive` (paired block bootstrap, `selection.bootstrap_resamples`, `selection.bootstrap_block`, `seed`), `rank_ic_mean` and `rank_ic_t` (`src.stats.rank_ic`), `mean_turnover`, `mean_abs_residual_beta`, the adverse-cost (20 bps, 5%) net Sharpe and uplift, and `passed_gate`. `get_trial_history()`: every trial-log row without `params_json` of human rows; agent rows keep their DSL spec. Every call, refused or not, writes one line to the server log (`<run>/vault_server_log.jsonl`: tool, argument hash, ok or refused, reason) besides the vault's own access log |
+| Rationale | §08 fixes the three tools, the hard-coded end, the logging and the anonymised summaries; a seeded permutation hides the alphabetical order |
+| Evidence | §08: "One MCP server (`ddmi-vault`) is the agents' only path to data, with three tools: `get_features(as_of)`, `run_walkforward(spec)`, `get_trial_history()`. The In-Sample end date is hard-coded; any request touching OOS dates raises an error and is logged. Agents see anonymised codes (A1…A9) and summary metrics, never raw price series."; Session 3.3 instructions §3 |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/vault_server.py`, `tests/test_vault_server.py` |
+| Amendment | No |
+
+### S33-6 · The Validator: checks and the pass rule
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which deterministic checks does a candidate pass before Skeptic and Risk see it? |
+| Options considered | Walk-forward rule: (a) the §07 gate thresholds against the base rung; (b) P(uplift > 0) ≥ 0.80 only; (c) no threshold |
+| Decision | In order, stopping at the first failure: (1) the spec parses (S33-3); (2) leakage: for the cutoffs 2006-06-30, 2012-06-29 and 2017-06-30 (in a run whose data end earlier, the cutoffs inside its In-Sample weeks), every close after the cutoff is multiplied by `exp(N(0, 0.05²))` (`numpy.random.default_rng(seed)`), and the feature on every week ≤ the cutoff must be bit-identical (NaN equal to NaN); (3) warm-up: no missing value on any (week, sector) row from the first week after `split.warmup_end` to the In-Sample end where the six asset features are all finite; (4) redundancy: the pooled Pearson correlation over those rows with each of the six asset features and with the asset part of every candidate that has survived so far must satisfy \|corr\| < 0.9; (5) walk-forward (a): against the base rung on the same backtested weeks at baseline costs, uplift ≥ `selection.sharpe_uplift` (0.15), max drawdown no more than `selection.mdd_tolerance` (2 points) worse, P(uplift > 0) ≥ `selection.bootstrap_prob` (0.80) |
+| Rationale | (a): H5 asks that agent features "survive the same gate as human features"; (b) would pass about one noise feature in five |
+| Evidence | Answer 1: "§07 gate vs base (Recommended)"; Session 3.3 instructions §4: "Validator: deterministic tool; leakage test, warm-up, \|corr\| < 0.9 with existing features, walk-forward."; H5 "Agent-proposed features survive the same gate as human features after trial-count deflation"; §07 step 3 thresholds; `config.yaml` `selection.*` |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (Answer 1, 3 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/vault_server.py`, `src/agents/graph.py`, `tests/test_vault_server.py` |
+| Amendment | No: lab procedure (§08 is not part of the pre-registration); the thresholds are the pre-registered ones |
+
+### S33-7 · Graph, LLM roles, cache, replay and limits
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How do the roles of §08 interact, and how are calls cached, replayed and limited? |
+| Options considered | (a) LangGraph `StateGraph` (chosen); (b) the plain-Python fallback |
+| Decision | Per candidate: Orchestrator (deterministic: candidate cap, budget, routing) → Hypothesis (LLM: mechanism, rationale and a feature idea, given the DSL grammar, `get_features` at the In-Sample end and `get_trial_history`) → Coder (LLM: the DSL JSON only) → Validator (S33-6, through `run_walkforward`) → Skeptic (LLM: veto on overfitting, redundancy, economic plausibility) → Risk (LLM, given the tool's turnover, residual beta and adverse-cost figures: veto on turnover, beta and cost sensitivity) → record. Skeptic and Risk run only on candidates that pass the Validator. A candidate survives if it passes the Validator and neither LLM vetoes. An unparseable LLM answer counts as a veto (Skeptic, Risk) or an invalid spec (Coder); there are no retries. Cache: every LLM call is one line of `agent_lab/cache/<run>.jsonl` (committed): `key` = SHA-256 of the canonical JSON of the request (model, messages, parameters), the request, the response text, `usage` and `cost_usd`; no time and no credential. A request whose key is in any cache file is answered from it at zero cost; in replay mode a missing key raises and no client or key is needed. Prompts hold no time or machine-dependent field, so a replay recomputes the same prompts and reproduces the run. Limits: `agent_lab.max_candidates` (40) proposals in the real run; USD 5 (S33-1). The run writes `<run>/candidates.jsonl` (one line per proposal: spec, checks, metrics, verdicts, cost) |
+| Rationale | §08 names LangGraph with a plain loop as fallback; the hashed cache makes the lab replay offline at zero cost |
+| Evidence | §08 roles table; "Prompts, responses and tool results are cached as hashed JSONL, so the lab replays offline at zero cost"; "Framework. LangGraph 1.0 for the graph and state, MCP for the vault; a plain Python loop is the fallback"; Session 3.3 instructions §4 |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/graph.py`, `src/agents/llm.py`, `src/agents/prompts.py`, `04_agent_lab.py`, tests |
+| Amendment | No |
+
+### S33-8 · The planted-signal test
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How are the planted effect, the noise and PASS defined? |
+| Options considered | (a) the planted spec and fixed noise specs injected at the Validator, plus the LLM loop on the same market (chosen); (b) the LLM must discover the effect unaided |
+| Decision | `src/agents/planted.py` builds a deterministic synthetic market (seed `config.seed`) with the 11 tradables, VIX and FRED, weeks from 2011 to 2019, no momentum, and one planted effect: each sector's expected log return in week t + 1 is κ times its cross-sectional z-score in week t of the DSL feature P = `cs_z(ratio(rolling std 4 of diff(log close, 1), rolling std 26 of diff(log close, 1)))`, a short-to-long volatility ratio. Its tables go through `03_build_features.py` into a separate folder, with the split of the synthetic ladder tests (warm-up to 2012, initial training 2013–2014, test years 2015–2019, 52 inner validation weeks). The lab runs on it with its own trial log (`agent_lab/planted/trial_log.csv`), never `docs/trial_log.csv`: 6 LLM candidates, then the planted spec and 4 fixed noise specs injected at the Validator, and every candidate that passes goes through Skeptic and Risk. PASS: P survives, and every candidate whose asset part has \|corr\| < 0.5 with P's is rejected. Reported separately, as information and not part of PASS/FAIL: whether Hypothesis and Coder proposed P, or a feature with \|corr\| ≥ 0.9 to it, unaided. κ is set on the synthetic market before any real-data lab run |
+| Rationale | (b) could fail by chance in a few proposals although every component works; injecting tests the Validator, Skeptic and Risk on a known answer, while the LLM candidates supply realistic noise |
+| Evidence | Answer 2: "Option 1, plus: report separately whether the Hypothesis/Coder agents proposed the planted feature (or one with \|corr\| ≥ 0.9 to it) unaided, as information. It is not part of PASS/FAIL. State this in the decision and in the report."; §08 "On synthetic data with one planted effect and pure noise elsewhere, the lab must find the planted effect and reject the noise"; Session 3.3 instructions §5; S22-10 (never cut) |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (Answer 2, 3 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/planted.py`, `04_agent_lab.py`, `tests/test_planted_signal.py`, `agent_lab/` |
+| Amendment | No |
+
+### S33-9 · Trial rows of agent proposals
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which proposals get a trial row, with which fields? |
+| Options considered | (a) every proposal, evaluated or not (chosen); (b) only proposals that reach the walk-forward |
+| Decision | Every proposal is one row with `kind` "agent", `author` "agent lab", `rung` the base rung, `spec_hash` of the candidate spec (`{"rung", "tuning", "agent_features", "author", "kind", "notes": "agent lab candidate"}` with the config, S23-6; an unparseable proposal is hashed as `{"invalid_dsl": <proposal>}`), and `notes` a compact JSON with the candidate number, the stage reached, uplift, P(uplift > 0), rank IC, turnover, mean \|residual beta\| and the USD cost of the calls that produced the proposal (Hypothesis and Coder); `is_sharpe` and `is_mdd` hold the candidate's headline net Sharpe and max drawdown when the walk-forward ran. The vault writes the row when it evaluates the spec; the server writes it for a proposal refused before. A repeated spec adds no row (S23-2). Skeptic and Risk verdicts and their cost are in `candidates.jsonl` and `agent_lab/review.md` |
+| Rationale | Manual §3.5 and §10 count every configuration; counting proposals that failed a check keeps N conservative |
+| Evidence | Session 3.3 instructions §6: "Every proposal, accepted or rejected, is a trial-log row (kind "agent") with spec hash, metrics and cost."; §08 "every proposal, accepted or rejected, is a row in `trial_log.csv` with spec hash, metrics and cost"; S23-2, S23-6, S31-7 |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/vault.py`, `src/agents/vault_server.py`, `docs/trial_log.csv` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
