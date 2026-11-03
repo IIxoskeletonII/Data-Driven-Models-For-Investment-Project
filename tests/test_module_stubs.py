@@ -12,7 +12,6 @@ STUB_FUNCTIONS = [
     ("src.agents.graph", ["build_graph", "run_lab"], "3.3", "Eliya"),
     ("src.stats", ["paired_block_bootstrap", "rank_ic", "deflated_sharpe_ratio", "pbo_cscv", "sharpe_difference_test",
                    "selection_gate"], "3.1", "Eliya"),
-    ("src.plots", ["equity_curves", "drawdowns", "exposures"], "3.2", "Mattia"),
 ]
 
 STUBS = [(module, name, phase, owner) for module, names, phase, owner in STUB_FUNCTIONS for name in names]
@@ -23,6 +22,7 @@ IMPLEMENTED = [
     ("src.labels", ["make_labels", "walk_forward_folds"]),
     ("src.vault", ["append_trial"]),
     ("src.models", ["fit_transform_train", "transform_test"]),
+    ("src.plots", ["equity_curves", "drawdowns", "exposures", "cost_bridge", "placebo_histogram"]),
 ]
 IMPLEMENTED_NAMES = [(module, name) for module, names in IMPLEMENTED for name in names]
 
