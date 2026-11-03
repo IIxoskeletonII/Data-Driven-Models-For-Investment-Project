@@ -24,7 +24,8 @@ EULER_GAMMA = 0.5772156649015329
 BOOT_KEYS = {"uplift", "lower", "upper", "p_uplift_positive", "mean_diff", "mean_diff_lower", "mean_diff_upper", "n_weeks", "block",
              "n_resamples"}
 CANDIDATE_KEYS = {"name", "status", "sharpe", "sharpe_m0", "mdd", "mdd_m0", "p_uplift_positive", "p_uplift_positive_sensitivity",
-                  "uplift_lower", "uplift_upper", "passes_sharpe", "passes_mdd", "passes_bootstrap", "passes"}
+                  "uplift_lower", "uplift_upper", "sharpe_zero_cost", "sharpe_m0_zero_cost",
+                  "passes_sharpe", "passes_mdd", "passes_bootstrap", "passes"}
 
 
 def weekly_index(n: int, start: str = "2010-01-08") -> pd.MultiIndex:
@@ -953,4 +954,25 @@ def test_paired_block_bootstrap_reindexes_a_longer_weekly_rf_series():
     assert out == same
     with pytest.raises(ValueError):
         stats.paired_block_bootstrap(a, b, 200, 4, 1, rf=rf_long.iloc[:60])
+
+
+def test_selection_gate_uses_the_headline_rf_and_reports_the_zero_cost_sharpe_alongside():
+    """Amendment 6 C1 (S31-13): the criterion uses sharpe_ratio(r, rf) with the weekly T-bill series; the zero-cost
+    Sharpe is reported alongside and decides nothing.
+    """
+    rng = np.random.default_rng(11)
+    closes = pd.date_range("2010-01-08", periods=200, freq="7D")
+    weeks = pd.MultiIndex.from_arrays([closes - pd.Timedelta(days=4), closes], names=["date_open", "date_close"])
+    m0 = pd.Series(rng.normal(0.0005, 0.02, 200), index=weeks)
+    results = {name: pd.Series(rng.normal(0.001, 0.02, 200), index=weeks) for name in ["M1", "M2", "M3", "ENS"]}
+    rf = pd.Series(0.0006, index=weeks)
+    out = stats.selection_gate(results, m0, CFG, rf=rf, absent=("M5",))
+    for entry in out["candidates"]:
+        if entry["status"] != "evaluated":
+            continue
+        r = results[entry["name"]]
+        assert entry["sharpe"] == pytest.approx(metrics.sharpe_ratio(r, rf), rel=1e-12)
+        assert entry["sharpe_zero_cost"] == pytest.approx(metrics.sharpe_ratio(r, 0.0), rel=1e-12)
+        assert entry["sharpe_m0_zero_cost"] == pytest.approx(metrics.sharpe_ratio(m0, 0.0), rel=1e-12)
+        assert entry["passes_sharpe"] == (entry["sharpe"] >= entry["sharpe_m0"] + CFG["selection"]["sharpe_uplift"])
 

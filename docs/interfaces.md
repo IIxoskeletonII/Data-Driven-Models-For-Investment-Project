@@ -374,7 +374,7 @@ entries S2-8 to S2-14 in `docs/decisions.md`. The table keeps the original quest
   walk-forward results (Sharpe uplift ≥ `selection.sharpe_uplift`, drawdown tolerance `selection.mdd_tolerance`, bootstrap
   probability ≥ `selection.bootstrap_prob`; first passing candidate in `models.candidate_order`, else M0\*).
   Every signature and result key is listed in contract 17 ("Signatures and result keys of `src/stats.py`"); `rf` of
-  `selection_gate` has no default (the gate's Sharpe convention is an open point of S31-8). Settings: `inference.pbo_blocks`
+  `selection_gate` has no default and is the weekly T-bill series (headline Sharpe, Amendment 6 C1, S31-13). Settings: `inference.pbo_blocks`
   (16) and `inference.confidence` (0.95), additive config section.
 
 ## 17. Where everything lives (stubs until their phase)
@@ -465,9 +465,11 @@ cscv_logits(returns, n_blocks=16) -> np.ndarray      # one logit per split, iter
 sharpe_difference_test(a, b, *, kernel="qs", bandwidth=None) -> dict
     # sharpe_a, sharpe_b, difference, difference_annual, se, z, p_value, bandwidth, n_weeks
 selection_gate(results, m0, cfg=None, *, rf, absent=()) -> dict
+    # rf: the weekly FRED 3-month T-bill returns (headline Sharpe, Amendment 6 C1, S31-13); still a required keyword
     # selected (first passing name of models.candidate_order, else "M0_star"), candidates: list of dicts with
     # name, status ("evaluated" or "absent"), and if evaluated: sharpe, sharpe_m0, mdd, mdd_m0, p_uplift_positive,
-    # uplift_lower, uplift_upper, p_uplift_positive_sensitivity, passes_sharpe, passes_mdd, passes_bootstrap, passes
+    # uplift_lower, uplift_upper, p_uplift_positive_sensitivity, sharpe_zero_cost, sharpe_m0_zero_cost (information),
+    # passes_sharpe, passes_mdd, passes_bootstrap, passes
 stationary_bootstrap_indices(n, n_resamples, block, rng) -> np.ndarray   # (n_resamples, n) int64
 newey_west_lags(n) -> int                            # floor(4 (n/100)^(2/9))
 hac_variance_of_mean(x, lags) -> float               # Bartlett long-run variance / n

@@ -391,8 +391,9 @@ def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | 
     passes with Sharpe ≥ Sharpe(M0) + selection.sharpe_uplift, max drawdown ≥ M0's − selection.mdd_tolerance (drawdowns
     are negative), and paired block bootstrap P(uplift > 0) ≥ selection.bootstrap_prob (selection.bootstrap_resamples,
     block selection.bootstrap_block, seed config.seed; block selection.bootstrap_block_sensitivity reported as
-    information). Sharpe is src.metrics.sharpe_ratio(r, rf): rf is required (0.0 = zero-cost convention, or the weekly
-    T-bill series = skeleton headline; open point of S31-8). Every name of models.candidate_order must be in results
+    information). Sharpe is src.metrics.sharpe_ratio(r, rf), the §09 headline with rf the weekly FRED 3-month T-bill
+    returns over the same weeks (Amendment 6 C1, S31-13; src.metrics.tbill_weekly_returns); rf stays a required keyword,
+    and the zero-cost Sharpe (rf = 0) is reported alongside as information. Every name of models.candidate_order must be in results
     or in `absent` (e.g. M5 without approved agent features). Returns {"selected": the first passing candidate in
     order, else "M0_star", "candidates": one dict per candidate in order}.
     """
@@ -409,6 +410,7 @@ def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | 
         if not series.index.equals(m0.index):
             raise ValueError(f"selection_gate: {name} and M0 must share the same weekly index")
     sharpe_m0, mdd_m0 = sharpe_ratio(m0, rf), max_drawdown(m0)
+    sharpe_m0_zero_cost = sharpe_ratio(m0, 0.0)
     candidates, selected = [], None
     for name in order:
         if name not in results:
@@ -422,6 +424,7 @@ def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | 
         row = {"name": name, "status": "evaluated", "sharpe": sharpe, "sharpe_m0": sharpe_m0, "mdd": mdd, "mdd_m0": mdd_m0,
                "p_uplift_positive": boot["p_uplift_positive"], "uplift_lower": boot["lower"], "uplift_upper": boot["upper"],
                "p_uplift_positive_sensitivity": sensitivity["p_uplift_positive"],
+               "sharpe_zero_cost": sharpe_ratio(r, 0.0), "sharpe_m0_zero_cost": sharpe_m0_zero_cost,
                "passes_sharpe": bool(sharpe >= sharpe_m0 + gate["sharpe_uplift"]),
                "passes_mdd": bool(mdd >= mdd_m0 - gate["mdd_tolerance"]),
                "passes_bootstrap": bool(boot["p_uplift_positive"] >= gate["bootstrap_prob"])}
