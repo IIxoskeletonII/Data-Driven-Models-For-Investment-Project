@@ -7,11 +7,8 @@ import pytest
 
 # (module, functions, phase, owner) of the contract 17 table, for the functions that are stubs until their phase
 STUB_FUNCTIONS = [
-    ("src.models", ["ensemble_scores", "select_m0_star_lookback"], "3.1", "Eliya"),
     ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history"], "3.3", "Eliya"),
     ("src.agents.graph", ["build_graph", "run_lab"], "3.3", "Eliya"),
-    ("src.stats", ["paired_block_bootstrap", "rank_ic", "deflated_sharpe_ratio", "pbo_cscv", "sharpe_difference_test",
-                   "selection_gate"], "3.1", "Eliya"),
     ("src.plots", ["equity_curves", "drawdowns", "exposures"], "3.2", "Mattia"),
 ]
 
@@ -21,14 +18,18 @@ STUBS = [(module, name, phase, owner) for module, names, phase, owner in STUB_FU
 IMPLEMENTED = [
     ("src.features", ["lag_one_session", "asset_features", "momentum_variants", "market_states", "sizing_betas"]),
     ("src.labels", ["make_labels", "walk_forward_folds"]),
-    ("src.vault", ["append_trial"]),
-    ("src.models", ["fit_transform_train", "transform_test"]),
+    ("src.vault", ["append_trial", "logged_spec_hashes", "spec_hash", "split_forward_returns"]),
+    ("src.models", ["fit_transform_train", "transform_test", "walkforward_settings", "ensemble_scores", "to_weekly",
+                    "tuning_spec", "inner_fold", "inner_sharpe", "choose_grid_value", "walkforward_rung"]),
+    ("src.stats", ["paired_block_bootstrap", "rank_ic", "deflated_sharpe_ratio", "pbo_cscv", "sharpe_difference_test",
+                   "selection_gate", "stationary_bootstrap_indices", "newey_west_lags", "hac_variance_of_mean",
+                   "weekly_rank_ic", "expected_max_sharpe", "probabilistic_sharpe_ratio", "cscv_logits"]),
 ]
 IMPLEMENTED_NAMES = [(module, name) for module, names in IMPLEMENTED for name in names]
 
 # classes of the table: (module, class, methods it must define)
 CLASSES = [
-    ("src.vault", "Vault", ["features", "market_states", "labels", "run_walkforward"]),
+    ("src.vault", "Vault", ["features", "market_states", "labels", "sizing_betas", "forward_returns", "run_walkforward"]),
     ("src.models", "M0", ["fit", "score"]),
     ("src.models", "RidgeModel", ["fit", "score"]),
     ("src.models", "LightGBMModel", ["fit", "score"]),
