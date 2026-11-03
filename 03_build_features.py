@@ -1,5 +1,5 @@
 """Build the weekly features, market states and sizing betas of protocol section 06, and the training labels of
-section 05, from the daily data.
+section 05, and the forward returns of contract 7 (S31-1), from the daily data.
 
 Until FROZEN.lock exists, every input is truncated at the In-Sample end (split.in_sample_end, 2019-12-27) right after
 it is read, and no row with a later date_close, and no label with a later label_end, is written (docs/decisions.md
@@ -9,8 +9,8 @@ ending 2019-12-13 (label_end 2019-12-23).
 
 Inputs:  data/processed/daily_close.csv, daily_open.csv, data/processed/config.yaml (check_used),
          data/raw/yahoo/VIX.csv (Close), data/raw/fred/<SERIES>.csv
-Outputs: data/processed/features.csv, market_states.csv, sizing_betas.csv, momentum_variants.csv, labels.csv
-         (git-ignored), data/processed/features_config.yaml, data/checksums_features.json (rows, date range, columns,
+Outputs: data/processed/features.csv, market_states.csv, sizing_betas.csv, momentum_variants.csv, labels.csv,
+         forward_returns.csv (git-ignored; realised_on <= 2019-12-27), data/processed/features_config.yaml, data/checksums_features.json (rows, date range, columns,
          size, SHA-256)
 """
 
@@ -27,6 +27,7 @@ from src.contracts import (
     validate_betas,
     validate_daily_frame,
     validate_features,
+    validate_forward_returns,
     validate_labels,
     validate_market_states,
 )
@@ -44,6 +45,8 @@ from src.vault import OOSAccessError
 
 TABLE_KEYS = ("features", "market_states", "sizing_betas", "momentum_variants")
 LABELS_KEY = "labels"
+FORWARD_KEY = "forward_returns"  # S31-1
+REALISED_ON, PERIOD = "realised_on", "period"
 LOCK_NAME = "FROZEN.lock"
 CHECKSUMS_NAME = "checksums_features.json"
 FEATURES_CONFIG_NAME = "features_config.yaml"
@@ -91,22 +94,44 @@ def load_opens(data_dir: Path, end: pd.Timestamp) -> pd.DataFrame:
     return daily_open
 
 
-def build_labels(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end) -> pd.DataFrame:
-    """Training labels of §05 (contract 6) from the adjusted daily opens and closes, In-Sample only (S23-1).
+def build_forward_returns(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end) -> pd.DataFrame:
+    """Forward returns of contract 7 on the truncated weekly index, as one table (S31-1).
 
-    Both inputs are truncated to dates <= is_end first. Weekly opens come from src.data.weekly_panel; forward returns
-    fwd[t] = O(t+2) / O(t+1) − 1 from src.backtest.forward_returns; labels from src.labels.make_labels with the
-    truncated session calendar. A label of week t is realised at label_end = the session of O(t+2); only rows with
-    label_end <= is_end are kept, so the weeks ending 2019-12-20 and 2019-12-27 have none. Returns index
-    (date_close, ticker), columns [y, label_end]; passes validate_labels.
+    Both inputs are truncated to dates <= is_end first; weekly opens come from src.data.weekly_panel and
+    fwd[t] = O(t+2) / O(t+1) − 1 from src.backtest.forward_returns (Mattia's, unchanged). A return of week t is realised
+    at the open of week t+2 (realised_on); the weeks ending 2019-12-20 and 2019-12-27 have none (NaN, NaT). Raises
+    OOSAccessError if any realised_on is after is_end. Returns the weekly index with the 11 tradables (float64, simple
+    returns), realised_on and period ("IS" or missing); its three parts pass validate_forward_returns.
     """
     is_end = pd.Timestamp(is_end)
     daily_open, daily_close = _up_to(daily_open, is_end), _up_to(daily_close, is_end)
     weekly_open, _ = weekly_panel(daily_open, daily_close)
-    fwd, realised_on, _ = forward_returns(weekly_open, is_end=is_end)
+    fwd, realised_on, period = forward_returns(weekly_open, is_end=is_end)
     if (realised_on.dropna() > is_end).any():
-        raise OOSAccessError(f"build_labels: a forward return is realised after {is_end.strftime(DATE_FORMAT)}")
-    labels = make_labels(fwd, pd.DatetimeIndex(daily_close.index))
+        raise OOSAccessError(f"build_forward_returns: a forward return is realised after {is_end.strftime(DATE_FORMAT)}")
+    table = fwd.copy()
+    table[REALISED_ON] = realised_on
+    table[PERIOD] = period
+    return table
+
+
+def split_forward_returns(table: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """(fwd, realised_on, period) of contract 7 from the table of build_forward_returns."""
+    fwd = table.drop(columns=[REALISED_ON, PERIOD]).astype(np.float64)
+    return fwd, pd.to_datetime(table[REALISED_ON]).rename(REALISED_ON), table[PERIOD].astype(object).rename(PERIOD)
+
+
+def build_labels(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end) -> pd.DataFrame:
+    """Training labels of §05 (contract 6) from the adjusted daily opens and closes, In-Sample only (S23-1, S31-1).
+
+    Forward returns come from build_forward_returns (both inputs truncated to dates <= is_end); labels from
+    src.labels.make_labels with the truncated session calendar. A label of week t is realised at label_end = the
+    session of O(t+2); only rows with label_end <= is_end are kept, so the weeks ending 2019-12-20 and 2019-12-27 have
+    none. Returns index (date_close, ticker), columns [y, label_end]; passes validate_labels.
+    """
+    is_end = pd.Timestamp(is_end)
+    fwd, _, _ = split_forward_returns(build_forward_returns(daily_open, daily_close, is_end))
+    labels = make_labels(fwd, pd.DatetimeIndex(_up_to(daily_close, is_end).index))
     labels = labels.loc[np.asarray(pd.DatetimeIndex(labels["label_end"]) <= is_end)]
     validate_labels(labels)
     return labels
@@ -156,7 +181,8 @@ def _date_closes(table: pd.DataFrame) -> pd.DatetimeIndex:
 def write_tables(tables: dict[str, pd.DataFrame], out_dir: Path, is_end, lock_path: Path, allow_oos: bool = False) -> dict:
     """Write `<key>.csv` for each table and describe it; refuse rows after the In-Sample end while sealed (S22-5, S23-1).
 
-    If any table has a date_close after is_end, or the "labels" table has a label_end after is_end, raise
+    If any table has a date_close after is_end, the "labels" table a label_end after is_end, or the "forward_returns"
+    table a realised_on after is_end, raise
     src.vault.OOSAccessError unless lock_path exists and allow_oos is True (only 08_run_oos.py passes it, Gate 4);
     nothing is written when it raises. Returns {filename: {rows, first_date_close, last_date_close, columns, bytes,
     sha256}}.
@@ -168,6 +194,8 @@ def write_tables(tables: dict[str, pd.DataFrame], out_dir: Path, is_end, lock_pa
         late = len(dates) and dates.max() > is_end
         if key == LABELS_KEY and len(table):
             late = late or pd.DatetimeIndex(table["label_end"]).max() > is_end
+        if key == FORWARD_KEY and len(table):
+            late = late or bool((pd.DatetimeIndex(table[REALISED_ON]).dropna() > is_end).any())
         if late and not unlocked:
             raise OOSAccessError(f"table {key!r} has rows after the In-Sample end {is_end.strftime(DATE_FORMAT)}: "
                                  f"refused until {LOCK_NAME} exists and the unlock path of 08_run_oos.py is used")
@@ -208,6 +236,8 @@ def main(argv: list[str] | None = None) -> None:
     daily_open = load_opens(data_dir, end=is_end)
     tables = build_tables(daily_close, vix, fred, cfg)
     tables[LABELS_KEY] = build_labels(daily_open, daily_close, is_end)
+    tables[FORWARD_KEY] = build_forward_returns(daily_open, daily_close, is_end)
+    validate_forward_returns(*split_forward_returns(tables[FORWARD_KEY]), is_end=is_end)
     _check_label_weeks(tables[LABELS_KEY], tables["features"])
     records = write_tables(tables, processed, is_end, ROOT / LOCK_NAME)
     save_used(features_settings(cfg), processed / FEATURES_CONFIG_NAME)
