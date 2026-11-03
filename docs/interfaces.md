@@ -137,6 +137,13 @@ The signal of week t is executed at `O(t+1)` and its return realised at `O(t+2)`
 `label_end` instead of `realised_on` gives the same result. The first OOS-realised return is at the open of
 Monday 2019-12-30; the last In-Sample signal week is the one ending 2019-12-13. Validator: `validate_forward_returns`.
 
+File (S31-1): `03_build_features.py: build_forward_returns(daily_open, daily_close, is_end)` writes
+`data/processed/forward_returns.csv` (git-ignored; checksum in `data/checksums_features.json`): the weekly index truncated
+at the In-Sample end, the 11 tradables, `realised_on` and `period`. Every `realised_on` is ≤ 2019-12-27 or `NaT` (the last
+two weeks), so the table as a whole passes `validate_forward_returns`; its writer refuses a later `realised_on` while the
+vault is sealed. `build_labels` derives the labels from the same table. `split_forward_returns(table)` (in the script and
+in `src/vault.py`) returns `(fwd, realised_on, period)`.
+
 ## 8. Scores (§07, §09)
 
 - `pd.DataFrame` indexed by the weekly index (the weeks a model scores), columns `SECTORS`, `float64`; higher means more
@@ -296,15 +303,24 @@ class ScoreModel(Protocol):          # src/contracts.py
 | `market_states(as_of)` | market states (contract 4), rows with `date_close ≤ as_of` |
 | `labels(as_of)` | labels (contract 6), rows with `label_end ≤ as_of` |
 | `sizing_betas(as_of)` | sizing betas (contract 10), rows with `date_close ≤ as_of` (S23-4) |
+| `forward_returns(as_of)` | `(fwd, realised_on, period)` of contract 7 on the rows with `realised_on ≤ as_of`: returns already realised at `as_of` (S31-1); the full table is validated on first read, a slice does not satisfy the "last two rows NaN" rule |
 | `run_walkforward(spec)` | weekly scores (contract 8) of a model spec over the In-Sample folds (contract 13); appends one row to `docs/trial_log.csv` |
 
 - Optional keyword arguments (S22-8; they keep the behaviour above): `Vault(..., *, data_dir=ROOT / "data" / "processed",
   frames=None, cfg=None)` reads `features.csv`, `market_states.csv`, `labels.csv` (and `momentum_variants.csv`,
-  `sizing_betas.csv`) from `data_dir` unless in-memory `frames` are given; `unlock()` raises `OOSAccessError` unless `FROZEN.lock` exists and is
+  `sizing_betas.csv`, `forward_returns.csv`) from `data_dir` unless in-memory `frames` are given; `unlock()` raises `OOSAccessError` unless `FROZEN.lock` exists and is
   called only by `08_run_oos.py`; `run_walkforward(spec, evaluate=None, *, trial_path=...)` fills `is_sharpe` and
   `is_mdd` only when an evaluator is passed (the engine, from Phase 2.3).
-  A spec holds only `rung`, `feature`, `author`, `kind`, `notes`, `as_of`, `end` (other keys refused); `Vault(is_end)`
-  refuses an `is_end` after `split.in_sample_end`; every failed call is logged as `refused` (S22-12).
+  A spec holds only `rung`, `feature`, `author`, `kind`, `notes`, `params`, `tuning`, `members`, `as_of`, `end` (other keys
+  refused); `Vault(is_end)` refuses an `is_end` after `split.in_sample_end`; every failed call is logged as `refused`
+  (S22-12).
+- Ladder specs (S31-2): `rung` is `M0`, `M1`, `M2`, `M3`, `M0_star` or `ENS`. M0: `{"rung": "M0", "feature": F}` (F a
+  feature column or a `MOM{L}_1` variant). Fixed grid value: `{"rung": "M1"|"M2", "params": {"alpha": λ}}` or
+  `{"rung": "M3", "params": {"max_depth": d}}`, the value taken from the `config.yaml` grid. Tuned rung (Amendment 5 C1):
+  `{"rung": "M1"|"M2"|"M3"|"M0_star", "tuning": T}`; ENS: `{"rung": "ENS", "members": ["M1", "M2", "M3"], "tuning": T}`, with
+  `T = src.models.tuning_spec(cfg)` (the `tuning` section, baseline costs, `signal`, `metrics.periods_per_year`); any other
+  combination is refused. The C1 settings therefore enter `spec_hash` through the spec, and `walkforward_settings(cfg)` is
+  unchanged. After a tuned call, `Vault.last_selection` holds the per-refit selection table (else `None`).
 - This access log is separate from `oos_access_log.json`, the single-entry log written only by `08_run_oos.py` (§10),
   which CI checks.
 - Every call appends one JSON line to the access log (git-ignored under `outputs/`): UTC time, method, `as_of` or spec hash,
@@ -318,11 +334,15 @@ class ScoreModel(Protocol):          # src/contracts.py
   `{"config": walkforward_settings(cfg), "spec": spec}`, so the same spec under a changed walk-forward config is a new
   trial (S23-6); `params_json` is the spec's canonical JSON. `is_sharpe` and `is_mdd` stay empty until the selection step
   of Phase 3.1 fills them from the outputs of `06_backtest.py` (S23-6).
-- Walk-forward outputs (S23-3): `05_train_walkforward.py --model M0` writes `outputs/walkforward/<rung>/scores.csv`
+- Walk-forward outputs (S23-3, S31-10): `05_train_walkforward.py --model {M0, M1, M2, M3, ENS, M0_star}` or `--fixed NAME`
+  (`M1_a0.1`, `M1_a1`, `M1_a10`, `M2_a…`, `M3_d2`, `M3_d3`, `M0_L13`, `M0_L26` = the M0 trial, `M0_L52`) writes
+  `outputs/walkforward/<name>/scores.csv`
   (contract 8, the test weeks of contract 13), `used.yaml` = `src.models.walkforward_settings(cfg)` = exactly the config
   sections `{seed, data, split, execution, features, models}` (S23-5, S23-6), which `06_backtest.py` checks with
   `check_used`, and `summary.json`
-  (counts, first and last week, column sums, min, max, fixed spot values, `scores_sha256`; no timestamp).
+  (`name`, counts, first and last week, column sums, min, max, fixed spot values, `scores_sha256`; no timestamp); tuned
+  rungs with a grid also write `selection.csv` (one row per refit: the outer and inner fold dates, `inner_val_weeks`, one
+  `sharpe_<value>` column per grid value, `chosen`).
 - Agents reach the vault only through the MCP server `ddmi-vault` (`src/agents/vault_server.py`, protocol section 08)
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
   show sectors as anonymised codes A1 … A9 and return summary metrics, never price series.
@@ -353,6 +373,9 @@ entries S2-8 to S2-14 in `docs/decisions.md`. The table keeps the original quest
   `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, and `selection_gate`, the §07 rule applied to In-Sample
   walk-forward results (Sharpe uplift ≥ `selection.sharpe_uplift`, drawdown tolerance `selection.mdd_tolerance`, bootstrap
   probability ≥ `selection.bootstrap_prob`; first passing candidate in `models.candidate_order`, else M0\*).
+  Every signature and result key is listed in contract 17 ("Signatures and result keys of `src/stats.py`"); `rf` of
+  `selection_gate` has no default and is the weekly T-bill series (headline Sharpe, Amendment 6 C1, S31-13). Settings: `inference.pbo_blocks`
+  (16) and `inference.confidence` (0.95), additive config section.
 
 ## 17. Where everything lives (stubs until their phase)
 
@@ -370,10 +393,10 @@ may refine in the phase pull request, which the other author reviews.
 | `src/metrics.py` | `performance`, `return_stats`, `behaviour`, `market`, `tbill_weekly_returns`, `period_average_rf` | 2.1, Mattia |
 | `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas`; helpers `weekly_index`, `last_sessions`, `raw_asset_features`, `cross_sectional_zscore`; `features_settings` (2.3a) | 2.2, Eliya |
 | `src/labels.py` | `make_labels`, `walk_forward_folds`; helpers `label_end_by_week`, `assert_purged` | 2.2, Eliya |
-| `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a) | 2.2, Eliya |
-| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `select_m0_star_lookback` (3.1) | Eliya |
+| `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a); `Vault.forward_returns`, `Vault.last_selection`, `split_forward_returns` (3.1) | 2.2, Eliya |
+| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `to_weekly`, `LadderData`, `tuning_spec`, `grid`, `tie_order`, `inner_validation_weeks`, `inner_fold`, `inner_sharpe`, `choose_grid_value`, `walkforward_rung` (3.1, done; `select_m0_star_lookback` replaced by the shared Amendment 5 C1 helpers, S31-10) | Eliya |
 | `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.3, Eliya |
-| `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate` | 3.1, Eliya |
+| `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate`, and the helpers of contract 16 | 3.1, Eliya (done) |
 | `src/plots.py` | `equity_curves(returns, period, realised_on, path)`, `drawdowns(returns, period, realised_on, path)`, `exposures(result, path)` (a `BacktestResult` or a frame with `long_exposure`, `short_exposure`, `net_exposure`, `residual_beta`), `cost_bridge(weekly, path)`, `placebo_histogram(sharpes, marks, path)`; each writes `path`.html and `path`.png (S32-6; with `07_evaluate.py`, S32-7) | 3.2, Mattia (done) |
 
 ### Validators and helpers of `src/contracts.py` (exact signatures)
@@ -420,6 +443,37 @@ validate_folds(folds: Sequence[WalkForwardFold], embargo_weeks: int | None = Non
 For `validate_daily_frame`, `columns` is the set the frame may draw from (a subset in universe order is valid). For
 `validate_features`, `columns` is the exact column list. In `validate_weights` and `validate_backtest_result`, the
 tolerance is 1e-12. Validators never modify their arguments.
+
+### Signatures and result keys of `src/stats.py` (S31-8, S31-9, S31-12)
+
+Weekly series are `pd.Series` (or frames) on the weekly index; returns are decimal weekly net returns; P = 52. Result keys
+are binding (Phase 3.2 reads `p_uplift_positive` and `mean`).
+
+```python
+paired_block_bootstrap(candidate, baseline, n_resamples=5000, block=4, seed=42, *, rf=None, confidence=None) -> dict
+    # uplift, lower, upper, p_uplift_positive, mean_diff, mean_diff_lower, mean_diff_upper, n_weeks, block, n_resamples
+    # Sharpe uplift (skeleton formula; rf None = 0 = zero-cost, float = annual, Series = weekly, reindexed to the returns);
+    # percentile interval at confidence (default inference.confidence = 0.95); p_uplift_positive = share of resamples > 0
+rank_ic(scores, fwd, lags=None) -> dict              # mean, hac_se, t_stat, n_weeks, lags (Newey-West lag rule if None)
+weekly_rank_ic(scores, fwd) -> pd.Series             # named "rank_ic", one value per usable week
+deflated_sharpe_ratio(returns, n_trials, trial_sharpes=None, *, trial_returns=None) -> float
+    # trial Sharpes per week (mean/std, ddof=1), or computed from trial_returns (one column per trial)
+probabilistic_sharpe_ratio(returns, benchmark_sharpe=0.0) -> float
+expected_max_sharpe(n_trials, variance) -> float     # 0.0 for N = 1
+pbo_cscv(returns, n_blocks=16) -> float              # share of CSCV logits <= 0 (n_blocks = inference.pbo_blocks)
+cscv_logits(returns, n_blocks=16) -> np.ndarray      # one logit per split, itertools.combinations order
+sharpe_difference_test(a, b, *, kernel="qs", bandwidth=None) -> dict
+    # sharpe_a, sharpe_b, difference, difference_annual, se, z, p_value, bandwidth, n_weeks
+selection_gate(results, m0, cfg=None, *, rf, absent=()) -> dict
+    # rf: the weekly FRED 3-month T-bill returns (headline Sharpe, Amendment 6 C1, S31-13); still a required keyword
+    # selected (first passing name of models.candidate_order, else "M0_star"), candidates: list of dicts with
+    # name, status ("evaluated" or "absent"), and if evaluated: sharpe, sharpe_m0, mdd, mdd_m0, p_uplift_positive,
+    # uplift_lower, uplift_upper, p_uplift_positive_sensitivity, sharpe_zero_cost, sharpe_m0_zero_cost (information),
+    # passes_sharpe, passes_mdd, passes_bootstrap, passes
+stationary_bootstrap_indices(n, n_resamples, block, rng) -> np.ndarray   # (n_resamples, n) int64
+newey_west_lags(n) -> int                            # floor(4 (n/100)^(2/9))
+hac_variance_of_mean(x, lags) -> float               # Bartlett long-run variance / n
+```
 
 ## 18. Shared synthetic fixture (`tests/conftest.py`)
 

@@ -344,7 +344,9 @@ def _week(stamp: pd.Timestamp) -> str:
 
 # -- models: any folder of outputs/walkforward/ (decision S32-1) ----------------------------------------------------------
 
-MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]*")
+# letters, digits and underscores, with single dots inside (M1_a0.1, M2_a0.1; decisions S32-1, S32-9): no "..", no path
+# separator, no leading or trailing dot (Windows drops a trailing dot from a folder name)
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*")
 
 
 def walkforward_models() -> list[str]:
@@ -358,9 +360,10 @@ def walkforward_models() -> list[str]:
 
 
 def check_model(model: str) -> None:
-    """Stop unless `model` is a plain name (letters, digits, underscores) with walk-forward scores."""
+    """Stop unless `model` is a plain name (letters, digits, underscores, single inner dots: MODEL_NAME) with walk-forward
+    scores."""
     if not isinstance(model, str) or not MODEL_NAME.fullmatch(model):
-        raise SystemExit(f"--model: {model!r} is not a model name (letters, digits and underscores)")
+        raise SystemExit(f"--model: {model!r} is not a model name (letters, digits, underscores and single inner dots)")
     available = walkforward_models()
     if model not in available:
         raise SystemExit(f"--model {model}: no outputs/walkforward/{model}/scores.csv; run 05_train_walkforward.py first "
@@ -595,8 +598,10 @@ def shift_check(cfg: dict, model: str, inputs: InSampleInputs | None = None) -> 
         rows[name] = book_row(result, inputs, rf_constant) | {
             "rank_ic_mean": None if ic is None else ic.get(RANK_IC_MEAN_KEY), "rank_ic": ic}
     selection = cfg["selection"]
+    # the gate's Sharpe: the §09 headline with the weekly T-bill over the same weeks (Amendment 6 C1, S32-9)
     boot = stats_hook("paired_block_bootstrap", trimmed["delayed"].net, trimmed["base"].net,
-                      n_resamples=selection["bootstrap_resamples"], block=selection["bootstrap_block"], seed=cfg["seed"])
+                      n_resamples=selection["bootstrap_resamples"], block=selection["bootstrap_block"], seed=cfg["seed"],
+                      rf=inputs.rf_weekly.loc[common])
     if boot is not None and BOOTSTRAP_P_KEY not in boot:
         raise SystemExit(f"src.stats.paired_block_bootstrap returned no {BOOTSTRAP_P_KEY!r} (keys {sorted(boot)}); "
                          "update BOOTSTRAP_P_KEY in 06_backtest.py (decision S32-3)")

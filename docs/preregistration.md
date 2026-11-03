@@ -358,3 +358,17 @@ weeks (one value per week), then standardised with the mean and the sample stand
 training values. The same bounds, mean and standard deviation are applied unchanged to the weeks the fold scores. The
 level is set in `config.yaml` as `features.winsor_quantiles: [0.01, 0.99]`. Reason: §06 requires "Scaling and winsorising
 fitted inside each training fold" but states no level, which the implementation would otherwise choose.
+
+Amendment 5 (3 Nov 2026): clarification of §07 (choice within the fixed grids).
+Proposed by Eliya Allam; approved by Mattia Cervelli through the review of the pull request from branch feat/3.1-ladder. When it was committed, the M0 In-Sample walk-forward scores and its In-Sample backtest existed (Phases 2.3a and 2.3b); no M1, M2, M3, M5, ENS or M0* score or result had been computed, and no Out-of-Sample value had been computed or seen.
+
+C1 (§07, grid choice). At each quarterly refit, a rung with a grid (M1 and M2: λ; M3: depth; M0*: lookback) chooses its value using only that refit's purged training window. Each value is fitted on the window minus its last 104 weeks (inner training, with labels purged and a one-week embargo before the inner validation start) and scored on those 104 weeks. The value with the highest net Sharpe of the hedged book (zero-cost convention, annualised return / volatility) at baseline costs (10 bps, 2% borrow), with the §09 sizing, is chosen, and the rung is refitted with it on the full training window. Ties go to the simpler value: the larger λ, the smaller depth, the 26-week lookback. Reason: §07 fixes the grids and §10 places all tuning In-Sample, but neither says how a value is chosen. This rule uses only data available at each refit, never the fold being scored, and applies M0*'s 'chosen at each refit by walk-forward In-Sample Sharpe' to every grid.
+
+C2 (§10, trial count). Every grid value is also run as a fixed configuration through the whole walk-forward. These fixed runs enter the PBO matrix and the trial log, and the Deflated Sharpe Ratio counts every rung and every fixed configuration.
+
+Amendment 6 (3 Nov 2026): clarifications of §07 (gate Sharpe and Out-of-Sample refits).
+Proposed by Eliya Allam; approved by Mattia Cervelli through the review of the pull request from branch feat/3.1-ladder. When it was committed, the M0 In-Sample backtest and the In-Sample walk-forward scores of M1, M2, M3, ENS and M0* (with their inner-window Sharpes of Amendment 5 C1) existed; no candidate In-Sample backtest, gate statistic or Out-of-Sample value had been computed.
+
+C1 (§07 step 3, gate Sharpe). The gate's 'net Sharpe' is the headline convention of §09: (annualised net return − rf) / annualised volatility, with rf the weekly FRED 3-month T-bill over the same weeks; the zero-cost Sharpe is reported alongside. Reason: §09 names this convention the headline, stated on the results slide, so the gate must use the Sharpe the slides report. Amendment 5 C1 uses the zero-cost convention only inside training windows, where only the ranking of grid values matters.
+
+C2 (§07 training schedule, Out-of-Sample refits). Out-of-Sample refits keep, for each rung, the grid value chosen at the last In-Sample refit, and refit only the model's parameters on newly realised labels. Reason: §07 states 'the same refits continue during OOS on newly realised labels; tuning does not'; re-applying Amendment 5 C1 Out-of-Sample would be tuning.

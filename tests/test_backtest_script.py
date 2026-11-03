@@ -343,6 +343,32 @@ def test_walkforward_models_lists_folders_with_scores(script, model_inputs):
     assert script.walkforward_models() == ["M0", "M0_L13", "M3_d2"]
 
 
+@pytest.mark.parametrize("name", ["M1_a0.1", "M2_a0.1", "M3_d2", "M0_L13", "M1_a10"])
+def test_a_model_name_may_hold_single_inner_dots(script, model_inputs, name):
+    # S32-9: the --fixed names of 05_train_walkforward.py (S31-10) hold the grid value, e.g. M1_a0.1
+    assert script.MODEL_NAME.fullmatch(name)
+    _copy_walkforward(model_inputs, name)
+    assert name in script.walkforward_models()
+    script.check_model(name)
+
+
+@pytest.mark.parametrize("name", ["..", ".", "../M0", "M0/..", "M0/M1", r"M0\M1", r"..\M0", "M1_a0.1/..", "M1_a..1",
+                                  ".M1", "M1.", "M1_a0.1.", "", "M-0", "M1 a0.1", "C:M0"])
+def test_a_path_like_model_name_is_refused(script, model_inputs, name):
+    # S32-9: dots are allowed only between other characters, so no name can leave outputs/walkforward/
+    assert not script.MODEL_NAME.fullmatch(name)
+    with pytest.raises(SystemExit, match="not a model name"):
+        script.check_model(name)
+    assert not model_inputs["out"].exists()
+
+
+def test_a_dotted_variant_folder_is_backtested(script, model_inputs):
+    _copy_walkforward(model_inputs, "M1_a0.1")
+    script.main(["--model", "M1_a0.1"])
+    folder = model_inputs["out"].parent / "M1_a0.1"
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["model"] == "M1_a0.1"
+
+
 def test_a_fixed_variant_folder_is_backtested(script, model_inputs):
     _copy_walkforward(model_inputs, "M3_d2")
     script.main(["--model", "M3_d2"])
@@ -418,9 +444,15 @@ def test_shift_check_writes_both_books_on_common_weeks(script, model_inputs):
     r = weekly["net_delayed"]
     annual = (1 + r).prod() ** (52 / len(r)) - 1
     assert summary["delayed"]["net_sharpe_zero_cost"] == pytest.approx(annual / (r.std() * np.sqrt(52)), rel=1e-9)
-    assert summary["p_delayed_better"] is None  # src.stats is still a Phase 3.1 stub: the hook returns None
+    p = summary["p_delayed_better"]  # src.stats.paired_block_bootstrap (Phase 3.1)
+    assert isinstance(p, float) and 0.0 <= p <= 1.0
+    for book in ("base", "delayed"):
+        assert np.isfinite(summary[book]["rank_ic_mean"])  # src.stats.rank_ic (Phase 3.1)
+    # the bootstrap uses the gate's Sharpe, the headline with the weekly T-bill (Amendment 6 C1, S32-9): its observed
+    # uplift is the reported difference of the T-bill Sharpes
+    assert summary["bootstrap"]["uplift"] == pytest.approx(summary["sharpe_difference_delayed_minus_base"], rel=1e-9)
     assert summary["verdict"] == script.shift_verdict(summary["base"]["net_sharpe_rf_tbill"],
-                                                      summary["delayed"]["net_sharpe_rf_tbill"], None, 0.80)
+                                                      summary["delayed"]["net_sharpe_rf_tbill"], p, 0.80)
 
 
 def test_shift_check_flags_scores_that_are_one_week_early(script, model_inputs, synthetic_market, monkeypatch):

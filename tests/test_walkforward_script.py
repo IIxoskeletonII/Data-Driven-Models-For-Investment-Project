@@ -1,8 +1,10 @@
-"""05_train_walkforward.py (S23-2, S23-3): the M0 In-Sample walk-forward, its outputs, determinism and the trial log.
+"""05_train_walkforward.py (S23-2, S23-3, S31-10): the In-Sample walk-forward of M0 and of the ladder (tuned rungs and
+fixed grid values), its outputs, determinism and the trial log.
 
 The script's module name starts with a digit, so it is loaded from its file, like 03_build_features.py. The data folder
 is built here from the shared synthetic market (sessions 2011-01-03 to 2020-12-31) truncated at the In-Sample end, with
-a copy of config.yaml whose warm-up ends in 2012 and whose test years are 2014-2019. Every path (data, outputs, lock,
+a copy of config.yaml whose warm-up ends in 2012, whose test years are 2014-2019 and whose inner validation window
+(Amendment 5 C1) is 26 weeks, since the first training window holds only 2013. Every path (data, outputs, lock,
 access log, trial log) is under a temporary folder; main() is never run on the real data.
 """
 
@@ -28,7 +30,7 @@ SECTORS = list(contracts.universe(CFG).sectors)
 IS_END = pd.Timestamp(CFG["split"]["in_sample_end"])  # Fri 2019-12-27
 LAST_WEEK = "2019-12-13"  # last In-Sample signal week (contract 7)
 FIRST_WEEK = "2014-01-03"  # first Friday of 2014, the first synthetic test year
-SUMMARY_KEYS = {"rung", "spec_hash", "refits", "rows", "weeks", "values", "nan_count", "first_week", "last_week",
+SUMMARY_KEYS = {"name", "rung", "spec_hash", "refits", "rows", "weeks", "values", "nan_count", "first_week", "last_week",
                 "column_sums", "min", "max", "spots", "scores_sha256"}
 OUTPUT_FILES = ["scores.csv", "used.yaml", "summary.json"]
 SYNTHETIC_SPOTS = (("2014-01-03", "XLB"), ("2015-06-12", "XLK"), ("2016-02-12", "XLE"), ("2018-10-12", "XLF"),
@@ -58,6 +60,7 @@ def synthetic_cfg() -> dict:
     cfg["split"]["warmup_end"] = "2012-12-31"
     cfg["split"]["initial_train_years"] = [2013, 2013]
     cfg["split"]["test_years"] = [2014, 2019]
+    cfg["tuning"]["inner_validation_weeks"] = 26
     return cfg
 
 
@@ -66,7 +69,9 @@ _BUILT: dict = {}
 
 
 def build_data_dir(script03, market, data_dir: Path, lock: Path) -> None:
-    """features.csv, market_states.csv, sizing_betas.csv, momentum_variants.csv, labels.csv and features_config.yaml."""
+    """features.csv, market_states.csv, sizing_betas.csv, momentum_variants.csv, labels.csv, forward_returns.csv and
+    features_config.yaml.
+    """
     daily_close, daily_open = market.daily_close, market.daily_open
     daily_close = daily_close[daily_close.index <= IS_END]
     daily_open = daily_open[daily_open.index <= IS_END]
@@ -74,7 +79,8 @@ def build_data_dir(script03, market, data_dir: Path, lock: Path) -> None:
     fred = market.fred[market.fred.index <= IS_END]
     tables = script03.build_tables(daily_close, vix, fred, SYN_CFG)
     labels = script03.build_labels(daily_open, daily_close, IS_END)
-    script03.write_tables({**tables, "labels": labels}, data_dir, IS_END, lock)
+    forward = script03.build_forward_returns(daily_open, daily_close, IS_END)
+    script03.write_tables({**tables, "labels": labels, "forward_returns": forward}, data_dir, IS_END, lock)
     save_used(features.features_settings(SYN_CFG), data_dir / "features_config.yaml")
 
 
@@ -130,10 +136,46 @@ def test_model_spec_of_m0(script):
                                             "notes": "M0 In-Sample walk-forward (Phase 2.3a)"}
 
 
-@pytest.mark.parametrize("rung", ["M1", "M2", "M3", "M5", "ENS"])
-def test_model_spec_of_other_rungs_is_not_implemented(script, rung):
-    with pytest.raises(NotImplementedError):
-        script.model_spec(rung, CFG)
+@pytest.mark.parametrize("rung", ["M1", "M2", "M3", "M0_star"])
+def test_model_spec_of_a_tuned_rung_carries_the_tuning_spec(script, rung):
+    """S31-2: a tuned rung's spec holds rung and tuning = src.models.tuning_spec(cfg), and neither params nor feature."""
+    spec = script.model_spec(rung, CFG)
+    assert spec["rung"] == rung and spec["tuning"] == models.tuning_spec(CFG)
+    assert "params" not in spec and "feature" not in spec and spec["author"] == "Eliya Allam"
+
+
+def test_model_spec_of_ens_names_its_members(script):
+    spec = script.model_spec("ENS", CFG)
+    assert spec["members"] == ["M1", "M2", "M3"] and spec["tuning"] == models.tuning_spec(CFG)
+
+
+def test_model_spec_of_an_unknown_rung_is_refused(script):
+    with pytest.raises(ValueError):
+        script.model_spec("M5", CFG)
+
+
+def test_fixed_names_follow_the_grids(script):
+    """S31-10: one --fixed name per grid value, built from config.yaml."""
+    assert script.fixed_names(CFG) == ["M1_a0.1", "M1_a1", "M1_a10", "M2_a0.1", "M2_a1", "M2_a10", "M3_d2", "M3_d3",
+                                       "M0_L13", "M0_L26", "M0_L52"]
+
+
+@pytest.mark.parametrize("name, params", [("M1_a0.1", {"alpha": 0.1}), ("M2_a10", {"alpha": 10}),
+                                          ("M3_d2", {"max_depth": 2}), ("M3_d3", {"max_depth": 3})])
+def test_fixed_spec_of_a_grid_value(script, name, params):
+    spec = script.fixed_spec(name, CFG)
+    assert spec["rung"] == name.split("_")[0] and spec["params"] == params and "tuning" not in spec
+
+
+def test_fixed_m0_l26_is_the_m0_trial_itself(script):
+    """S31-6: M0_L26 is exactly the M0 spec, so it has the M0 spec_hash and adds no trial row."""
+    assert script.fixed_spec("M0_L26", CFG) == script.model_spec("M0", CFG)
+
+
+@pytest.mark.parametrize("lookback", [13, 52])
+def test_fixed_m0_lookbacks_use_the_momentum_variants(script, lookback):
+    spec = script.fixed_spec(f"M0_L{lookback}", CFG)
+    assert spec["rung"] == "M0" and spec["feature"] == f"MOM{lookback}_1"
 
 
 def test_walkforward_settings_are_exactly_the_agreed_config_sections():
@@ -148,9 +190,11 @@ def test_walkforward_settings_changes_with_the_split():
     assert models.walkforward_settings(SYN_CFG) != models.walkforward_settings(CFG)
 
 
-def test_main_accepts_only_m0(script):
+@pytest.mark.parametrize("argv", [["--model", "M5"], ["--fixed", "M1_a5"], ["--model", "M1", "--fixed", "M1_a1"], []])
+def test_main_refuses_unknown_names_and_needs_exactly_one_option(script, argv):
+    """argparse refuses an unknown rung or fixed name, both options together, and neither (before any data access)."""
     with pytest.raises(SystemExit):
-        script.main(["--model", "M1"])
+        script.main(argv)
 
 
 # ---------------------------------------------------------------- the reference run on the synthetic market
@@ -313,3 +357,86 @@ def test_run_refuses_a_data_folder_without_features_config(script, built, tmp_pa
     with pytest.raises(FileNotFoundError):
         run_into(script, tmp_path, data_dir)
     assert not (tmp_path / "out" / "scores.csv").exists()
+
+
+# ---------------------------------------------------------------- the ladder on the synthetic market (S31-10)
+
+
+def run_name(script, name: str, root: Path, data_dir: Path) -> tuple[dict, dict]:
+    where = paths(root, data_dir)
+    return script.run(name, SYN_CFG, spots=SYNTHETIC_SPOTS, **where), where
+
+
+@pytest.fixture
+def tuned_m1(script, built, tmp_path_factory) -> dict:
+    """One tuned M1 run on the synthetic data folder (shared, read-only)."""
+    if "tuned_m1" not in _BUILT:
+        root = tmp_path_factory.mktemp("tuned_m1")
+        summary, where = run_name(script, "M1", root, built["data_dir"])
+        _BUILT["tuned_m1"] = {"summary": summary, "where": where}
+    return _BUILT["tuned_m1"]
+
+
+def test_tuned_run_writes_selection_csv_with_one_row_per_refit(tuned_m1):
+    """selection.csv: 24 refits, the S31-10 columns, the chosen value in the grid with the best inner Sharpe."""
+    selection = pd.read_csv(tuned_m1["where"]["out_dir"] / "selection.csv")
+    assert len(selection) == 24
+    sharpes = ["sharpe_0.1", "sharpe_1", "sharpe_10"]
+    assert list(selection.columns) == ["test_year", "refit", "test_start", "train_start", "train_end", "purge_end",
+                                       "inner_train_end", "inner_purge_end", "inner_val_start", "inner_val_end",
+                                       "inner_val_weeks"] + sharpes + ["chosen"]
+    assert (selection["inner_val_weeks"] == 26).all()
+    assert set(selection["chosen"]) <= {0.1, 1.0, 10.0}
+    best = selection[sharpes].max(axis=1)
+    picked = [row[f"sharpe_{format(row['chosen'], 'g')}"] for _, row in selection.iterrows()]
+    np.testing.assert_allclose(picked, best, rtol=0, atol=1e-12)
+    assert (pd.to_datetime(selection["inner_val_end"]) == pd.to_datetime(selection["train_end"])).all()
+    assert (pd.to_datetime(selection["inner_purge_end"]) == pd.to_datetime(selection["inner_val_start"])
+            - pd.Timedelta(days=7)).all()
+
+
+def test_tuned_run_logs_one_m1_trial_and_writes_the_standard_outputs(tuned_m1):
+    where = tuned_m1["where"]
+    for name in OUTPUT_FILES:
+        assert (where["out_dir"] / name).exists()
+    rows = read_trials(where["trial_path"])
+    assert [row["rung"] for row in rows] == ["M1"]
+    assert tuned_m1["summary"]["name"] == "M1" and tuned_m1["summary"]["refits"] == 24
+    contracts.validate_scores(read_scores(where["out_dir"]).astype(np.float64))
+
+
+def test_tuned_scores_equal_the_fixed_scores_at_the_chosen_value(script, built, tuned_m1, tmp_path):
+    """Each refit of the tuned run scores its test weeks exactly like the fixed run at the value it chose."""
+    selection = pd.read_csv(tuned_m1["where"]["out_dir"] / "selection.csv", parse_dates=["test_start"])
+    tuned = read_scores(tuned_m1["where"]["out_dir"])
+    closes = pd.DatetimeIndex(tuned.index.get_level_values("date_close"))
+    starts = list(selection["test_start"]) + [closes.max() + pd.Timedelta(days=7)]
+    fixed = {}
+    for value in sorted(set(selection["chosen"])):
+        _, where = run_name(script, f"M1_a{format(value, 'g')}", tmp_path / format(value, "g"), built["data_dir"])
+        fixed[value] = read_scores(where["out_dir"])
+    for k, row in selection.iterrows():
+        weeks = np.asarray((closes >= starts[k]) & (closes < starts[k + 1]))
+        pd.testing.assert_frame_equal(tuned.loc[weeks], fixed[row["chosen"]].loc[weeks])
+
+
+def test_fixed_m0_l26_adds_no_trial_row_and_equals_m0(script, built, tmp_path):
+    """S31-6: after the M0 run, M0_L26 writes the same scores with the same spec_hash and no new trial row."""
+    m0, where = run_name(script, "M0", tmp_path / "m0", built["data_dir"])
+    l26 = script.run("M0_L26", SYN_CFG, spots=SYNTHETIC_SPOTS, **{**where, "out_dir": tmp_path / "l26"})
+    assert l26["spec_hash"] == m0["spec_hash"] and l26["scores_sha256"] == m0["scores_sha256"]
+    assert l26["name"] == "M0_L26" and l26["rung"] == "M0"
+    assert len(read_trials(where["trial_path"])) == 1
+    assert not (tmp_path / "l26" / "selection.csv").exists()
+
+
+def test_ens_run_writes_no_selection_and_ranks_in_one_to_nine(script, built, tmp_path):
+    """ENS scores are mean ranks (between 1 and 9, summing to 45 per week); no selection.csv; one ENS trial row."""
+    summary, where = run_name(script, "ENS", tmp_path, built["data_dir"])
+    scores = read_scores(where["out_dir"])
+    assert not (where["out_dir"] / "selection.csv").exists()
+    values = scores.to_numpy()
+    assert np.nanmin(values) >= 1 and np.nanmax(values) <= 9
+    np.testing.assert_allclose(np.nansum(values, axis=1), 45.0, rtol=0, atol=1e-12)
+    assert [row["rung"] for row in read_trials(where["trial_path"])] == ["ENS"]
+    assert summary["name"] == "ENS"

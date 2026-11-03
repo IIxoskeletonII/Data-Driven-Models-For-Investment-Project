@@ -1,17 +1,25 @@
 """The AI ladder of protocol section 07: M0 rank rule, ridge (M1, M2), LightGBM (M3), ENS and the M0* fallback.
 
 Phase 2.2 (Eliya): M0 and the in-fold scaling pipeline (decisions S22-6, S22-11; Amendment 2 C1, C7; Amendment 4 C1).
-Not implemented yet: ridge, LightGBM, ENS and M0* in Phase 3.1 (Eliya). Interfaces: docs/interfaces.md, contracts 5, 8
-and 14.
+Phase 3.1 (Eliya): ridge (M1, M2), LightGBM (M3), ENS, M0* and the choice within the fixed grids of Amendment 5 C1
+(decisions S31-2 to S31-6), with the walk-forward loop the vault runs. Interfaces: docs/interfaces.md, contracts 5, 8,
+13 and 14.
 """
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from lightgbm import LGBMRegressor
+from sklearn.linear_model import Ridge
 
+from src.backtest import run as run_backtest
 from src.config import load_config
-from src.contracts import interaction_columns
+from src.contracts import ContractError, WalkForwardFold, interaction_columns, universe, validate_scores
+from src.labels import assert_purged, label_end_by_week
+from src.metrics import annualized_return, annualized_volatility, ratio
+from src.sizing import size_book
 
 INDICATOR_STATE = "BEAR24"  # Amendment 2 C1: used as 0/1 everywhere, never winsorised or standardised
 VIX_STATE, VIX_SCALED = "VIX", "VIX_Z"  # Amendment 2 C7: VIX_Z is the in-fold standardisation of VIX
@@ -188,54 +196,395 @@ class M0:
         return pd.Series(X[self.feature].to_numpy(dtype=np.float64), index=X.index, name="score")
 
 
+def _check_training(X: pd.DataFrame, y: pd.Series, name: str) -> None:
+    """Raise ValueError unless X and y share their index and hold only finite values (S31-4)."""
+    if not X.index.equals(y.index):
+        raise ValueError(f"{name}.fit: X and y must have the same index")
+    if len(X) == 0:
+        raise ValueError(f"{name}.fit: no training row")
+    if not np.isfinite(X.to_numpy(dtype=np.float64)).all() or not np.isfinite(y.to_numpy(dtype=np.float64)).all():
+        raise ValueError(f"{name}.fit: training inputs and labels must be finite (S31-4)")
+
+
+def _predict(model, X: pd.DataFrame, columns: list[str], name: str) -> pd.Series:
+    """Predictions of a fitted estimator on X[columns]; a row with any missing input gets NaN (S31-4)."""
+    if model is None:
+        raise ValueError(f"{name}.score: the model is not fitted")
+    values = X[columns].to_numpy(dtype=np.float64)
+    complete = np.isfinite(values).all(axis=1)
+    out = np.full(len(values), np.nan)
+    if complete.any():
+        out[complete] = np.asarray(model.predict(values[complete]), dtype=np.float64)
+    return pd.Series(out, index=X.index, name="score", dtype=np.float64)
+
+
 class RidgeModel:
-    """Ridge regression ranker (M1 on the six asset features, M2 with the five interactions; §07, λ ∈ {0.1, 1, 10})."""
+    """Ridge regression ranker (§07): M1 on the six z-scored asset features, M2 with the five interactions;
+    λ ∈ models.M1.alpha / models.M2.alpha. sklearn Ridge(alpha=λ) with library defaults (fit_intercept=True; S31-4).
+    """
 
     def __init__(self, alpha: float, name: str = "M1") -> None:
         self.alpha = alpha
         self.name = name
+        self._model = None
+        self.columns: list[str] = []
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "RidgeModel":
-        """Fit on purged training rows (label_end ≤ purge_end); returns self."""
-        raise NotImplementedError("Phase 3.1, Eliya")
+        """Fit on purged training rows (label_end ≤ purge_end, asserted by the caller): X the design of contract 5, y the
+        relative weekly label of contract 6 (decimal return). Returns self.
+        """
+        _check_training(X, y, self.name)
+        self.columns = list(X.columns)
+        self._model = Ridge(alpha=float(self.alpha)).fit(X.to_numpy(dtype=np.float64), y.to_numpy(dtype=np.float64))
+        return self
 
     def score(self, X: pd.DataFrame) -> pd.Series:
-        """Float64 Series named `score` on X's index (higher = more attractive)."""
-        raise NotImplementedError("Phase 3.1, Eliya")
+        """Float64 Series named `score` on X's index: the predicted relative return of the week (higher = more
+        attractive), known after Friday close t; NaN for a row with a missing input. Does not change the model.
+        """
+        return _predict(self._model, X, self.columns, self.name)
 
 
 class LightGBMModel:
     """Gradient-boosted trees on the M2 inputs (M3, §07): depth ∈ {2, 3}, 200 trees, learning rate 0.03,
-    deterministic=True, num_threads=1, seed from config.seed.
+    deterministic=True, num_threads=1, seed from config.seed; also force_row_wise=True and verbose=-1, library defaults
+    otherwise (S31-4).
     """
 
     def __init__(self, max_depth: int, n_estimators: int = 200, learning_rate: float = 0.03, seed: int = 42,
-                 name: str = "M3") -> None:
+                 name: str = "M3", num_threads: int = 1) -> None:
         self.max_depth = max_depth
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.seed = seed
         self.name = name
+        self.num_threads = num_threads
+        self._model = None
+        self.columns: list[str] = []
+
+    def params(self) -> dict:
+        """Every parameter passed to lightgbm.LGBMRegressor (S31-4)."""
+        return {"max_depth": int(self.max_depth), "n_estimators": int(self.n_estimators),
+                "learning_rate": float(self.learning_rate), "num_threads": int(self.num_threads), "deterministic": True,
+                "force_row_wise": True, "random_state": int(self.seed), "verbose": -1}
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "LightGBMModel":
-        """Fit on purged training rows (label_end ≤ purge_end); returns self."""
-        raise NotImplementedError("Phase 3.1, Eliya")
+        """Fit on purged training rows (label_end ≤ purge_end, asserted by the caller); returns self."""
+        _check_training(X, y, self.name)
+        self.columns = list(X.columns)
+        self._model = LGBMRegressor(**self.params()).fit(X.to_numpy(dtype=np.float64), y.to_numpy(dtype=np.float64))
+        return self
 
     def score(self, X: pd.DataFrame) -> pd.Series:
-        """Float64 Series named `score` on X's index (higher = more attractive)."""
-        raise NotImplementedError("Phase 3.1, Eliya")
+        """Float64 Series named `score` on X's index (higher = more attractive), known after Friday close t; NaN for a row
+        with a missing input. Does not change the model.
+        """
+        return _predict(self._model, X, self.columns, self.name)
+
+
+def to_weekly(scores: pd.Series, weeks: pd.MultiIndex, cfg: dict | None = None) -> pd.DataFrame:
+    """Row scores on (date_close, ticker) as a weekly score frame (contract 8): index `weeks` (date_open, date_close),
+    columns the 9 sectors in universe order, float64, NaN where a week or sector has no score.
+    """
+    cfg = _cfg(cfg)
+    wide = scores.unstack("ticker").reindex(columns=list(universe(cfg).sectors))
+    closes = pd.DatetimeIndex(weeks.get_level_values("date_close"))
+    wide = wide.reindex(closes).astype(np.float64)
+    wide.index = pd.MultiIndex.from_arrays([closes - pd.Timedelta(days=4), closes], names=["date_open", "date_close"])
+    wide.columns.name = None
+    return wide
 
 
 def ensemble_scores(scores: Sequence[pd.DataFrame]) -> pd.DataFrame:
-    """ENS (§07): equal-weight average of the cross-sectional rank scores of M1–M3 (+ M5 if it exists).
+    """ENS (§07, S31-5): equal-weight average of the cross-sectional rank scores of the members (M1–M3, + M5 later).
 
-    scores: weekly score frames (contract 8) on the same weekly index. Returns a weekly score frame (contract 8).
+    scores: weekly score frames (contract 8) with identical index and columns, known after Friday close t. Each week
+    each member's sector scores are ranked (1 = lowest, ties get their average rank) and the ranks are averaged; a week
+    where any member lacks any score is NaN for every sector (the sizing carries the previous book, Amendment 2 C3).
+    Returns a weekly score frame (contract 8).
     """
-    raise NotImplementedError("Phase 3.1, Eliya")
+    frames = list(scores)
+    if not frames:
+        raise ValueError("ensemble_scores: no member scores")
+    index, columns = frames[0].index, list(frames[0].columns)
+    for frame in frames[1:]:
+        if not frame.index.equals(index) or list(frame.columns) != columns:
+            raise ValueError("ensemble_scores: member score frames must share the same weekly index and columns")
+    incomplete = np.zeros(len(index), dtype=bool)
+    total = np.zeros((len(index), len(columns)))
+    for frame in frames:
+        incomplete |= frame.isna().any(axis=1).to_numpy()
+        total += frame.rank(axis=1, method="average").to_numpy(dtype=np.float64)
+    mean = total / len(frames)
+    mean[incomplete] = np.nan
+    result = pd.DataFrame(mean, index=index, columns=columns, dtype=np.float64)
+    validate_scores(result)
+    return result
 
 
-def select_m0_star_lookback(net_returns: Mapping[int, pd.Series], cutoff: pd.Timestamp) -> int:
-    """M0* fallback (§07): the lookback in models.M0_star.lookback_weeks with the highest walk-forward In-Sample net
-    Sharpe, using only weekly net returns realised on or before the refit cutoff.
+# -- Amendment 5 C1: the choice within the fixed grids -------------------------------------------------------------------
+
+GRID_KEYS = {"M1": "alpha", "M2": "alpha", "M3": "max_depth", "M0_star": "lookback_weeks"}  # models.<rung>.<key>
+PARAM_KEYS = {"M1": "alpha", "M2": "alpha", "M3": "max_depth"}  # the spec "params" key of a fixed grid value (S31-2)
+ENS_MEMBERS = ("M1", "M2", "M3")  # M5 joins in Phase 3.3 (S31-5)
+RUNGS = ("M0", "M1", "M2", "M3", "M0_star", "ENS")
+TIE_TOLERANCE = 1e-12  # inner Sharpes within this distance of the best are ties (S31-3)
+TUNING_RULE = "Amendment 5 C1"
+
+
+@dataclass(frozen=True)
+class LadderData:
+    """The In-Sample inputs of the ladder, as served by the vault (every row known by split.in_sample_end).
+
+    features: asset features (contract 3); states: market states (contract 4; its weekly index is the calendar);
+    labels: labels (contract 6); betas: sizing betas (contract 10); fwd, realised_on, period: forward returns of contract
+    7 (rows realised by the In-Sample end); momentum: the M0* variants MOM13_1, MOM26_1, MOM52_1 (contract 3).
     """
-    raise NotImplementedError("Phase 3.1, Eliya")
+
+    features: pd.DataFrame
+    states: pd.DataFrame
+    labels: pd.DataFrame
+    betas: pd.DataFrame | None = None
+    fwd: pd.DataFrame | None = None
+    realised_on: pd.Series | None = None
+    period: pd.Series | None = None
+    momentum: pd.DataFrame | None = None
+
+
+def grid(rung: str, cfg: dict | None = None) -> list:
+    """The pre-registered grid of a rung (§07): models.M1.alpha, models.M2.alpha, models.M3.max_depth,
+    models.M0_star.lookback_weeks, in config order.
+    """
+    cfg = _cfg(cfg)
+    if rung not in GRID_KEYS:
+        raise ValueError(f"grid: rung {rung!r} has no grid (rungs with a grid: {sorted(GRID_KEYS)})")
+    return list(cfg["models"][rung][GRID_KEYS[rung]])
+
+
+def tie_order(rung: str, cfg: dict | None = None) -> list:
+    """tuning.tie_order of a rung (S31-3): its grid values, the simpler value first; ValueError unless it is a
+    permutation of the grid.
+    """
+    cfg = _cfg(cfg)
+    try:
+        order = list(cfg["tuning"]["tie_order"][rung])
+    except KeyError:
+        raise KeyError(f"config.yaml lacks tuning.tie_order.{rung} (Amendment 5 C1, S31-3)") from None
+    values = grid(rung, cfg)
+    if len(order) != len(values) or set(order) != set(values) or len(set(order)) != len(order):
+        raise ValueError(f"tuning.tie_order.{rung} {order} must list each grid value {values} exactly once")
+    return order
+
+
+def inner_validation_weeks(cfg: dict | None = None) -> int:
+    """tuning.inner_validation_weeks (104, Amendment 5 C1)."""
+    cfg = _cfg(cfg)
+    try:
+        weeks = int(cfg["tuning"]["inner_validation_weeks"])
+    except KeyError:
+        raise KeyError("config.yaml lacks tuning.inner_validation_weeks (Amendment 5 C1: 104)") from None
+    if weeks < 2:
+        raise ValueError(f"tuning.inner_validation_weeks must be at least 2, got {weeks}")
+    return weeks
+
+
+def tuning_spec(cfg: dict | None = None) -> dict:
+    """The "tuning" entry of the spec of a tuned run (S31-2): every setting that drives the Amendment 5 C1 choice beyond
+    walkforward_settings(cfg), so that it is part of the trial's spec_hash.
+    """
+    cfg = _cfg(cfg)
+    return {"rule": TUNING_RULE, "tuning": cfg["tuning"], "cost_bps": cfg["costs"]["bps_baseline"],
+            "borrow_annual": cfg["costs"]["borrow_baseline"], "sharpe": "zero_cost", "signal": cfg["signal"],
+            "periods_per_year": cfg["metrics"]["periods_per_year"]}
+
+
+def inner_fold(fold: WalkForwardFold, label_end: pd.Series, inner_weeks: int, embargo_weeks: int) -> WalkForwardFold:
+    """The inner split of a refit record (Amendment 5 C1, S31-3).
+
+    fold: an outer refit (contract 13); label_end: per-week label_end on the weekly index (label_end_by_week). The
+    training weeks are those with date_close in [fold.train_start, fold.train_end] and label_end ≤ fold.purge_end; the
+    last `inner_weeks` of them are the validation weeks (test_start … test_end = fold.train_end); the inner training
+    weeks are the training weeks with label_end ≤ purge_end = test_start − 7 × embargo_weeks days. Returns a
+    WalkForwardFold with fold's test_year and refit (messages only; not for validate_folds). ValueError if there are not
+    more training weeks than inner_weeks or no inner training week.
+    """
+    if isinstance(label_end.index, pd.MultiIndex):
+        closes = pd.DatetimeIndex(label_end.index.get_level_values("date_close"))
+    else:
+        closes = pd.DatetimeIndex(label_end.index)
+    ends = pd.to_datetime(label_end).to_numpy(dtype="datetime64[ns]")
+    known = ~np.isnat(ends)
+    training = np.asarray((closes >= fold.train_start) & (closes <= fold.train_end)) & known
+    training &= ends <= fold.purge_end.to_datetime64()
+    weeks = closes[training].sort_values()
+    if len(weeks) <= inner_weeks:
+        raise ValueError(f"inner_fold: refit {fold.test_year} Q{fold.refit} has {len(weeks)} training weeks, not more "
+                         f"than the {inner_weeks} inner validation weeks")
+    start = pd.Timestamp(weeks[-inner_weeks])
+    purge_end = start - pd.Timedelta(days=7 * int(embargo_weeks))
+    inner = training & (ends <= purge_end.to_datetime64())
+    if not inner.any():
+        raise ValueError(f"inner_fold: refit {fold.test_year} Q{fold.refit} has no inner training week")
+    train_end = pd.Timestamp(closes[inner].max())
+    if train_end + pd.Timedelta(days=10) > purge_end:
+        raise ContractError(f"inner_fold: inner training ends {train_end.date()}, too close to purge_end {purge_end.date()}")
+    return WalkForwardFold(test_year=fold.test_year, refit=fold.refit, train_start=fold.train_start, train_end=train_end,
+                           purge_end=purge_end, test_start=start, test_end=pd.Timestamp(weeks[-1]))
+
+
+def choose_grid_value(sharpes: Mapping, tie_order: Sequence):
+    """The grid value with the highest inner Sharpe (Amendment 5 C1, S31-3): values within 1e-12 of the best are ties
+    and go to the earliest in tie_order (the simpler value); a NaN Sharpe never wins unless all are NaN, when
+    tie_order[0] is returned. ValueError unless sharpes' keys and tie_order are the same set.
+    """
+    order = list(tie_order)
+    if set(sharpes) != set(order) or len(set(order)) != len(order) or len(sharpes) != len(order):
+        raise ValueError(f"choose_grid_value: values {sorted(sharpes)} differ from the tie order {order}")
+    valid = {value: float(sharpe) for value, sharpe in sharpes.items() if not np.isnan(sharpe)}
+    if not valid:
+        return order[0]
+    best = max(valid.values())
+    for value in order:
+        if value in valid and valid[value] >= best - TIE_TOLERANCE:
+            return value
+    raise AssertionError("unreachable")  # the best value is in the tie order
+
+
+def inner_sharpe(scores: pd.DataFrame, betas: pd.DataFrame, fwd: pd.DataFrame, period: pd.Series,
+                 cfg: dict | None = None) -> float:
+    """Net Sharpe of the hedged book of week-t scores (Amendment 5 C1): §09 sizing (src.sizing.size_book), the engine
+    (src.backtest.run) at costs.bps_baseline and costs.borrow_baseline, entered from cash in the first week, zero-cost
+    convention annualised return / annualised volatility (src.metrics). Mattia's functions, imported unchanged.
+    """
+    cfg = _cfg(cfg)
+    weeks = scores.index
+    sizing = size_book(scores, betas.loc[betas.index.isin(weeks)], cfg)
+    result = run_backtest(sizing, fwd.loc[fwd.index.isin(weeks)], period.loc[period.index.isin(weeks)],
+                          cfg["costs"]["bps_baseline"], cfg["costs"]["borrow_baseline"])
+    return ratio(annualized_return(result.net), annualized_volatility(result.net))
+
+
+def _closes_of(frame: pd.DataFrame | pd.Series) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex(frame.index.get_level_values("date_close"))
+
+
+def _weeks_between(weeks: pd.MultiIndex, start: pd.Timestamp, end: pd.Timestamp) -> pd.MultiIndex:
+    closes = pd.DatetimeIndex(weeks.get_level_values("date_close"))
+    return weeks[np.asarray((closes >= start) & (closes <= end))]
+
+
+def _momentum_column(data: LadderData, feature: str) -> pd.DataFrame:
+    """The single momentum column of M0 or M0* (contract 5): a feature column or a MOM{L}_1 variant."""
+    if feature in data.features.columns:
+        return data.features[[feature]]
+    if data.momentum is not None and feature in data.momentum.columns:
+        return data.momentum[[feature]]
+    raise ValueError(f"unknown momentum column {feature!r}")
+
+
+def _fit_score(rung: str, value, data: LadderData, fold: WalkForwardFold, cfg: dict) -> pd.Series:
+    """Fit `rung` at grid value `value` on the purged training rows of `fold` and score its test weeks.
+
+    Training rows: date_close in [train_start, train_end] with a label; assert_purged against fold.purge_end before the
+    fit. The market-state scaling (M2, M3) is fitted on the training weeks only (S22-6). Returns row scores on
+    (date_close, ticker) for the weeks test_start … test_end.
+    """
+    labels = data.labels
+    if rung in ("M0", "M0_star"):
+        source = _momentum_column(data, value if rung == "M0" else f"MOM{int(value)}_1")
+    else:
+        source = data.features[list(cfg["features"]["asset"])]
+    dates = _closes_of(source)
+    train_index = source.index[np.asarray((dates >= fold.train_start) & (dates <= fold.train_end))]
+    train_index = train_index[train_index.isin(labels.index)]
+    assert_purged(labels.loc[train_index, "label_end"], fold)
+    test_index = source.index[np.asarray((dates >= fold.test_start) & (dates <= fold.test_end))]
+    y = labels.loc[train_index, "y"].astype(np.float64)
+    if rung in ("M0", "M0_star"):
+        model = M0(feature=source.columns[0], name=rung)
+        return model.fit(source.loc[train_index], y).score(source.loc[test_index])
+    X_train, params = fit_transform_train(data.features.loc[train_index], data.states, rung != "M1", cfg)
+    X_test = transform_test(data.features.loc[test_index], data.states, params)
+    if rung == "M3":
+        m3 = cfg["models"]["M3"]
+        model = LightGBMModel(int(value), n_estimators=int(m3["n_estimators"]), learning_rate=float(m3["learning_rate"]),
+                              seed=int(cfg["seed"]), name="M3", num_threads=int(m3["num_threads"]))
+    else:
+        model = RidgeModel(float(value), name=rung)
+    return model.fit(X_train, y.loc[X_train.index]).score(X_test)
+
+
+def _check_realised(data: LadderData, weeks: pd.MultiIndex, fold: WalkForwardFold) -> None:
+    """Every validation week's return must be realised by the outer cutoff purge_end (S31-3)."""
+    if data.realised_on is None or data.fwd is None or data.period is None or data.betas is None:
+        raise ValueError("Amendment 5 C1 needs the sizing betas and the forward returns (LadderData betas, fwd, "
+                         "realised_on, period)")
+    realised = pd.Series(pd.to_datetime(data.realised_on).to_numpy(dtype="datetime64[ns]"), index=_closes_of(data.realised_on))
+    values = realised.reindex(pd.DatetimeIndex(weeks.get_level_values("date_close"))).to_numpy(dtype="datetime64[ns]")
+    if np.isnat(values).any() or (values > fold.purge_end.to_datetime64()).any():
+        raise ContractError(f"inner validation of refit {fold.test_year} Q{fold.refit}: a return is not realised by "
+                            f"purge_end {fold.purge_end.date()} (Amendment 5 C1 uses only data available at the refit)")
+
+
+def _value_label(value) -> str:
+    return format(value, "g")
+
+
+def _choose(rung: str, data: LadderData, fold: WalkForwardFold, label_end: pd.Series, cfg: dict) -> tuple[object, dict]:
+    """The Amendment 5 C1 choice at one refit: (chosen value, selection row)."""
+    split = inner_fold(fold, label_end, inner_validation_weeks(cfg), int(cfg["split"]["embargo_weeks"]))
+    validation = _weeks_between(data.states.index, split.test_start, split.test_end)
+    _check_realised(data, validation, fold)
+    sharpes = {}
+    for value in grid(rung, cfg):
+        weekly = to_weekly(_fit_score(rung, value, data, split, cfg), validation, cfg)
+        sharpes[value] = inner_sharpe(weekly, data.betas, data.fwd, data.period, cfg)
+    chosen = choose_grid_value(sharpes, tie_order(rung, cfg))
+    row = {"test_year": fold.test_year, "refit": fold.refit, "test_start": fold.test_start, "train_start": fold.train_start,
+           "train_end": fold.train_end, "purge_end": fold.purge_end, "inner_train_end": split.train_end,
+           "inner_purge_end": split.purge_end, "inner_val_start": split.test_start, "inner_val_end": split.test_end,
+           "inner_val_weeks": len(validation)}
+    row.update({f"sharpe_{_value_label(value)}": sharpe for value, sharpe in sharpes.items()})
+    row["chosen"] = chosen
+    return chosen, row
+
+
+def walkforward_rung(rung: str, data: LadderData, folds: Sequence[WalkForwardFold], cfg: dict | None = None, *,
+                     value=None, members: Sequence[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Weekly scores of a rung over the In-Sample walk-forward refits (§07, §10, contract 13; Amendment 5).
+
+    rung: M0, M1, M2, M3, M0_star or ENS. value: a fixed grid value (M0: the momentum column, default models.M0.feature;
+    M1/M2: λ; M3: max depth); None for M1, M2, M3 and M0_star applies the Amendment 5 C1 choice at every refit (S31-3);
+    ENS averages the ranks of its members (default M1, M2, M3, each with C1; S31-5). Every inner and outer fit asserts
+    the purge. Returns (scores: contract 8 on the test weeks of `folds`, known after Friday close t; selection: one row
+    per refit with the inner Sharpe of each grid value and the chosen value, None for fixed runs and ENS).
+    """
+    cfg = _cfg(cfg)
+    if rung not in RUNGS:
+        raise ValueError(f"walkforward_rung: unknown rung {rung!r}; known {list(RUNGS)}")
+    folds = list(folds)
+    weeks = data.states.index
+    test_weeks = _weeks_between(weeks, folds[0].test_start, folds[-1].test_end)
+    if rung == "ENS":
+        if value is not None:
+            raise ValueError("walkforward_rung: ENS has no grid value")
+        names = list(ENS_MEMBERS if members is None else members)
+        frames = [walkforward_rung(member, data, folds, cfg)[0] for member in names]
+        return ensemble_scores(frames), None
+    if rung == "M0" and value is None:
+        value = cfg["models"]["M0"]["feature"]
+    if rung == "M0_star" and value is not None:
+        raise ValueError("walkforward_rung: a fixed M0* lookback L is the rung M0 with value 'MOM{L}_1' (S31-6)")
+    if value is not None and rung in GRID_KEYS and value not in grid(rung, cfg):
+        raise ValueError(f"walkforward_rung: {value!r} is not in the pre-registered grid {grid(rung, cfg)} of {rung}")
+    label_end = label_end_by_week(data.labels, weeks)
+    rows, selection = [], []
+    for fold in folds:
+        chosen = value
+        if value is None:
+            chosen, record = _choose(rung, data, fold, label_end, cfg)
+            selection.append(record)
+        rows.append(_fit_score(rung, chosen, data, fold, cfg))
+    scores = to_weekly(pd.concat(rows), test_weeks, cfg)
+    validate_scores(scores)
+    return scores, (pd.DataFrame(selection) if value is None else None)

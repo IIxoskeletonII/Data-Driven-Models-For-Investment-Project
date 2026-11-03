@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src import contracts
+from src import contracts, models
+from src.backtest import forward_returns
 from src.config import load_config
 from src.data import write_csv
 from src.models import walkforward_settings
@@ -71,8 +72,14 @@ def build_frames() -> dict[str, pd.DataFrame]:
     betas.iloc[:52] = np.nan  # BETA52 warm-up
     contracts.validate_labels(labels)
     contracts.validate_betas(betas)
+    in_sample = weeks[np.asarray(fridays <= IS_END)]
+    opens_weekly = pd.DataFrame(np.exp(np.cumsum(rng.normal(0, 0.02, (len(in_sample), len(UNIVERSE.tradables))), axis=0)),
+                                index=in_sample, columns=list(UNIVERSE.tradables))
+    fwd, realised_on, period = forward_returns(opens_weekly, is_end=IS_END)
+    fwd_table = fwd.copy()
+    fwd_table["realised_on"], fwd_table["period"] = realised_on, period
     return {"features": features, "market_states": states, "labels": labels, "momentum_variants": variants,
-            "sizing_betas": betas}
+            "sizing_betas": betas, "forward_returns": fwd_table}
 
 
 FRAMES = build_frames()
@@ -401,11 +408,141 @@ def test_run_walkforward_refuses_a_spec_reaching_past_the_in_sample_end(env, key
     assert not paths["trials"].exists() or trial_rows(paths["trials"]) == []
 
 
-@pytest.mark.parametrize("rung", ["M1", "M2", "M3", "M5", "ENS"])
-def test_run_walkforward_other_rungs_are_not_implemented(env, rung):
+@pytest.mark.parametrize("rung", ["M5", "M4", "M9"])
+def test_run_walkforward_unknown_rung_is_refused_and_logged(env, rung):
+    """A rung outside the implemented ladder (M5 arrives in Phase 3.3) is refused, logged and adds no trial."""
     vault, paths = env
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="unknown rung"):
         vault.run_walkforward({"rung": rung}, trial_path=paths["trials"])
+    assert log_lines(paths["log"])[-1]["result"] == "refused"
+    assert not paths["trials"].exists()
+
+
+@pytest.mark.parametrize("spec", [
+    {"rung": "M1"},  # neither params nor tuning
+    {"rung": "M1", "params": {"alpha": 1}, "tuning": "x"},  # both
+    {"rung": "M1", "params": {"alpha": 5}},  # outside the grid
+    {"rung": "M1", "params": {"alpha": 1.0}},  # the grid value 1 with another type: another spec_hash (S31-12)
+    {"rung": "M1", "params": {"alpha": True}},
+    {"rung": "M3", "params": {"max_depth": 2.0}},
+    {"rung": "M1", "params": {"max_depth": 2}},  # the wrong key
+    {"rung": "M3", "params": {"max_depth": 4}},
+    {"rung": "M2", "tuning": {"rule": "something else"}},  # differs from tuning_spec
+    {"rung": "M0", "params": {"alpha": 1}},
+    {"rung": "M1", "params": {"alpha": 1}, "feature": "MOM26_1"},
+    {"rung": "M0_star"},
+    {"rung": "ENS", "members": ["M1", "M2"]},
+    {"rung": "M1", "params": {"alpha": 1}, "members": ["M1"]},
+])
+def test_run_walkforward_refuses_ladder_specs_that_do_not_fit_their_rung(env, spec):
+    """S31-2: params, tuning, feature and members must fit the rung and the pre-registered grids."""
+    vault, paths = env
+    if spec.get("rung") == "ENS":
+        spec = dict(spec, tuning=models.tuning_spec(CFG))
+    with pytest.raises(ValueError):
+        vault.run_walkforward(spec, trial_path=paths["trials"])
+    assert log_lines(paths["log"])[-1]["result"] == "refused"
+    assert not paths["trials"].exists()
+
+
+def test_run_walkforward_fixed_ridge_value_logs_one_trial_and_no_selection(env):
+    """A fixed M1 grid value scores the 2008-2019 test weeks, adds one trial row with rung M1 and leaves no selection."""
+    vault, paths = env
+    spec = {"rung": "M1", "params": {"alpha": 10}, "author": "Eliya Allam", "kind": "human", "notes": "fixed"}
+    scores = vault.run_walkforward(spec, trial_path=paths["trials"])
+    contracts.validate_scores(scores)
+    closes = closes_of(scores)
+    assert closes.min().year == 2008 and closes.max() <= IS_END
+    assert np.isfinite(scores.to_numpy()).all()
+    assert vault.last_selection is None
+    rows = trial_rows(paths["trials"])
+    assert [row["rung"] for row in rows] == ["M1"]
+    assert rows[0]["spec_hash"] == spec_hash(spec)[0]
+
+
+def test_run_walkforward_tuned_m0_star_sets_last_selection(env):
+    """A tuned M0* run leaves one selection row per refit and scores each fold with the chosen lookback's variant."""
+    vault, paths = env
+    spec = {"rung": "M0_star", "tuning": models.tuning_spec(CFG), "author": "Eliya Allam", "kind": "human"}
+    scores = vault.run_walkforward(spec, trial_path=paths["trials"])
+    contracts.validate_scores(scores)
+    selection = vault.last_selection
+    assert len(selection) == 48
+    assert set(selection["chosen"]) <= {13, 26, 52}
+    assert {"sharpe_13", "sharpe_26", "sharpe_52", "inner_val_weeks"} <= set(selection.columns)
+    assert (selection["inner_val_weeks"] == CFG["tuning"]["inner_validation_weeks"]).all()
+    assert (pd.DatetimeIndex(selection["inner_val_end"]) == pd.DatetimeIndex(selection["train_end"])).all()
+    by_close = scores.set_axis(closes_of(scores))
+    for _, row in selection.iterrows():
+        variant = FRAMES["momentum_variants"][f"MOM{row['chosen']}_1"]
+        expected = variant.xs(row["test_start"], level="date_close").reindex(SECTORS).to_numpy()
+        np.testing.assert_array_equal(by_close.loc[row["test_start"]].to_numpy(), expected)
+    assert trial_rows(paths["trials"])[0]["rung"] == "M0_star"
+    vault.run_walkforward({"rung": "M0"}, trial_path=paths["trials"])
+    assert vault.last_selection is None  # the table of the last call only
+
+
+# ---------------------------------------------------------------- forward returns (S31-1)
+
+
+@pytest.mark.parametrize("as_of", ["2008-06-30", "2019-12-23", "2019-12-27"])
+def test_forward_returns_only_rows_realised_by_as_of(env, as_of):
+    """forward_returns(as_of) returns (fwd, realised_on, period) for returns realised on or before as_of only."""
+    vault, paths = env
+    fwd, realised_on, period = vault.forward_returns(ts(as_of))
+    assert (realised_on <= ts(as_of)).all() and not realised_on.isna().any()
+    table = FRAMES["forward_returns"]
+    keep = table["realised_on"].notna().to_numpy() & (table["realised_on"] <= ts(as_of)).to_numpy()
+    pd.testing.assert_frame_equal(fwd, table.loc[keep, list(UNIVERSE.tradables)])
+    assert fwd.index.equals(realised_on.index) and fwd.index.equals(period.index)
+    assert set(period) == {"IS"}
+    last = log_lines(paths["log"])[-1]
+    assert (last["method"], last["as_of"], last["result"]) == ("forward_returns", as_of, "ok")
+
+
+@pytest.mark.parametrize("day", ["2019-12-28", "2019-12-30", "2026-10-16"])
+def test_forward_returns_after_the_in_sample_end_is_refused_and_logged(env, day):
+    """The forward returns are sealed at the In-Sample end like every table (OOSAccessError, logged refused)."""
+    vault, paths = env
+    with pytest.raises(OOSAccessError):
+        vault.forward_returns(ts(day))
+    last = log_lines(paths["log"])[-1]
+    assert (last["method"], last["as_of"], last["result"]) == ("forward_returns", day, "refused")
+
+
+def test_forward_returns_refused_with_the_lock_but_without_unlock(env):
+    """FROZEN.lock alone does not open the forward returns; only unlock() does."""
+    vault, paths = env
+    paths["lock"].write_text("frozen", encoding="utf-8")
+    with pytest.raises(OOSAccessError):
+        vault.forward_returns(ts("2020-01-03"))
+
+
+def test_forward_returns_table_with_an_oos_realisation_is_refused(tmp_path):
+    """A forward-returns table holding a return realised after the In-Sample end is refused on first read."""
+    frames = {name: frame.copy() for name, frame in FRAMES.items()}
+    weeks = FRAMES["market_states"].index[: closes_of(FRAMES["market_states"]).get_indexer([IS_END])[0] + 4]
+    opens = pd.DataFrame(np.ones((len(weeks), len(UNIVERSE.tradables))), index=weeks, columns=list(UNIVERSE.tradables))
+    fwd, realised_on, period = forward_returns(opens, is_end=IS_END)
+    frames["forward_returns"] = fwd.assign(realised_on=realised_on, period=period)
+    vault = Vault(IS_END, lock_path=tmp_path / "FROZEN.lock", log_path=tmp_path / "log.jsonl", frames=frames, cfg=CFG)
+    with pytest.raises(OOSAccessError):
+        vault.forward_returns(ts("2010-01-08"))
+    assert log_lines(tmp_path / "log.jsonl")[-1]["result"] == "refused"
+
+
+def test_forward_returns_read_from_csv_in_data_dir(tmp_path):
+    """forward_returns.csv written with write_csv reads back with float64 returns, dates and IS/missing periods."""
+    data_dir = tmp_path / "processed"
+    for name, frame in FRAMES.items():
+        write_csv(frame, data_dir / f"{name}.csv")
+    vault = Vault(IS_END, lock_path=tmp_path / "FROZEN.lock", log_path=tmp_path / "log.jsonl", data_dir=data_dir, cfg=CFG)
+    fwd, realised_on, _ = vault.forward_returns(IS_END)
+    table = FRAMES["forward_returns"]
+    expected = table.loc[table["realised_on"].notna().to_numpy()]
+    np.testing.assert_allclose(fwd.to_numpy(), expected[list(UNIVERSE.tradables)].to_numpy(), rtol=1e-15, atol=0)
+    assert (realised_on.to_numpy() == expected["realised_on"].to_numpy()).all()
+    assert list(fwd.dtypes.unique()) == [np.dtype(np.float64)]
 
 
 def test_append_trial_numbers_rows_and_fills_defaults(tmp_path):

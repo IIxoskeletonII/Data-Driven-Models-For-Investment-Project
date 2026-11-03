@@ -942,6 +942,242 @@ far; Eliya approves through the review of the 3.2 pull request.
 | Files affected | `docs/decisions.md` only |
 | Amendment | No |
 
+## 2026-11-03 · Session 3.1: model ladder and inference statistics
+
+Format of the operating manual's evidence standard. "Session 3.1 instructions" quotes the task list Eliya set for the
+session (3 Nov 2026). "Approved by" is completed by Mattia's approving review of the pull request from branch
+`feat/3.1-ladder`, which also carries Amendment 5 (commit a510085, committed alone before any code of this session).
+
+### S31-1 · Forward returns file and `Vault.forward_returns`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | In which format does `03_build_features.py` write the forward returns that the inner Sharpe of Amendment 5 C1 needs, and what does `Vault.forward_returns(as_of)` return? |
+| Options considered | File: (a) only the rows with a realised return; (b) the full truncated weekly index of contract 7, whose last two rows (weeks ending 2019-12-20 and 2019-12-27) are `NaN`/`NaT` because the opens end on 2019-12-27. Vault slice: (c) rows with `date_close ≤ as_of`; (d) rows with `realised_on ≤ as_of` |
+| Decision | (b) and (d). `03_build_features.py: build_forward_returns(daily_open, daily_close, is_end)` truncates both inputs at `split.in_sample_end`, calls `src.backtest.forward_returns` (Mattia's, imported, unchanged) and refuses (`OOSAccessError`) any `realised_on` after the In-Sample end; `build_labels` now starts from it, so labels and forward returns come from one computation. `data/processed/forward_returns.csv` (git-ignored) holds the weekly index, the 11 tradables of contract 7, `realised_on` and `period`; it passes `validate_forward_returns` as a whole, every `realised_on` is ≤ 2019-12-27 or `NaT`, every `period` is `IS` or missing, and its checksum entry is added to `data/checksums_features.json`. `write_tables` refuses a `realised_on` after the In-Sample end like a late `label_end`. `Vault.forward_returns(as_of)` returns `(fwd, realised_on, period)` on the rows with `realised_on ≤ as_of`, i.e. returns already realised at `as_of`, like `labels(as_of)`; it is sealed (an `as_of` after `is_end` raises `OOSAccessError` unless `FROZEN.lock` exists and `unlock()` was called), validated as a whole on first read and logged `ok` or `refused` like every vault call. A slice does not pass the "last two rows NaN" rule of `validate_forward_returns`, which applies to the full table |
+| Rationale | (b) keeps one validated file in the exact contract-7 shape; (d) uses the knowledge date of a return, which is the only safe slice for a training window (c would hand out returns realised after `as_of`) |
+| Evidence | Session 3.1 instructions §2: "03_build_features.py also writes data/processed/forward_returns.csv (contract 7, only rows realised ≤ 2019-12-27), and the vault serves it as Vault.forward_returns(as_of): sealed, logged, refusal tested. The inner Sharpe of C1 needs it, together with Vault.sizing_betas."; contract 7: "`realised_on` … `date_open` of week t+2 … `NaT` on the last two rows"; S23-1 (labels from the truncated opens); manual §3.3 "All model and research data access goes through `src/vault.py`" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contracts 7 and 15) |
+| Files affected | `03_build_features.py`, `src/vault.py`, `tests/test_build_labels.py`, `tests/test_vault.py`, `data/checksums_features.json`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S31-2 · Trial specs of the ladder; tuning settings in the spec, not in `walkforward_settings`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How does a spec name a rung run with the Amendment 5 C1 rule, a fixed grid value or ENS, and how do the settings that drive the C1 choice (inner window, costs, sizing, tie order) enter the trial identity of S23-6? |
+| Options considered | (a) add `signal`, `costs`, `metrics` and a new tuning section to `walkforward_settings(cfg)`; (b) keep `walkforward_settings(cfg)` = `{seed, data, split, execution, features, models}` and put the C1 settings into the spec of every tuned run, built from `config.yaml` |
+| Decision | (b). The vault accepts three new spec keys (`SPEC_KEYS` gains `params`, `tuning`, `members`; every other unknown key is still refused, S22-12). Forms: M0 `{"rung": "M0", "feature": F}` (unchanged); fixed grid value `{"rung": "M1"\|"M2", "params": {"alpha": a}}` or `{"rung": "M3", "params": {"max_depth": d}}`, the value taken from the `config.yaml` grid (any other value is refused); C1 rung `{"rung": "M1"\|"M2"\|"M3"\|"M0_star", "tuning": T}`; ENS `{"rung": "ENS", "members": ["M1", "M2", "M3"], "tuning": T}`. `T = src.models.tuning_spec(cfg)` = `{"rule": "Amendment 5 C1", "tuning": cfg["tuning"], "cost_bps": costs.bps_baseline, "borrow_annual": costs.borrow_baseline, "sharpe": "zero_cost", "signal": cfg["signal"], "periods_per_year": metrics.periods_per_year}`; the vault refuses a `tuning` that differs from it. A rung with a grid must state exactly one of `params` or `tuning`. New additive config sections, flagged in the pull request: `tuning` (`inner_validation_weeks: 104`, `tie_order` per rung, S31-3) and `inference` (`pbo_blocks: 16`, `confidence: 0.95`, S31-8, S31-9) |
+| Rationale | (a) would change the `spec_hash` of the M0 trial already on `main` (a second M0 row for an identical configuration) and the `used.yaml` set agreed with Mattia for `06_backtest.py` (S23-5, S23-6); (b) still makes every setting that determines a tuned run's scores part of its `spec_hash` (the spec is hashed with the config), so a changed cost or window is a new trial, and leaves M0 and 06 untouched |
+| Evidence | S23-6: "`spec_hash(spec, cfg)` is the SHA-256 of the canonical JSON … of `{"config": walkforward_settings(cfg), "spec": spec}`" and its rationale "The deflated Sharpe ratio must count every configuration evaluated"; S23-5: "Mattia's 06 check_used compares against exactly that set"; Amendment 5 C1 (inner window 104 weeks, baseline costs, §09 sizing, ties); Session 3.1 instructions §6: "Any new settings (e.g. pbo_blocks: 16) go in a new additive config section, flagged in the PR." |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contract 15; shared file `config.yaml`) |
+| Files affected | `config.yaml`, `src/models.py`, `src/vault.py`, `05_train_walkforward.py`, `tests/test_vault.py`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S31-3 · Implementation of the Amendment 5 C1 choice
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How exactly are the inner split, the inner backtest, the Sharpe and the ties of Amendment 5 C1 computed? |
+| Options considered | As below (chosen); the alternatives were a tolerance-free tie test and a fresh state scaling only at the outer fit |
+| Decision | For a refit record `f` (contract 13): the training weeks are the weeks with `date_close` in `[f.train_start, f.train_end]` that have a label; the validation weeks are the last `tuning.inner_validation_weeks` (104) of them, from `V` (their first `date_close`) to `f.train_end`; the inner purge limit is `V − 7 × split.embargo_weeks` days and the inner training weeks are the training weeks with `label_end` at most that limit. `src.models.inner_fold` returns this split as a `WalkForwardFold` that keeps the outer `test_year` and `refit` (used in messages only; it is not passed to `validate_folds`, whose same-year rule fits outer folds only). Every inner fit calls `assert_purged` with the inner limit, every outer fit with `f.purge_end`, and every validation week must have `realised_on ≤ f.purge_end` (so no return realised after the cutoff enters the choice). For each grid value the rung is fitted on the inner training rows (the market-state scaling of S22-6 is refitted on the inner training weeks), scores the validation weeks, and the book is built with `src.sizing.size_book` (the §09 sizing from `signal.*`) and `src.backtest.run` at `costs.bps_baseline` and `costs.borrow_baseline` (both Mattia's, imported, unchanged), entered from cash in the first validation week. The inner Sharpe is `src.metrics.annualized_return(net) / src.metrics.annualized_volatility(net)` (zero-cost convention). The highest Sharpe wins; values within 1e-12 of the best are ties and go to the first of `tuning.tie_order` (M1 and M2 `[10, 1, 0.1]`, M3 `[2, 3]`, M0\* `[26, 13, 52]`); a `NaN` Sharpe never wins unless all are `NaN`, when the first of the tie order is taken. Then the rung is refitted with the chosen value on all training rows of `f` and scores `f.test_start … f.test_end`. Open point for Phase 4: §07 says the refits continue during OOS but "tuning does not"; whether OOS refits keep the last In-Sample choice or apply C1 again must be settled before `08_run_oos.py` is written |
+| Rationale | The 1e-12 tolerance matters: two values often give the same ranking every week, hence bit-identical books and Sharpes, and the tie rule then decides. For M0\*, Amendment 5 names only the 26-week lookback; between 13 and 52 the order takes the lookback nearer to 26 (13) |
+| Evidence | Amendment 5 C1: "Each value is fitted on the window minus its last 104 weeks (inner training, with labels purged and a one-week embargo before the inner validation start) and scored on those 104 weeks. The value with the highest net Sharpe of the hedged book (zero-cost convention, annualised return / volatility) at baseline costs (10 bps, 2% borrow), with the §09 sizing, is chosen, and the rung is refitted with it on the full training window. Ties go to the simpler value: the larger λ, the smaller depth, the 26-week lookback."; §07 "The same refits continue during OOS on newly realised labels; tuning does not."; §06 "Scaling and winsorising fitted inside each training fold"; Session 3.1 instructions §3: "One shared helper implements C1 for every grid, calling src.sizing.size_book and src.backtest.run (Mattia's, imported, never edited). Every refit asserts the purge for both the inner and the full fit." |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/models.py`, `config.yaml` (`tuning`), `tests/test_ladder.py` |
+| Amendment | No (applies Amendment 5 C1) |
+
+### S31-4 · Ridge (M1, M2) and LightGBM (M3) settings
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which estimator settings, beyond the pre-registered grid values, do M1–M3 use, and how are missing inputs handled? |
+| Options considered | Library defaults except where §07 or determinism requires a value (chosen); tuning further parameters (refused: not pre-registered) |
+| Decision | M1: `sklearn.linear_model.Ridge(alpha=λ)` on the six z-scored asset features (the design of `fit_transform_train(..., interactions=False)`), target `y` of contract 6, library defaults otherwise (`fit_intercept=True`, `solver="auto"`). M2: the same on the design with the five interactions (`fit_transform_train` / `transform_test`, `interactions=True`). M3: `lightgbm.LGBMRegressor` on the M2 design with `max_depth` from the grid, `n_estimators=models.M3.n_estimators` (200), `learning_rate=models.M3.learning_rate` (0.03), `num_threads=models.M3.num_threads` (1), `deterministic=True`, `random_state=config.seed` (42); the other parameters set are `force_row_wise=True` (LightGBM's documentation asks for `force_row_wise` or `force_col_wise` with `deterministic=True`) and `verbose=-1` (no console output). Everything else is the library default: L2 objective, `num_leaves=31` (above 2^3, so the depth grid alone limits tree size), `min_child_samples=20`, no row or column subsampling, no regularisation. `fit` refuses a non-finite input or label (after the warm-up every training input is finite); `score` gives `NaN` to a row with any missing input, which the sizing treats as a missing score (Amendment 2 C3) |
+| Rationale | Only the pre-registered values and what determinism needs are set, so no unregistered tuning enters |
+| Evidence | §07 table: "M1 \| Ridge on 6 asset features \| … \| λ ∈ {0.1, 1, 10}", "M3 \| LightGBM on M2 inputs \| … \| depth ∈ {2, 3}; 200 trees; learning rate 0.03; fixed seed; deterministic; 1 thread"; contract 14 "LightGBM with `deterministic=True`, `num_threads=1`, `seed`"; Session 3.1 instructions §3: "M3: LightGBM regressor on the M2 design: max_depth from the grid, n_estimators 200, learning_rate 0.03, num_threads 1, deterministic=True, seed from config. Record every other parameter you set as a decision."; LightGBM parameter documentation, `deterministic`: "to avoid potential instability due to numerical issues, please set force_col_wise=true or force_row_wise=true when setting deterministic=true" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/models.py`, `tests/test_ladder.py` |
+| Amendment | No |
+
+### S31-5 · ENS
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which member scores does ENS average, how are they ranked, and what happens in a week with a missing member score? |
+| Options considered | Members: (a) the C1 rungs M1, M2, M3; (b) fixed grid values. Missing: (c) average the members present; (d) the whole week missing |
+| Decision | (a) and (d). Each week, each member's 9 scores are ranked cross-sectionally (1 = lowest, ties get their average rank) and the ENS score is the equal-weight mean of the member ranks. A week where any member lacks any sector score is `NaN` for every sector, so the sizing carries the previous book (Amendment 2 C3). ENS has no fit and no grid; each member's week-t score comes from that member's own refit, so ENS uses no information after the cutoff. Equal ENS scores are broken alphabetically by the §09 rule in `signals_from_scores`. M5 joins the members in Phase 3.3 (the spec's `members` changes, so it is a new trial) |
+| Rationale | §07 defines ENS on the rungs, not on grid values; averaging the members present would change the scale and the meaning of the score from week to week |
+| Evidence | §07 table: "ENS \| Equal-weight average of the cross-sectional rank scores of M1–M3 (+ M5 if it exists)"; §09 step 2 "break exact ties alphabetically by ticker"; Session 3.1 instructions §3: "ENS: each week, the equal-weight average of the cross-sectional ranks of M1, M2 and M3 (M5 added in Phase 3.3)." |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/models.py`, `tests/test_ladder.py` |
+| Amendment | No |
+
+### S31-6 · M0\* and the fixed lookbacks
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which momentum columns do M0\* and the fixed runs `M0_L13`, `M0_L26`, `M0_L52` use, and is `M0_L26` a new trial? |
+| Options considered | `M0_L26`: (a) a new spec on the variant `MOM26_1`; (b) the M0 trial itself |
+| Decision | M0\* scores `MOM{L}_1` of `momentum_variants.csv` (contract 3) with L chosen per S31-3; its `fit` is a no-op, so the inner "fit" only scores the validation weeks. `M0_L13` and `M0_L52` are M0 specs with `feature` `MOM13_1` and `MOM52_1`. (b): `M0_L26` runs exactly the M0 spec of trial 1, so it has the same `spec_hash` and adds no row (S23-2); its outputs are written under `outputs/walkforward/M0_L26/` for the PBO matrix |
+| Rationale | The variant `MOM26_1` equals the feature `MOM26_1` on the built data (maximum absolute difference 0.0 over all rows), so `M0_L26` and M0 are one configuration; a second row would count it twice in N |
+| Evidence | §07 table: "M0\* (fallback) \| M0 with lookback chosen at each refit from {13, 26, 52} weeks"; contract 3: "M0\* variants … `MOM13_1`, `MOM26_1`, `MOM52_1` = `ln TR(t − 1w) − ln TR(t − L w)`"; S23-2 "a rerun of the same configuration" adds no row; Session 3.1 instructions §4: "--fixed for each grid value (… M0_L13/26/52)" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `05_train_walkforward.py`, `src/models.py`, `src/vault.py` |
+| Amendment | No |
+
+### S31-7 · Trial counting rule
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | What is N for the Deflated Sharpe Ratio and which configurations form the PBO matrix? |
+| Options considered | (a) N = rows of `docs/trial_log.csv`; (b) N = distinct rungs only |
+| Decision | (a). Each tuned rung (M1, M2, M3, M0\*, ENS, each with its C1 rule) and each fixed grid value (M1 and M2 at λ = 0.1, 1, 10; M3 at depth 2 and 3; M0 at 13 and 52 weeks) is one row, keyed by `spec_hash` as in S23-6; `M0_L26` is the existing M0 row (S31-6). After this session the log holds 16 rows (M0 plus 15). N for the DSR is the number of rows of the trial log when the DSR is computed, including M5, the agent trials and any re-keyed configuration of Phase 3.3 and later. The PBO matrix has one column per trial-log row with an In-Sample weekly net return series from `06_backtest.py` (rungs, fixed values, M0 once, agent candidates); it never chooses the model |
+| Rationale | Counting every row, including a tuned rung on top of its fixed values, keeps N conservative, as Amendment 5 C2 requires |
+| Evidence | Amendment 5 C2: "These fixed runs enter the PBO matrix and the trial log, and the Deflated Sharpe Ratio counts every rung and every fixed configuration."; §10: "Deflated Sharpe Ratio with N = every human and agent trial in the ledger"; "PBO by CSCV. Run on the In-Sample weekly return matrix of every candidate configuration (rungs × grid values × agent candidates)"; Session 3.1 instructions §5: "one row per configuration (each rung with its C1 rule, each fixed value), keyed as in S23-6. Record the counting rule as an S31 decision." |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `docs/trial_log.csv`, `src/stats.py` |
+| Amendment | No (applies Amendment 5 C2) |
+
+### S31-8 · Bootstrap statistic and the selection gate's Sharpe convention
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) What does "P(uplift > 0)" measure in the paired block bootstrap? (2) Which Sharpe convention does the gate use? (3) What if a candidate (M5) does not exist? |
+| Options considered | (1) (a) the Sharpe uplift on each paired resample; (b) the mean weekly difference. (2) skeleton convention (annual return − rf) / volatility or zero-cost; fixed now or at the gate. (3) skip silently, or require it to be named |
+| Decision | (1) (a), with (b) reported alongside. `paired_block_bootstrap` draws one set of stationary-bootstrap indices (Politis and Romano 1994; geometric blocks with mean `block` weeks, circular wrap, `numpy.random.default_rng(seed)`) and applies it to both series (and to a weekly rf series when one is given). It returns the observed Sharpe uplift, the percentile interval at `inference.confidence` (0.95), P(uplift > 0) as the share of resamples with uplift strictly above 0, and the mean weekly difference with its interval. Sharpe is the formula of `src.metrics.sharpe_ratio`; rf = 0 gives the zero-cost convention. The gate runs it with `selection.bootstrap_block` (4) and reports `selection.bootstrap_block_sensitivity` (8) as information. (2) Not fixed in code: `selection_gate(..., *, rf)` has no default, so the caller must pass rf = 0.0 (zero-cost) or the weekly T-bill series (skeleton headline); open point for both humans before the gate is run in Phase 3.3. (3) A candidate of `models.candidate_order` missing from the results raises `ValueError` unless it is named in `absent=` (e.g. M5 when no agent feature is approved); absent candidates are reported as such |
+| Rationale | (1) The stub docstring and the gate's first criterion are in Sharpe units; resampling paired weeks is the bootstrap of weekly differences of H2. (2) §09 names the skeleton convention the headline, while Amendment 5 C1 uses zero-cost for the inner choice; the choice changes the gate and belongs to the humans |
+| Evidence | §07 step 3: "net Sharpe ≥ M0 + 0.15; max drawdown at most 2 percentage points worse than M0; paired block bootstrap P(uplift > 0) ≥ 0.80"; §11 inference table: "Uplift vs M0 \| Paired stationary block bootstrap, 5,000 resamples, 4-week mean block (8-week sensitivity) \| H2 interval and P(uplift > 0)"; H2: "Paired block bootstrap of weekly differences"; §09: "the skeleton convention, (annual return − rf) / volatility, which is conservative here and is the headline; and the zero-cost long/short convention"; `src/stats.py` stub (commit ae7360f): "Returns the Sharpe uplift, its interval and P(uplift > 0)"; §07 "M5 \| Best rung + approved agent features"; "ENS … (+ M5 if it exists)" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/stats.py`, `config.yaml` (`inference.confidence`), `tests/test_stats.py` |
+| Amendment | No |
+
+### S31-9 · Rank IC, HAC, Ledoit–Wolf, DSR and PBO conventions
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which estimators and conventions do the remaining §11 procedures use? |
+| Options considered | As below (chosen) |
+| Decision | Rank IC: per week, the Spearman correlation (Pearson correlation of average ranks) of the 9 sector scores of week t with their forward returns of contract 7 (realised at O(t+2)); weeks without all 9 pairs finite, or with constant scores or returns, are skipped. Its mean has a Newey–West (Bartlett) HAC standard error with lag rule L = ⌊4 (T/100)^(2/9)⌋ (Newey and West 1994), T the number of weekly ICs; t = mean / se. Ledoit–Wolf (2008): Sharpe per period μ/σ with σ² = E[r²] − μ², delta method on (μ_a, μ_b, E[r_a²], E[r_b²]), HAC covariance with the T/(T − 4) small-sample factor, quadratic-spectral kernel with the Andrews (1991) AR(1) plug-in bandwidth (equal weights), no prewhitening; two-sided normal p-value (a Bartlett kernel with an explicit bandwidth is available for checks). DSR: Bailey and López de Prado (2014) with per-period (weekly) Sharpe mean/std (`ddof=1`), sample skewness and Pearson kurtosis (population moments), SR₀ = √V[SR] · ((1 − γ) Φ⁻¹(1 − 1/N) + γ Φ⁻¹(1 − 1/(N e))), γ the Euler–Mascheroni constant, V[SR] the sample variance (`ddof=1`) of the trials' weekly Sharpes, N from S31-7; N = 1 gives SR₀ = 0 (the probabilistic Sharpe ratio). PBO (Bailey, Borwein, López de Prado and Zhu 2017): `inference.pbo_blocks` (16) contiguous equal blocks after dropping the oldest T mod 16 weeks; all C(16, 8) = 12,870 splits; per split the In-Sample winner (highest mean/std, first column on ties) gets the relative rank ω = rank / (N + 1) of its OOS Sharpe (average ranks, `NaN` lowest), λ = ln(ω / (1 − ω)), and PBO = share of splits with λ ≤ 0 |
+| Rationale | Standard published forms; the lag rule and the kernel are recorded because the texts allow several. Prewhitening is omitted to keep the estimator simple with 300–600 weekly observations |
+| Evidence | §11 inference table (procedures named); Session 3.1 instructions §6: "rank_ic: weekly Spearman, HAC (Newey-West) mean and t-statistic; record the lag rule", "deflated_sharpe_ratio: Bailey and López de Prado (2014), N = trial count", "pbo_cscv: 16 blocks", "sharpe_difference_test: Ledoit–Wolf (2008), HAC"; protocol references: "Ledoit & Wolf (2008), Robust Performance Hypothesis Testing with the Sharpe Ratio", "Bailey & López de Prado (2014), The Deflated Sharpe Ratio" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/stats.py`, `config.yaml` (`inference.pbo_blocks`), `tests/test_stats.py` |
+| Amendment | No |
+
+### S31-10 · Outputs of the ladder runs and refined Phase 3.1 names
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | What do the ladder runs of `05_train_walkforward.py` write, and which stub names of contract 17 change? |
+| Options considered | As below (chosen) |
+| Decision | `--model {M0, M1, M2, M3, ENS, M0_star}` or `--fixed NAME` with the names built from the grids (`M1_a0.1`, `M1_a1`, `M1_a10`, `M2_a0.1`, `M2_a1`, `M2_a10`, `M3_d2`, `M3_d3`, `M0_L13`, `M0_L26`, `M0_L52`). Each run writes `outputs/walkforward/<name>/scores.csv`, `used.yaml` (`walkforward_settings(cfg)`, unchanged, S31-2) and `summary.json` (S23-3, plus `name`); tuned rungs with a grid (M1, M2, M3, M0\*) also write `selection.csv`, one row per refit: `test_year`, `refit`, `test_start`, `train_start`, `train_end`, `purge_end`, `inner_train_end`, `inner_purge_end`, `inner_val_start`, `inner_val_end`, `inner_val_weeks`, one `sharpe_<value>` column per grid value in config order, and `chosen`. Contract 17: `select_m0_star_lookback(net_returns, cutoff)` is replaced by the shared C1 helpers `inner_fold`, `inner_sharpe`, `choose_grid_value` and `walkforward_rung` (M0\* uses them like every grid); `tuning_spec`, `LadderData` and `to_weekly` (moved from the vault's private `_weekly_scores`) are added; `Vault.last_selection` holds the selection table of the last tuned `run_walkforward` call; `src/stats.py` adds the helpers `stationary_bootstrap_indices`, `newey_west_lags`, `hac_variance_of_mean`, `weekly_rank_ic`, `expected_max_sharpe`, `probabilistic_sharpe_ratio`, `cscv_logits`; `selection_gate` returns a dictionary (selected name and per-candidate details) instead of a name |
+| Rationale | The selection table lets the reviewer check every choice; the stub refinements follow the implementation |
+| Evidence | Session 3.1 instructions §4: "Each run writes outputs/walkforward/<name>/ scores.csv, used.yaml and summary.json, as for M0. Rungs with a grid also write selection.csv: per refit, the inner Sharpe of each value and the value chosen."; contract 17: "a stub's exact argument list is a proposal that its owner may refine in the phase pull request, which the other author reviews" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contracts 15 to 17) |
+| Files affected | `05_train_walkforward.py`, `src/models.py`, `src/vault.py`, `src/stats.py`, `tests/test_module_stubs.py`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S31-11 · Gate 2 sign-off
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Is Gate 2 passed, with the scope fixed by S22-10, by its trigger date of Tue 3 Nov 2026, so that the hard stop ("cut M3 first") does not apply? |
+| Options considered | (a) Gate 2 passed on 3 Nov with the S22-10 scope; (b) Gate 2 not passed, hard stop applies (cut M3, then reduce agent candidates to ~20) |
+| Decision | (a). Every item of the Gate 2 core of S22-10 is met on 3 Nov 2026: (1) engine hand cases and ledger reconciliation (pull request #5; S21-9 to S21-11); (2) features, labels, folds and vault (pull requests #6, #7, #8); (3) M0 In-Sample walk-forward reproduced by the reviewer on Mattia's machine with byte-identical scores (`scores_sha256` `7078b900…96a8`, `spec_hash` `6ce1693e…420c`; pull request #9; S23-6). The M0 In-Sample baseline that the §07 gate will use as the hurdle is recorded: net Sharpe −0.771 (skeleton convention, weekly T-bill rf), maximum drawdown −48.0% (pull request #9). The planted-signal test of the agent lab is not part of Gate 2: it moved to Gate 3 (Fri 6 Nov) and is never cut (S22-10). The hard stop is not triggered, so M3 stays in the ladder and the agent lab keeps ~40 candidates |
+| Rationale | The trigger date is kept unchanged by S22-10, so the pre-commitment is binding; recording the M0 baseline now fixes the hurdle before any M1–M3, ENS or M0\* result exists |
+| Evidence | S22-10: "Gate 2 core, by the end of Tue 3 Nov: engine hand cases and ledger reconciliation pass; features, labels, folds and vault done; M0 In-Sample walk-forward reproduced by the reviewer (Mattia). If the core slips past 3 Nov, the hard stop applies as written: cut M3 first, then reduce agent candidates from ~40 to ~20. The planted-signal test moves to Gate 3 (Fri 6 Nov) and is still never cut."; S21-9, S21-10, S21-11 (engine and ledger, pull request #5); S23-6: "the scores are unchanged (`scores_sha256` `7078b900…96a8`)" and the M0 row "`6ce1693e…420c`"; pull request #9 (Phase 2.3b, Mattia): reproduction of the M0 scores and the In-Sample backtest, net Sharpe −0.771 with the T-bill rf, maximum drawdown −48.0%; Session 3.1 instructions, addition: "Add one more decision entry to this PR, S31-n 'Gate 2 sign-off' in the full §2a format … Scope per S22-10 (the planted-signal test moves to Gate 3). Approved by Eliya Allam and Mattia Cervelli through this PR's review." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam and Mattia Cervelli (review of the pull request from branch `feat/3.1-ladder`) |
+| Files affected | none (gate record) |
+| Amendment | No |
+
+### S31-12 · Interface names agreed with Phase 3.2 and fixes from the session audit
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) Which keyword names and result keys of `src/stats.py` does Mattia's Phase 3.2 code read? (2) May a spec give a grid value with another type (`{"alpha": 1.0}` or `{"alpha": true}` for the grid value 1)? (3) In which units does `deflated_sharpe_ratio` take the trial Sharpes? (4) Must a weekly rf series given to the bootstrap cover exactly the weeks of the returns? |
+| Options considered | (1) keep the key `p_uplift` or use `p_uplift_positive`; (2) accept any value equal to a grid value, or require the grid value with its type; (3) weekly Sharpes only, or also the trial return matrix; (4) exact index, or the weeks of the returns as in `src.metrics` |
+| Decision | (1) `paired_block_bootstrap(candidate, baseline, n_resamples=..., block=..., seed=..., *, rf=None, confidence=None)` returns the probability under the key `p_uplift_positive` (not `p_uplift`); the gate's per-candidate keys are `p_uplift_positive` and `p_uplift_positive_sensitivity`; `rank_ic(...)` returns `mean`. Every signature and result key is listed in contract 17. (2) The value must equal a grid value and have its type (int 1, float 0.1); `bool` is refused. Otherwise one configuration could be logged under several `spec_hash` values, inflating N and duplicating PBO columns. (3) The trial Sharpes are per week (mean/std, `ddof=1`). `deflated_sharpe_ratio(..., *, trial_returns=None)` also accepts the weekly return matrix and computes them; the annualised `is_sharpe` of the trial log must never be passed. (4) The rf series is reindexed to the weeks of the returns, as `src.metrics.sharpe_ratio` does; a missing week raises `ValueError`. Also: the vault checks the forward-returns table against its own `cfg`; two tests added (the inner fits ignore the labels of the inner validation weeks; a label moved into (inner purge_end, outer purge_end] trips the inner purge check) |
+| Rationale | (1) Mattia's hooks are already written against these names; the contract follows them rather than the reverse. (2)–(4) Findings of the session's independent audit; (2) and the two tests close gaps that a mutation of the code would otherwise pass |
+| Evidence | Session 3.1 instructions, interface note: "his hooks call paired_block_bootstrap(a, b, n_resamples=..., block=..., seed=...) and read result["p_uplift_positive"], and rank_ic(...) and read result["mean"]. Use exactly these keyword names and result keys in src/stats.py, and document every function's signature and result keys in contract 17 of docs/interfaces.md."; audit findings 1, 2, 3 and 5 and the notes on the rf index and the vault configuration; S23-2 ("one row per distinct configuration"); §10 "Deflated Sharpe Ratio with N = every human and agent trial" |
+| Proposed by | Eliya Allam (2–4); Mattia Cervelli (1, names used by Phase 3.2) |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contracts 16 and 17) |
+| Files affected | `src/stats.py`, `src/vault.py`, `tests/test_stats.py`, `tests/test_vault.py`, `tests/test_ladder.py`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S31-13 · Gate Sharpe convention (Amendment 6 C1)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which Sharpe convention does the §07 gate use for "net Sharpe ≥ M0 + 0.15" and for the bootstrap P(uplift > 0) (open point (2) of S31-8)? |
+| Options considered | (a) the §09 headline (annualised net return − rf) / annualised volatility with the weekly T-bill rf; (b) the zero-cost convention, as inside the Amendment 5 C1 training windows |
+| Decision | (a), by Amendment 6 C1. The gate is called with `rf` = the weekly FRED 3-month T-bill returns of `src.metrics.tbill_weekly_returns` (Mattia's) over the same weeks; `selection_gate` keeps `rf` as a required keyword (no default), reindexes the series to the weeks of the returns and applies the same rf to the Sharpe criterion and to both bootstraps (blocks 4 and 8). Per candidate it also reports the zero-cost Sharpe alongside, under the new keys `sharpe_zero_cost` and `sharpe_m0_zero_cost` (information only; no criterion uses them). This closes open point (2) of S31-8 |
+| Rationale | The gate must use the Sharpe the slides report; the zero-cost convention stays where only the ranking of grid values matters (Amendment 5 C1) |
+| Evidence | Amendment 6 C1: "The gate's 'net Sharpe' is the headline convention of §09: (annualised net return − rf) / annualised volatility, with rf the weekly FRED 3-month T-bill over the same weeks; the zero-cost Sharpe is reported alongside."; §09: "the skeleton convention, (annual return − rf) / volatility, which is conservative here and is the headline"; §11: "Weekly FRED 3-month T-bill (time-varying)"; S21-4, S21-5 (weekly T-bill return and its annualisation) |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (review of the pull request from branch `feat/3.1-ladder`) |
+| Files affected | `src/stats.py`, `tests/test_stats.py`, `docs/interfaces.md` (contract 17) |
+| Amendment | Yes: Amendment 6 C1 |
+
+### S31-14 · Out-of-Sample refits keep the last In-Sample grid value (Amendment 6 C2)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Do the Out-of-Sample refits keep the last In-Sample grid value of each rung or apply Amendment 5 C1 again (open point of S31-3)? |
+| Options considered | (a) keep the value chosen at the last In-Sample refit (the 2019 Q4 row of each `selection.csv`), refitting only the model parameters on newly realised labels; (b) apply C1 again at every OOS refit |
+| Decision | (a), by Amendment 6 C2. In `08_run_oos.py` (Gate 4), each tuned rung (M1, M2, M3, M0\*) runs as the fixed configuration of its last In-Sample choice: ridge and LightGBM coefficients are refitted at every quarterly OOS refit on the labels realised by then, M0\* keeps its lookback; ENS ranks the members so refitted. The chosen values are recorded in `FROZEN.lock` with the other artefacts. No code changes in this pull request; `08_run_oos.py` implements it. This closes the open point of S31-3 |
+| Rationale | Re-choosing a grid value with Out-of-Sample data is tuning, which §07 forbids after the freeze |
+| Evidence | Amendment 6 C2: "Out-of-Sample refits keep, for each rung, the grid value chosen at the last In-Sample refit, and refit only the model's parameters on newly realised labels."; §07 "The same refits continue during OOS on newly realised labels; tuning does not."; §10 table: "Out-of-Sample \| … \| One run of the frozen system; scheduled quarterly refits allowed, tuning forbidden"; §10 vault protocol: "`FROZEN.lock` records the config hash, code commit, trial-log hash and model artefacts" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (review of the pull request from branch `feat/3.1-ladder`) |
+| Files affected | later `08_run_oos.py`, `FROZEN.lock` |
+| Amendment | Yes: Amendment 6 C2 |
+
+## 2026-11-03 · Session 3.2 follow-up: `06_backtest.py` aligned with `src/stats.py`
+
+"Instruction" quotes Mattia's follow-up prompt of 3 Nov 2026, run on the branch `feat/3.1-ladder` after Eliya merged
+`main` (with the 3.2 pull request) into it.
+
+### S32-9 · Dotted model names, and the shift-check bootstrap on the gate's Sharpe
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) The `--fixed` names of `05_train_walkforward.py` hold the grid value (`M1_a0.1`, `M2_a0.1`; S31-10), which the S32-1 pattern `[A-Za-z0-9][A-Za-z0-9_]*` refuses. Which names does `06_backtest.py` accept now? (2) Which Sharpe convention does the shift check's paired bootstrap use, now that `src.stats.paired_block_bootstrap` exists and takes `rf`? |
+| Options considered | (1) (a) letters, digits and underscores with single dots between them, `[A-Za-z0-9][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*` (chosen); (b) any character but `/`, `\` and `..`; (c) the closed list of `fixed_names(cfg)`. (2) (d) the §09 headline with the weekly T-bill over the common weeks, as the gate (chosen); (e) the zero-cost convention (`rf` None, the S32-3 call) |
+| Decision | (1a). `MODEL_NAME` accepts `M1_a0.1`, `M2_a0.1`, `M1_a10`, `M3_d2`, `M0_L13`; it refuses `..`, `.`, any `/` or `\`, `:`, a space, `-`, the empty name, two dots in a row, and a leading or trailing dot (Windows drops a trailing dot from a folder name, so `M1.` would open `M1`). `walkforward_models` and `check_model` use the same pattern, so `--model`, `--all` and `--shift-check` agree. (2d). `shift_check` passes `rf` = `inputs.rf_weekly` on the common weeks to `paired_block_bootstrap`; its observed uplift equals the reported `sharpe_difference_delayed_minus_base` of the T-bill Sharpes (tested). Settings unchanged: `selection.bootstrap_resamples`, `selection.bootstrap_block`, `seed`, delayed as candidate, base as baseline. The keys `p_uplift_positive` and `mean` of S32-3 are those of `src/stats.py` (S31-8, S31-9). The tests that asserted the Phase 3.1 stub now assert real values: `p_delayed_better` a float in [0, 1], `rank_ic_mean` finite |
+| Rationale | (1a) is the smallest change that admits every name 05 writes and still cannot leave `outputs/walkforward/`; (c) would tie 06 to the grids of 05. (2d) the §12 verdict reuses the gate's bootstrap threshold (S32-3), so it must use the gate's Sharpe |
+| Evidence | Instruction: "06_backtest.py: allow '.' in model folder names (e.g. M1_a0.1, M2_a0.1), while still refusing path-like names ('..', '/', '\\'). Add tests for both."; "The shift check's bootstrap uses the headline Sharpe with the T-bill rf (Amendment 6 C1), for consistency with the gate."; Amendment 6 C1: "The gate's 'net Sharpe' is the headline convention of §09 … with rf the weekly FRED 3-month T-bill over the same weeks"; `05_train_walkforward.py` `FIXED_PREFIX` ("--fixed names: M1_a0.1, M3_d2, M0_L13 (S31-10)"); S31-13. Tests `test_a_model_name_may_hold_single_inner_dots`, `test_a_path_like_model_name_is_refused`, `test_a_dotted_variant_folder_is_backtested`, `test_shift_check_writes_both_books_on_common_weeks` |
+| Proposed by | Mattia Cervelli (instruction) |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: applies Amendment 6 C1; the name pattern is an implementation detail of S32-1 |
+
 ## 2026-11-03 · Session 3.1, continued: LightGBM on macOS
 
 ### S31-15 · LightGBM's macOS wheel needs Homebrew's libomp
@@ -965,6 +1201,7 @@ No result counts until its reviewer signs it here (protocol section 14).
 
 | Date | Deliverable | Owner | Reviewer | Result |
 | --- | --- | --- | --- | --- |
+| 2026-11-03 | Gate 2 core (S22-10): engine hand cases and ledger reconciliation (PR #5); features, labels, folds and vault (PRs #6, #7, #8); M0 In-Sample walk-forward reproduced with byte-identical scores (`scores_sha256` `7078b900…96a8`, PR #9); M0 baseline net Sharpe −0.771 (T-bill rf), max drawdown −48.0% | Eliya Allam, Mattia Cervelli | Mattia Cervelli (M0 reproduction); Eliya Allam and Mattia Cervelli (sign-off) | Passed on 3 Nov 2026; hard stop not triggered (S31-11) |
 
 ## Teaching-team check (protocol section 15)
 

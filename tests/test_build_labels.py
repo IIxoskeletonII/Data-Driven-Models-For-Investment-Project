@@ -1,4 +1,5 @@
-"""In-Sample labels of 03_build_features.py (S23-1): truncated adjusted opens, label weeks, label_end, the guarded writer.
+"""In-Sample labels and forward returns of 03_build_features.py (S23-1, S31-1): truncated adjusted opens, label weeks,
+label_end, realised_on, the guarded writer.
 
 The script's module name starts with a digit, so it is loaded from its file. Inputs come from the shared synthetic market
 (sessions 2011-01-03 to 2020-12-31, US holidays) or are tiny hand-made frames in a temporary folder (no real data).
@@ -14,6 +15,7 @@ import pandas as pd
 import pytest
 
 from src import contracts, features
+from src.backtest import forward_returns
 from src.config import data_settings, load_config
 from src.data import write_csv
 from src.vault import OOSAccessError
@@ -316,3 +318,90 @@ def test_write_tables_writes_oos_labels_with_the_lock_and_allow_oos(script, tmp_
     info = script.write_tables({**make_tables("2019-12-27"), "labels": labels}, out_dir, IS_END, lock, allow_oos=True)
     assert info["labels.csv"]["rows"] == len(labels)
     assert (out_dir / "labels.csv").exists()
+
+
+# ---------------------------------------------------------------- forward returns (S31-1)
+
+
+def full_forward(script, market) -> pd.DataFrame:
+    return script.build_forward_returns(market.daily_open, market.daily_close, IS_END)
+
+
+def test_build_forward_returns_passes_contract_7(script, synthetic_market):
+    """The table splits into (fwd, realised_on, period) that pass validate_forward_returns on the truncated index."""
+    fwd, realised_on, period = script.split_forward_returns(full_forward(script, synthetic_market))
+    contracts.validate_forward_returns(fwd, realised_on, period, is_end=IS_END)
+    assert list(fwd.columns) == TRADABLES
+    assert pd.DatetimeIndex(fwd.index.get_level_values("date_close")).max() == IS_END
+
+
+def test_build_forward_returns_never_realises_after_the_in_sample_end(script, synthetic_market):
+    """Every realised_on is on or before 2019-12-27 (or NaT for the last two weeks); every period is IS or missing."""
+    table = full_forward(script, synthetic_market)
+    realised = pd.DatetimeIndex(table["realised_on"])
+    assert realised.dropna().max() == ts("2019-12-23")
+    assert realised[-2:].isna().all() and table[TRADABLES].iloc[-2:].isna().all().all()
+    assert set(table["period"].dropna()) == {"IS"}
+
+
+def test_build_forward_returns_is_the_hand_computed_open_to_open_return(script, synthetic_market):
+    """fwd[t] = O(t+2) / O(t+1) - 1 on the synthetic weekly opens, for a sector, IVV and SPY."""
+    table = full_forward(script, synthetic_market)
+    opens = synthetic_market.weekly_open
+    closes = pd.DatetimeIndex(opens.index.get_level_values("date_close"))
+    row = int(np.flatnonzero(closes == ts("2015-03-06"))[0])
+    by_close = table.set_axis(pd.DatetimeIndex(table.index.get_level_values("date_close")))
+    for ticker in ["XLK", "IVV", "SPY"]:
+        expected = opens[ticker].iloc[row + 2] / opens[ticker].iloc[row + 1] - 1
+        assert by_close.at[ts("2015-03-06"), ticker] == pytest.approx(expected, rel=1e-14)
+
+
+def test_build_forward_returns_ignores_every_price_after_the_in_sample_end(script, synthetic_market):
+    """Prices after 2019-12-27 change nothing (inputs are truncated first)."""
+    full = full_forward(script, synthetic_market)
+    opens, closes = synthetic_market.daily_open.copy(), synthetic_market.daily_close.copy()
+    opens.loc[opens.index > IS_END] *= 3.0
+    closes.loc[closes.index > IS_END] *= 0.5
+    pd.testing.assert_frame_equal(full, script.build_forward_returns(opens, closes, IS_END))
+
+
+def test_labels_are_the_relative_sector_forward_returns(script, synthetic_market):
+    """Labels and forward returns come from one computation: y = fwd - mean over the 9 sectors on every label week."""
+    labels = full_labels(script, synthetic_market)
+    fwd, _, _ = script.split_forward_returns(full_forward(script, synthetic_market))
+    by_close = fwd.set_axis(pd.DatetimeIndex(fwd.index.get_level_values("date_close")))[SECTORS]
+    relative = by_close.sub(by_close.mean(axis=1), axis=0).stack()
+    relative.index.names = ["date_close", "ticker"]
+    np.testing.assert_allclose(labels["y"].to_numpy(), relative.reindex(labels.index).to_numpy(), rtol=0, atol=1e-15)
+
+
+def test_write_tables_refuses_a_forward_return_realised_after_the_in_sample_end(script, synthetic_market, tmp_path):
+    """A forward-returns table with a realised_on after 2019-12-27 is refused without the unlock path; nothing written."""
+    weekly_open = synthetic_market.weekly_open
+    closes = pd.DatetimeIndex(weekly_open.index.get_level_values("date_close"))
+    weekly_open = weekly_open.loc[np.asarray(closes <= ts("2020-01-10"))]
+    fwd, realised_on, period = forward_returns(weekly_open, is_end=IS_END)
+    table = fwd.assign(realised_on=realised_on, period=period)
+    table = table.loc[np.asarray(pd.DatetimeIndex(table.index.get_level_values("date_close")) <= IS_END)]
+    out_dir, lock = tmp_path / "processed", tmp_path / "FROZEN.lock"
+    with pytest.raises(OOSAccessError):
+        script.write_tables({"forward_returns": table}, out_dir, IS_END, lock)
+    assert nothing_written(out_dir)
+    lock.write_text("frozen", encoding="utf-8")
+    with pytest.raises(OOSAccessError):
+        script.write_tables({"forward_returns": table}, out_dir, IS_END, lock)
+    script.write_tables({"forward_returns": table}, out_dir, IS_END, lock, allow_oos=True)
+    assert (out_dir / "forward_returns.csv").exists()
+
+
+def test_write_tables_writes_forward_returns_csv_with_a_checksum_entry(script, synthetic_market, tmp_path):
+    """forward_returns.csv is written with LF endings and a rows/columns/SHA-256 entry."""
+    table = full_forward(script, synthetic_market)
+    out_dir, lock = tmp_path / "processed", tmp_path / "FROZEN.lock"
+    info = script.write_tables({"forward_returns": table}, out_dir, IS_END, lock)
+    content = (out_dir / "forward_returns.csv").read_bytes()
+    entry = info["forward_returns.csv"]
+    assert b"\r\n" not in content
+    assert entry["rows"] == len(table)
+    assert entry["sha256"] == hashlib.sha256(content).hexdigest()
+    assert list(entry["columns"]) == TRADABLES + ["realised_on", "period"]
