@@ -915,12 +915,43 @@ session (3 Nov 2026). "Approved by" is completed by Mattia's approving review of
 | Files affected | `src/stats.py`, `src/vault.py`, `tests/test_stats.py`, `tests/test_vault.py`, `tests/test_ladder.py`, `docs/interfaces.md` |
 | Amendment | No |
 
+### S31-13 · Gate Sharpe convention (Amendment 6 C1)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which Sharpe convention does the §07 gate use for "net Sharpe ≥ M0 + 0.15" and for the bootstrap P(uplift > 0) (open point (2) of S31-8)? |
+| Options considered | (a) the §09 headline (annualised net return − rf) / annualised volatility with the weekly T-bill rf; (b) the zero-cost convention, as inside the Amendment 5 C1 training windows |
+| Decision | (a), by Amendment 6 C1. The gate is called with `rf` = the weekly FRED 3-month T-bill returns of `src.metrics.tbill_weekly_returns` (Mattia's) over the same weeks; `selection_gate` keeps `rf` as a required keyword (no default), reindexes the series to the weeks of the returns and applies the same rf to the Sharpe criterion and to both bootstraps (blocks 4 and 8). Per candidate it also reports the zero-cost Sharpe alongside, under the new keys `sharpe_zero_cost` and `sharpe_m0_zero_cost` (information only; no criterion uses them). This closes open point (2) of S31-8 |
+| Rationale | The gate must use the Sharpe the slides report; the zero-cost convention stays where only the ranking of grid values matters (Amendment 5 C1) |
+| Evidence | Amendment 6 C1: "The gate's 'net Sharpe' is the headline convention of §09: (annualised net return − rf) / annualised volatility, with rf the weekly FRED 3-month T-bill over the same weeks; the zero-cost Sharpe is reported alongside."; §09: "the skeleton convention, (annual return − rf) / volatility, which is conservative here and is the headline"; §11: "Weekly FRED 3-month T-bill (time-varying)"; S21-4, S21-5 (weekly T-bill return and its annualisation) |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (review of the pull request from branch `feat/3.1-ladder`) |
+| Files affected | `src/stats.py`, `tests/test_stats.py`, `docs/interfaces.md` (contract 17) |
+| Amendment | Yes: Amendment 6 C1 |
+
+### S31-14 · Out-of-Sample refits keep the last In-Sample grid value (Amendment 6 C2)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Do the Out-of-Sample refits keep the last In-Sample grid value of each rung or apply Amendment 5 C1 again (open point of S31-3)? |
+| Options considered | (a) keep the value chosen at the last In-Sample refit (the 2019 Q4 row of each `selection.csv`), refitting only the model parameters on newly realised labels; (b) apply C1 again at every OOS refit |
+| Decision | (a), by Amendment 6 C2. In `08_run_oos.py` (Gate 4), each tuned rung (M1, M2, M3, M0\*) runs as the fixed configuration of its last In-Sample choice: ridge and LightGBM coefficients are refitted at every quarterly OOS refit on the labels realised by then, M0\* keeps its lookback; ENS ranks the members so refitted. The chosen values are recorded in `FROZEN.lock` with the other artefacts. No code changes in this pull request; `08_run_oos.py` implements it. This closes the open point of S31-3 |
+| Rationale | Re-choosing a grid value with Out-of-Sample data is tuning, which §07 forbids after the freeze |
+| Evidence | Amendment 6 C2: "Out-of-Sample refits keep, for each rung, the grid value chosen at the last In-Sample refit, and refit only the model's parameters on newly realised labels."; §07 "The same refits continue during OOS on newly realised labels; tuning does not."; §10 table: "Out-of-Sample \| … \| One run of the frozen system; scheduled quarterly refits allowed, tuning forbidden"; §10 vault protocol: "`FROZEN.lock` records the config hash, code commit, trial-log hash and model artefacts" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (review of the pull request from branch `feat/3.1-ladder`) |
+| Files affected | later `08_run_oos.py`, `FROZEN.lock` |
+| Amendment | Yes: Amendment 6 C2 |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
 
 | Date | Deliverable | Owner | Reviewer | Result |
 | --- | --- | --- | --- | --- |
+| 2026-11-03 | Gate 2 core (S22-10): engine hand cases and ledger reconciliation (PR #5); features, labels, folds and vault (PRs #6, #7, #8); M0 In-Sample walk-forward reproduced with byte-identical scores (`scores_sha256` `7078b900…96a8`, PR #9); M0 baseline net Sharpe −0.771 (T-bill rf), max drawdown −48.0% | Eliya Allam, Mattia Cervelli | Mattia Cervelli (M0 reproduction); Eliya Allam and Mattia Cervelli (sign-off) | Passed on 3 Nov 2026; hard stop not triggered (S31-11) |
 
 ## Teaching-team check (protocol section 15)
 
