@@ -942,6 +942,23 @@ far; Eliya approves through the review of the 3.2 pull request.
 | Files affected | `docs/decisions.md` only |
 | Amendment | No |
 
+## 2026-11-03 · Session 3.1, continued: LightGBM on macOS
+
+### S31-15 · LightGBM's macOS wheel needs Homebrew's libomp
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | The macOS CI job of pull request #11 fails when LightGBM (M3) is imported. How do CI and the team's macOS machines get the OpenMP runtime it needs? |
+| Options considered | (a) install Homebrew's `libomp` in the macOS CI job and state it as a macOS prerequisite in the README; (b) drop or skip LightGBM on macOS (refused: M3 is pre-registered and must run on macOS and Windows, Gate 5); (c) pin or build another LightGBM wheel (a dependency change outside this pull request) |
+| Decision | (a). `.github/workflows/ci.yml`: in the `test` job, right after `astral-sh/setup-uv`, the step "OpenMP runtime for LightGBM (macOS)" runs `brew install libomp` when `runner.os == 'macOS'`. `README.md` (Quick start) states: "macOS: run `brew install libomp` once (LightGBM needs the OpenMP runtime)." The same pull request corrects the README's `05_train_walkforward.py` line to `uv run python 05_train_walkforward.py --model M0`, since the script requires `--model` |
+| Rationale | LightGBM's macOS wheel links the OpenMP runtime dynamically and does not ship it; installing it is an environment prerequisite that changes no setting, model or result |
+| Evidence | macOS CI log on pull request #11, as reported by Eliya Allam (3 Nov 2026): "Library not loaded: @rpath/libomp.dylib"; operating manual §8, Gate 5: "clean runs on macOS and Windows"; `05_train_walkforward.py` on `main`: `parser.add_argument("--model", required=True, ...)` (with pull request #11, one of `--model` and `--fixed` is required) |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (review of the pull request from branch `ci/macos-libomp`) |
+| Files affected | `.github/workflows/ci.yml`, `README.md` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).

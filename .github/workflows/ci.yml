@@ -24,6 +24,10 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.3.3
 
+      - name: OpenMP runtime for LightGBM (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: Install the locked environment
         run: uv sync --locked
 
