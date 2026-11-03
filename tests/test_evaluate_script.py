@@ -4,6 +4,7 @@ S32-6)."""
 
 import copy
 import importlib.util
+import json
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ from src.config import ROOT, load_config, save_used
 from src.data import write_csv
 from src.features import features_settings, sizing_betas
 from src.models import walkforward_settings
+from src.vault import spec_hash
 
 IS_END = pd.Timestamp("2019-12-27")
 
@@ -48,6 +50,8 @@ def layout(script, synthetic_market, tmp_path, monkeypatch):
         folder = tmp_path / "outputs" / "walkforward" / name
         write_csv(scores, folder / "scores.csv")
         save_used(walkforward_settings(cfg), folder / "used.yaml")
+        digest = spec_hash(script.bt._walkforward_script().spec_for(name, cfg), cfg)  # summary.json of 05 (S32-10)
+        (folder / "summary.json").write_text(json.dumps({"name": name, "spec_hash": digest}), encoding="utf-8")
     processed = tmp_path / "data" / "processed"
     save_used(features_settings(cfg), processed / "features_config.yaml")
     write_csv(sizing_betas(market.daily_close.loc[market.daily_close.index <= IS_END], cfg), processed / "sizing_betas.csv")
