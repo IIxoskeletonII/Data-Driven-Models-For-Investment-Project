@@ -634,6 +634,101 @@ request that implements Session 2.2.
 | Files affected | `docs/preregistration.md`, `docs/decisions.md`, `src/models.py`, `tests/test_models.py`, `config.yaml` (comment, separate pull request) |
 | Amendment | No new amendment: renumbering of an unmerged one |
 
+## 2026-11-02 · Session 2.3a: In-Sample labels and the M0 walk-forward
+
+Format of the operating manual's evidence standard. "Session 2.3a instructions" quotes the task list Eliya set for the session (2 Nov 2026), with its additions agreed with Mattia.
+"Approved by" is completed by Mattia's approving review of the pull request that implements Session 2.3a.
+
+### S23-1 · Labels from the truncated adjusted opens
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which inputs build `data/processed/labels.csv`, how is it kept In-Sample, and which settings guard it through `check_used`? |
+| Options considered | Source: (a) `data/processed/weekly_open.csv` (full range, written by `01_download_data.py`), filtered afterwards; (b) `data/processed/daily_open.csv` truncated at `split.in_sample_end` right after reading, weekly opens rebuilt from the truncated daily opens and closes. Settings: (c) keep `{data, features, in_sample_end}`; (d) add `execution`, since `execution.type` determines the labels |
+| Decision | (b) and (d). `03_build_features.py` reads the fully adjusted daily opens, truncates them at 2019-12-27 like the closes (S22-5), builds the weekly opens with `src.data.weekly_panel` from the truncated opens and closes, and calls `src.backtest.forward_returns(weekly_open, is_end)` (Mattia's function, imported and unchanged) and `src.labels.make_labels(fwd, sessions)` with the truncated session calendar. It keeps the rows with `label_end ≤ 2019-12-27` and checks that the label weeks lie on the weekly index of the features. Because the opens end on 2019-12-27, the weeks ending 2019-12-20 and 2019-12-27 have no O(t+2) and therefore no forward return and no label: the last label is the week ending 2019-12-13 (`label_end` 2019-12-23), and no open after 2019-12-27 enters any computation. `write_tables` also refuses a labels table with a `label_end` after the In-Sample end unless `FROZEN.lock` exists and `allow_oos=True` (only `08_run_oos.py`). `labels.csv` gets an entry in `data/checksums_features.json` (rows, date range, columns, size, SHA-256). `features_config.yaml` is written from the new `src.features.features_settings(cfg)` = `{data, features, execution, in_sample_end}` |
+| Rationale | (a) would bring Out-of-Sample opens into the computation and rely on a filter to drop them; (b) applies the S22-5 rule to the opens. A change to `execution.type` changes every label, so it must invalidate the built files |
+| Evidence | §05: "Following session open O(t+2). Exit or rebalance. The week's return is realised here, and only now may it enter a training label." and "Each label has `label_end = O(t+2)`"; contract 7 (commit 89a73eb): "the last In-Sample signal week is the one ending 2019-12-13"; S22-5 (truncation at the In-Sample end); S22-7: "Phase 2.3 writes it, truncated at the In-Sample end like the features"; `01_download_data.py` docstring: "`data/processed/daily_{open,high,low,close}.csv` fully adjusted prices of the tradables on the equity calendar"; Session 2.3a instructions §2: "write data/processed/labels.csv from src.backtest.forward_returns (Mattia's function, imported, not edited) and src.labels.make_labels, using adjusted opens from the same truncated inputs. Keep only rows with label_end ≤ 2019-12-27. Add its entry to data/checksums_features.json" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `03_build_features.py`, `src/features.py` (`features_settings`), `tests/test_build_labels.py`, `data/checksums_features.json`, `docs/interfaces.md` (contract 6) |
+| Amendment | No |
+
+### S23-2 · One trial-log row per distinct model specification
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | When `run_walkforward` is called again with an identical spec (a determinism check, or a rerun after a rebuild), does each call append a row to `docs/trial_log.csv`? |
+| Options considered | (a) every call appends a row; (b) a row is appended only when the trial log has no row with the same `spec_hash`; (c) a caller option that skips the trial log |
+| Decision | (b). `run_walkforward` computes, validates and returns the scores and logs the call as `ok` as before, but appends a trial row only for a `spec_hash` not yet in the trial log. A spec that differs in any key (rung, feature, author, kind, notes, dates) is a different configuration and gets its own row. Open points for both humans: (1) how In-Sample metrics are attached to an existing row once the engine evaluates the scores (Phase 2.3b); (2) the hash covers the spec only, not the config sections that drive the scores, so a rerun after an amended `config.yaml` with the same spec adds no row. Settings are pre-registered and change only by a dated amendment (manual §3.4), but before Phase 3.1 adds grids the team should decide whether the trial key also covers `walkforward_settings(cfg)` |
+| Rationale | The deflated Sharpe ratio counts configurations tried; (a) would count a rerun of the same configuration as a second trial and inflate N; (c) would allow an In-Sample evaluation without a row, against manual rule 5 |
+| Evidence | Operating manual §3.5: "Every model configuration evaluated on In-Sample data, by a human or an agent, gets a row in `docs/trial_log.csv`. The deflated Sharpe ratio uses that count."; §10: "Deflated Sharpe Ratio with N = every human and agent trial in the ledger"; contract 15 (commit 89a73eb): "Every configuration evaluated on In-Sample data, by a human or an agent, is one row"; Session 2.3a instructions §3: "Append one row to docs/trial_log.csv. The script must be deterministic: two runs give identical files." |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contract 15) |
+| Files affected | `src/vault.py`, `tests/test_vault.py`, `docs/interfaces.md` (contract 15) |
+| Amendment | No |
+
+### S23-3 · Outputs of `05_train_walkforward.py` and the M0 trial spec
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | What exactly do `05_train_walkforward.py --model M0` and its outputs contain, and which spec is logged? |
+| Options considered | Summary: (a) with a run timestamp; (b) without any time or machine-dependent field, so that two runs give identical bytes. Spot values: chosen before the run, fixed in the script |
+| Decision | (b). The script accepts only `--model M0` until Phase 3.1. It checks `data/processed/features_config.yaml` against `features_settings(cfg)` (`check_used`), builds `Vault(split.in_sample_end)` and calls `run_walkforward` with the spec `{"rung": "M0", "feature": "MOM26_1" (models.M0.feature), "author": "Eliya Allam", "kind": "human", "notes": "M0 In-Sample walk-forward (Phase 2.3a)"}`; every fit asserts the purge (S22-8). It writes to `outputs/walkforward/M0/` (git-ignored): `scores.csv` (contract 8, `%.17g`), `used.yaml` (content: S23-5), which later scripts check with `check_used`, and `summary.json` (sorted keys, LF): `rung`, `spec_hash`, `refits` (folds of contract 13 recomputed through the vault), `rows` (data rows of `scores.csv` = weeks), `weeks`, `values` (non-missing scores), `nan_count`, `first_week` and `last_week` (`date_close`), `column_sums` (per sector), `min`, `max`, five spot values fixed before the run (2008-01-04 XLB, 2008-10-10 XLF, 2012-06-01 XLK, 2016-02-12 XLE, 2019-12-13 XLY) and `scores_sha256`. No timestamp. It computes no performance metric (Phase 2.3b) |
+| Rationale | A summary without timestamps lets the reviewer reproduce the run byte for byte from the archived data; the spot values are fixed in advance so they cannot be picked after seeing the scores |
+| Evidence | Session 2.3a instructions §3: "Output: the scores frame of contract 8 for the 624 test weeks, 2008-01-04 to 2019-12-13, written to outputs/walkforward/M0/scores.csv, plus used.yaml (check_used) and summary.json (rows, weeks, first/last week, column sums, min, max, and 5 fixed spot values)… The script must be deterministic: two runs give identical files."; §4: "Compute no performance metrics here"; operating manual §6: "Scripts use the skeleton's `check_used` pattern to refuse outputs built with a different config"; manual §3.6 (the scores are a weekly series per ticker derived from prices: they stay under the git-ignored `outputs/`, and only summary values appear in the pull request) |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `05_train_walkforward.py`, `tests/test_walkforward_script.py`, `docs/interfaces.md`, `docs/trial_log.csv` |
+| Amendment | No |
+
+### S23-4 · The vault serves the sizing betas
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | How does `06_backtest.py` (Phase 2.3b) obtain the raw BETA52 of contract 10 for sizing, given that all model and research data access goes through the vault? |
+| Options considered | (a) 06 reads `data/processed/sizing_betas.csv` directly; (b) a vault method serving it like the other tables |
+| Decision | (b). `Vault.sizing_betas(as_of)` returns the rows of `sizing_betas.csv` (weekly index, columns the 9 sectors and IVV, float64) with `date_close ≤ as_of`. The table is in `FRAME_NAMES`, read with the weekly index, validated with `validate_betas` on first use, sealed at the In-Sample end like every table (a later `as_of` raises `OOSAccessError` unless `FROZEN.lock` exists and `unlock()` was called) and every call writes one access-log line, `ok` or `refused`. In-memory `frames` may hold it under the key `sizing_betas` |
+| Rationale | One sealed path for every input of the backtest; (a) would bypass the seal and the access log |
+| Evidence | Operating manual §3.3: "All model and research data access goes through `src/vault.py`."; contract 10: "raw (not z-scored) `BETA52` of each sector and of IVV against SPY, known after Friday close t, used to size the positions taken at `O(t+1)`"; Session 2.3a instructions, addition 1 (agreed with Mattia for 06): "Vault.sizing_betas(as_of): serve data/processed/sizing_betas.csv … the same way as the other tables: add it to FRAME_NAMES, validate it with validate_betas, seal it at the In-Sample end, and log each access." |
+| Proposed by | Eliya Allam and Mattia Cervelli (agreed for Phase 2.3b) |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contract 15) |
+| Files affected | `src/vault.py`, `tests/test_vault.py`, `docs/interfaces.md` (contract 15) |
+| Amendment | No |
+
+### S23-5 · Config sections in the walk-forward `used.yaml`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Which settings does `outputs/walkforward/<rung>/used.yaml` hold, given that `06_backtest.py` compares against it with `check_used`? |
+| Options considered | (a) `features_settings(cfg)` plus `split` and the rung's `models` entry (first draft of S23-3, never committed); (b) exactly the whole config sections `{seed, data, split, features, models}`, the set agreed with Mattia for 06 |
+| Decision | (b). `src.models.walkforward_settings(cfg)` returns `{key: cfg[key] for key in ("seed", "data", "split", "features", "models")}`; `05_train_walkforward.py` saves it with `save_used`. `execution` is not in the set: the labels the scores are trained on are guarded by `data/processed/features_config.yaml` (which holds `execution`, S23-1), checked by 05 before it scores. Open point for Phase 3.1: if `execution` changes and only `03_build_features.py` is rerun, 06's check of this file would still pass with scores trained on the old labels; M0 is not affected (its scores do not use labels) |
+| Rationale | Both sides must compare the same set; whole sections are simpler to reproduce in 06 than a derived dictionary |
+| Evidence | Session 2.3a instructions, addition 2: "05_train_walkforward.py writes outputs/walkforward/M0/used.yaml with save_used, containing exactly the config sections {seed, data, split, features, models}. Mattia's 06 check_used compares against exactly that set."; operating manual §6: "Scripts use the skeleton's `check_used` pattern to refuse outputs built with a different config" |
+| Proposed by | Eliya Allam and Mattia Cervelli (agreed for Phase 2.3b) |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/models.py` (`walkforward_settings`), `05_train_walkforward.py`, `tests/test_walkforward_script.py`, `docs/interfaces.md` (contract 15) |
+| Amendment | No |
+
+### S23-6 · Trial identity covers the config; `execution` in `used.yaml`; trial metrics; a display incident
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | (1) Should a trial's `spec_hash` also cover the config that determines the scores (open point (2) of S23-2)? (2) Should the walk-forward `used.yaml` hold `execution` (open point of S23-5)? (3) When are `is_sharpe` and `is_mdd` of the trial log filled (open point (1) of S23-2)? (4) How is the display of raw prices dated after the In-Sample end during this session recorded? |
+| Options considered | (1) (a) hash of the spec only (S22-8, S23-2); (b) hash of the spec and the config sections `walkforward_settings(cfg)`. (2) (c) keep `{seed, data, split, features, models}` (S23-5); (d) add `execution`. (3) (e) fill them in Phase 2.3b from `06_backtest.py`; (f) leave them empty until the selection step of Phase 3.1 |
+| Decision | (1b), (2d), (3f). (1) `spec_hash(spec, cfg)` is the SHA-256 of the canonical JSON (sorted keys, no spaces) of `{"config": walkforward_settings(cfg), "spec": spec}`; `params_json` stays the spec's canonical JSON. The same spec under a changed walk-forward config section is a new trial and gets its own row; a rerun under the same config still adds none (S23-2). This supersedes the hash definition of S22-8 and S23-2. The M0 row of `docs/trial_log.csv`, not yet on `main`, was recomputed with the new hash (`6ce1693e…420c`, previously `dc69863a…806c`) by resetting the log to its header and rerunning `05_train_walkforward.py --model M0`; the scores are unchanged (`scores_sha256` `7078b900…96a8`). (2) `walkforward_settings(cfg)` = exactly `{seed, data, split, execution, features, models}`, saved as `used.yaml` and compared by `06_backtest.py` with `check_used`; this supersedes the set of S23-5 and closes its open point. (3) `is_sharpe` and `is_mdd` stay empty until Phase 3.1, where the selection step fills them from the outputs of `06_backtest.py`. (4) Incident: during a format check of `data/processed/daily_open.csv` in this session, its last two rows (adjusted opens of 2026-10-15 and 2026-10-16) were displayed. No label, return, metric or plot was computed from them and nothing was written; rule 3 of the operating manual (which covers labels, returns, metrics and plots) was not engaged. Later format checks print only In-Sample rows or metadata |
+| Rationale | (1) The deflated Sharpe ratio must count every configuration evaluated; a config change, even through a dated amendment, is a different configuration, so counting it keeps N conservative. (2) `execution.type` determines the labels the scores are trained on from Phase 3.1, so a change must invalidate the walk-forward outputs, not only the label files. (3) The metrics come from 06; the selection step reads them anyway, so filling the rows there avoids a second write path into the trial log. (4) The record must state what was seen even when no rule was broken |
+| Evidence | Operating manual §3.5: "Every model configuration evaluated on In-Sample data, by a human or an agent, gets a row in `docs/trial_log.csv`. The deflated Sharpe ratio uses that count."; §3.3: "no code may read, compute or print any label, return, metric or plot for a date after 2019-12-27, except raw data QA"; §10: "Deflated Sharpe Ratio with N = every human and agent trial in the ledger"; S23-1 (labels depend on `execution.type`); Session 2.3a instructions, final addition: "Trial identity: the trial's spec_hash also covers the config sections that determine the scores (walkforward_settings(cfg)), so a changed config is a new trial and the DSR count stays conservative. Recompute the M0 row in docs/trial_log.csv with the new hash; the row is not on main yet." and "used.yaml: add the execution section, so it holds {seed, data, split, execution, features, models}." and "is_sharpe/is_mdd of the trial log stay empty until Phase 3.1, where the selection step fills them from 06's outputs" |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contract 15) |
+| Files affected | `src/vault.py` (`spec_hash`, `run_walkforward`), `src/models.py` (`walkforward_settings`), `05_train_walkforward.py`, `tests/test_vault.py`, `tests/test_walkforward_script.py`, `docs/trial_log.csv`, `docs/interfaces.md` (contract 15) |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).

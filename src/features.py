@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.config import load_config
+from src.config import data_settings, load_config
 from src.contracts import universe, validate_betas, validate_features, validate_market_states
 
 WEEK_LEVELS = ["date_open", "date_close"]
@@ -36,6 +36,17 @@ MOMENTUM_NAME = re.compile(r"^MOM(\d+)_(\d+)$")  # MOM{L}_{S} = ln TR(t - S w) -
 
 def _config(cfg: dict | None) -> dict:
     return load_config() if cfg is None else cfg
+
+
+def features_settings(cfg: dict) -> dict:
+    """The config settings that determine the files written by 03_build_features.py (features, market states, sizing
+    betas, momentum variants and labels), saved as data/processed/features_config.yaml for check_used (S23-1).
+
+    Returns {"data": data_settings(cfg), "features": cfg["features"], "execution": cfg["execution"], "in_sample_end":
+    cfg["split"]["in_sample_end"]}; execution.type determines the labels.
+    """
+    return {"data": data_settings(cfg), "features": cfg["features"], "execution": cfg["execution"],
+            "in_sample_end": cfg["split"]["in_sample_end"]}
 
 
 def _as_ns(dates) -> np.ndarray:

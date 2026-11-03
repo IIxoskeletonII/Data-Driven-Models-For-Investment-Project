@@ -16,14 +16,22 @@ import numpy as np
 import pandas as pd
 
 from src.config import ROOT, load_config
-from src.contracts import universe, validate_features, validate_labels, validate_market_states, validate_scores
+from src.contracts import (
+    universe,
+    validate_betas,
+    validate_features,
+    validate_labels,
+    validate_market_states,
+    validate_scores,
+)
 from src.labels import assert_purged, label_end_by_week, walk_forward_folds
-from src.models import M0
+from src.models import M0, walkforward_settings
 
 TRIAL_COLUMNS = ["trial_id", "timestamp", "author", "kind", "rung", "spec_hash", "params_json", "is_sharpe", "is_mdd",
                  "notes"]
 TRIAL_KINDS = ("human", "agent")
-FRAME_NAMES = ("features", "market_states", "labels", "momentum_variants")
+FRAME_NAMES = ("features", "market_states", "labels", "momentum_variants", "sizing_betas")
+WEEKLY_FRAMES = ("market_states", "sizing_betas")  # weekly index (date_open, date_close); the others (date_close, ticker)
 SPEC_DATE_KEYS = ("as_of", "end")
 SPEC_KEYS = ("rung", "feature", "author", "kind", "notes") + SPEC_DATE_KEYS  # anything else is refused (S22-12)
 MOMENTUM_VARIANT = re.compile(r"MOM\d+_1")
@@ -44,11 +52,19 @@ def _spec_json(spec: Mapping[str, object]) -> str:
     return json.dumps(dict(spec), sort_keys=True, separators=(",", ":"), default=str)
 
 
+def spec_hash(spec: Mapping[str, object], cfg: dict) -> str:
+    """The trial log's spec_hash (S23-6): SHA-256 (hex) of the canonical JSON (sorted keys, no spaces) of
+    {"config": walkforward_settings(cfg), "spec": spec}. The config sections that determine the scores are part of the
+    trial's identity, so the same spec under a changed config is a new trial.
+    """
+    return hashlib.sha256(_spec_json({"config": walkforward_settings(cfg), "spec": dict(spec)}).encode("utf-8")).hexdigest()
+
+
 def _read_frame(name: str, path: Path) -> pd.DataFrame:
     """One built table of data/processed (git-ignored), with the index of its contract."""
     if not path.exists():
         raise FileNotFoundError(f"{path} not found: run 03_build_features.py (labels: Phase 2.3, S22-7)")
-    if name == "market_states":
+    if name in WEEKLY_FRAMES:
         frame = pd.read_csv(path, index_col=["date_open", "date_close"], parse_dates=["date_open", "date_close"])
     else:
         dates = ["date_close", "label_end"] if name == "labels" else ["date_close"]
@@ -65,6 +81,8 @@ def _validate_frame(name: str, frame: pd.DataFrame) -> None:
         validate_market_states(frame)
     elif name == "labels":
         validate_labels(frame)
+    elif name == "sizing_betas":
+        validate_betas(frame)
     else:
         validate_features(frame, columns=list(frame.columns))
 
@@ -80,9 +98,10 @@ class Vault:
     through the explicit unlock path of 08_run_oos.py, any request touching a later date raises OOSAccessError. Every
     call appends one JSON line (UTC time, method, as_of or spec hash, ok or refused) to log_path.
 
-    Keyword-only (S22-8): data_dir holds features.csv, market_states.csv, labels.csv and momentum_variants.csv, read
-    lazily on first use; `frames` gives the same tables in memory instead (keys "features", "market_states", "labels",
-    optional "momentum_variants"); cfg is the configuration (config.yaml when None).
+    Keyword-only (S22-8): data_dir holds features.csv, market_states.csv, labels.csv, momentum_variants.csv and
+    sizing_betas.csv (S23-4), read lazily on first use; `frames` gives the same tables in memory instead (keys
+    "features", "market_states", "labels", optional "momentum_variants" and "sizing_betas"); cfg is the configuration
+    (config.yaml when None).
     """
 
     def __init__(self, is_end: pd.Timestamp, lock_path: Path = ROOT / "FROZEN.lock",
@@ -179,6 +198,12 @@ class Vault:
         """Market states (contract 4) with date_close ≤ as_of, known after Friday close as_of."""
         return self._rows_until("market_states", "market_states", as_of)
 
+    def sizing_betas(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        """Raw BETA52 of the 9 sectors and IVV against SPY (contract 10) with date_close ≤ as_of, known after Friday close
+        as_of; used to size the positions taken at O(t+1) (S23-4). Sealed and logged like the other tables.
+        """
+        return self._rows_until("sizing_betas", "sizing_betas", as_of)
+
     def labels(self, as_of: pd.Timestamp) -> pd.DataFrame:
         """Labels (contract 6) with label_end ≤ as_of: only returns already realised at as_of."""
         as_of = pd.Timestamp(as_of)
@@ -248,7 +273,9 @@ class Vault:
     def run_walkforward(self, spec: Mapping[str, object], evaluate: Callable[[pd.DataFrame], tuple[float, float]] | None = None,
                         *, trial_path: Path = ROOT / "docs" / "trial_log.csv") -> pd.DataFrame:
         """Weekly scores (contract 8) of a model spec over the In-Sample walk-forward folds (contract 13); appends one row
-        to the trial log (docs/trial_log.csv).
+        to the trial log (docs/trial_log.csv) unless a row with the same spec_hash is already there (S23-2: one row per
+        distinct configuration, so a rerun does not count as a new trial). spec_hash covers the spec and the config
+        sections walkforward_settings(cfg) (S23-6); params_json is the spec's canonical JSON.
 
         spec: {"rung": "M0" (others: Phase 3.1), "feature": default models.M0.feature (MOM26_1), optional "author",
         "kind" ("human"/"agent"), "notes", "as_of", "end"}; any other key is refused (ValueError), and a spec "as_of" or
@@ -257,21 +284,22 @@ class Vault:
         close t. evaluate(scores) -> (In-Sample net Sharpe, max drawdown) fills is_sharpe and is_mdd (S22-8).
         """
         params_json = _spec_json(spec)
-        spec_hash = hashlib.sha256(params_json.encode("utf-8")).hexdigest()
+        cfg = load_config() if self._cfg is None else self._cfg
+        digest = spec_hash(spec, cfg)
         try:
             rung = self._check_spec(spec)
-            cfg = load_config() if self._cfg is None else self._cfg
             feature = str(spec.get("feature") or cfg["models"]["M0"]["feature"])
             scores = self._walkforward_scores(feature, cfg)
             validate_scores(scores)
             sharpe, mdd = evaluate(scores) if evaluate is not None else ("", "")
         except Exception:
-            self._log("run_walkforward", "refused", spec_hash=spec_hash)
+            self._log("run_walkforward", "refused", spec_hash=digest)
             raise
-        append_trial({"author": spec.get("author", ""), "kind": spec.get("kind", ""), "rung": rung, "spec_hash": spec_hash,
-                      "params_json": params_json, "is_sharpe": sharpe, "is_mdd": mdd, "notes": spec.get("notes", "")},
-                     path=trial_path)
-        self._log("run_walkforward", "ok", spec_hash=spec_hash)
+        if digest not in logged_spec_hashes(trial_path):
+            append_trial({"author": spec.get("author", ""), "kind": spec.get("kind", ""), "rung": rung,
+                          "spec_hash": digest, "params_json": params_json, "is_sharpe": sharpe, "is_mdd": mdd,
+                          "notes": spec.get("notes", "")}, path=trial_path)
+        self._log("run_walkforward", "ok", spec_hash=digest)
         return scores
 
 
@@ -297,6 +325,15 @@ def _existing_rows(path: Path) -> int:
     if rows and rows[0] != TRIAL_COLUMNS:
         raise ValueError(f"{path}: header {rows[0]} differs from {TRIAL_COLUMNS}")
     return max(len(rows) - 1, 0)
+
+
+def logged_spec_hashes(path: Path = ROOT / "docs" / "trial_log.csv") -> set[str]:
+    """The spec_hash values already in the trial log (empty when the file is missing or empty); checks its header."""
+    path = Path(path)
+    if _existing_rows(path) == 0:
+        return set()
+    with open(path, encoding="utf-8", newline="") as handle:
+        return {row["spec_hash"] for row in csv.DictReader(handle) if row.get("spec_hash")}
 
 
 def append_trial(row: Mapping[str, object], path: Path = ROOT / "docs" / "trial_log.csv") -> None:
