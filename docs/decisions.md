@@ -729,6 +729,93 @@ Format of the operating manual's evidence standard. "Session 2.3a instructions" 
 | Files affected | `src/vault.py` (`spec_hash`, `run_walkforward`), `src/models.py` (`walkforward_settings`), `05_train_walkforward.py`, `tests/test_vault.py`, `tests/test_walkforward_script.py`, `docs/trial_log.csv`, `docs/interfaces.md` (contract 15) |
 | Amendment | No |
 
+## 2026-11-03 · Session 2.3b: In-Sample backtest of M0
+
+Each entry follows the operating manual §2a. "Instruction" quotes the session 2.3b prompt (2 Nov 2026; restated 3 Nov
+2026). "Approved by" lists the approvals given so far; Eliya approves through the review of the 2.3b pull request.
+
+Numbering: these entries were drafted on 2 Nov 2026 as S23-1 to S23-6 on the unmerged 2.3b branch while Eliya's 2.3a
+pull request (#8) used the same numbers; they were never committed and are renumbered S23-7 to S23-10 after #8 merged; S23-11 records the diagnostic of the first real-data result.
+Two drafts are dropped because S23-4 to S23-6 decide the same points: the betas are read through `Vault.sizing_betas`
+(S23-4), and the walk-forward `used.yaml` is checked against `src.models.walkforward_settings(cfg)`, exactly the whole
+sections {seed, data, split, execution, features, models} (S23-5, S23-6). `06_backtest.py` imports that function and
+`src.features.features_settings` (S23-1) instead of copying them, so the check cannot drift from what 03 and 05 save.
+
+### S23-7 · The three cost scenarios pair `costs.bps` and `costs.borrow` by position
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | `config.yaml` lists the trading costs and the borrow rates as two lists. Which pairs are the baseline and the two stress scenarios? |
+| Options considered | (a) pair by position: 5 bps with 1%, 10 bps with 2%, 20 bps with 5% (chosen); (b) all nine combinations |
+| Decision | (a). `06_backtest.py: cost_scenarios` zips the two lists, refuses lists of different length or a baseline (`bps_baseline`, `borrow_baseline`) that is not one of the pairs, and labels each scenario `<bps>bps_<borrow %>pct` (`5bps_1pct`, `10bps_2pct`, `20bps_5pct`). The baseline is reported as the headline; the other two are the stress scenarios |
+| Rationale | The §09 table defines three named scenarios, each a row with one cost and one borrow rate; (b) would report six combinations that were not pre-registered |
+| Evidence | §09 cost table: "Optimistic \| 5 bps \| 1%", "Baseline (reported) \| 10 bps \| 2%", "Adverse \| 20 bps \| 5%"; `config.yaml` `costs: bps: [5, 10, 20]`, `borrow: [0.01, 0.02, 0.05]`. Test `test_cost_scenarios_pair_costs_and_borrow_by_position` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S23-8 · Prices, risk-free rate and benchmark of the model backtest
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | The vault serves model inputs, not prices or the T-bill yield. Where does `--model` read them, and which risk-free rate and benchmark enter the metrics? |
+| Options considered | Prices and DGS3MO: (a) read the raw files in `06`, cut at the In-Sample end right after reading, behind `refuse_oos_returns` (chosen, as on the ledger path, S21-14); (b) wait for vault accessors for prices and rates |
+| Decision | (a). The raw Yahoo files of the 11 tradables and `data/raw/fred/DGS3MO.csv` (`metrics.risk_free_series`) are cut at `split.in_sample_end` right after reading; forward returns come from `src.backtest.forward_returns` on adjusted weekly opens, and `refuse_oos_returns` stops the run, before the engine and before anything is written, if any return is realised after 2019-12-27. Headline rf: `tbill_weekly_returns` (DGS3MO lagged one session, Amendment 1; S21-4), with its compound annual average reported as `rf_tbill_annual`; the constant `metrics.risk_free_constant` (2%) alongside. Benchmark: SPY's forward return on the same weeks (`data.benchmark`, never traded). `period_metrics` is computed for the IS period only; a non-IS week stops the run |
+| Rationale | Prices and the T-bill rate are accounting inputs of the engine, not model inputs; they carry no label or score, and the cut plus the guard are the same defence as on the ledger path. (b) would add vault methods that are not needed to keep the seal |
+| Evidence | Instruction §1: "computes forward returns with refuse_oos_returns … rf = tbill_weekly_returns (lagged DGS3MO) as the headline and the constant 2% alongside, benchmark SPY"; §11: "Weekly FRED 3-month T-bill (time-varying), with its period average stated on the results slide; the skeleton's constant 2% is shown alongside for comparability"; S21-14 (b). Tests `test_model_backtest_stops_before_any_oos_return` (raw files not cut: the run stops and the engine is never called), `test_model_backtest_writes_the_four_outputs` (Sharpe recomputed from `weekly.csv`) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S23-9 · The model backtest writes no trial row
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Does `06_backtest.py --model` append a row to `docs/trial_log.csv` for each cost scenario or risk-free convention? |
+| Options considered | (a) no: the model configuration's row is appended once by `Vault.run_walkforward` when `05` scores it (chosen); (b) one row per scenario |
+| Decision | (a). The scenarios and the two rf conventions report one configuration under the pre-registered costs; they are not candidates and are never selected. `06_backtest.py` writes nothing to `docs/trial_log.csv` and is not passed to `run_walkforward` as an evaluator: as S23-6 (3) decided, `is_sharpe` and `is_mdd` stay empty until the selection step of Phase 3.1 fills them from the outputs of `06_backtest.py` (`summary.json`: baseline `net_sharpe_rf_tbill` and `max_drawdown`, S23-10) |
+| Rationale | (b) would inflate the trial count that feeds the Deflated Sharpe Ratio with rows that are not separate configurations |
+| Evidence | Operating manual §3.5: "Every model configuration evaluated on In-Sample data, by a human or an agent, gets a row in `docs/trial_log.csv`"; contract 15: "`run_walkforward(spec)` … appends one row to `docs/trial_log.csv`"; S23-2 (one row per distinct configuration); S23-6 (3): "`is_sharpe` and `is_mdd` stay empty until Phase 3.1, where the selection step fills them from the outputs of `06_backtest.py`"; §09 table "Baseline (reported)" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py` (no trial-log write) |
+| Amendment | No |
+
+### S23-10 · Outputs of `outputs/backtests/<model>/`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | What exactly do `weekly.csv`, `metrics.csv` and `summary.json` hold? |
+| Options considered | As below (chosen) |
+| Decision | Backtested weeks: the consecutive scored weeks with a realised In-Sample forward return for every traded column (contract 12), entered from cash in the first. `weekly.csv` (weekly index): `realised_on`, `period`, the baseline `gross`, `net`, `turnover` (drifted-weight), `costs`, `borrow`, `residual_beta`, `net_exposure`, `hedge`, plus `cap_binds`, `rf` (weekly T-bill) and `net_<scenario>` of the two stress scenarios; no per-ticker price or return series. `metrics.csv`: one row per (scenario, rf ∈ {`tbill`, `constant`}), every `period_metrics` metric of the IS period. `summary.json`: model, period, baseline label, weeks, `first_week`/`last_week` (`date_close` of the signal weeks), `first_realised_on`/`last_realised_on`; for the baseline `net_sharpe_rf_tbill` (headline), `net_sharpe_rf_constant`, `net_sharpe_zero_cost`, `max_drawdown`, `mean_turnover` (mean weekly drifted-weight turnover, the first week's 1.0 included); `mean_abs_residual_beta` (all weeks, dead-band weeks included), `cap_binding_weeks` (count of `cap_binds`), `missing_input_weeks` (weeks with an Amendment 2 C3 missing input, S21-2), `rf_tbill_annual`, `rf_constant`, `benchmark`, and the same Sharpe, return, drawdown and turnover figures per scenario. `used.yaml`: `used_settings` (`seed`, `split`, `execution`, `signal`, `costs`, `metrics`) ∪ `src.models.walkforward_settings` (S23-6) ∪ {`model`}. All of `outputs/` is git-ignored |
+| Rationale | The instruction's list of summary fields, with each definition stated so that `07_evaluate.py` and the reviewer read them the same way |
+| Evidence | Instruction §1: "summary.json (weeks, first/last week, net Sharpe under both conventions, max drawdown, mean turnover, mean \|residual beta\|, cap-binding weeks). Everything is git-ignored."; operating manual §3.6; `.gitignore` `outputs/*`. Tests `test_model_backtest_writes_the_four_outputs` (Sharpe, rf average, turnover, residual beta and cap-binding count recomputed from `weekly.csv`), `test_model_backtest_counts_a_missing_score_week` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S23-11 · Diagnostic of the M0 In-Sample result
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | The first real-data run of `06_backtest.py --model M0` (3 Nov 2026) gave a baseline net Sharpe of −0.77 (T-bill) and a max drawdown of −48% over 624 In-Sample weeks, although the score sums favour XLK and XLY and penalise XLE. Is this an accounting, sign or timing error, or the result of the pre-registered rule? How is the check recorded? |
+| Options considered | (a) report the result as computed, after a read-only diagnostic of the same configuration, recorded here (chosen); (b) report it without a check; (c) change a setting, feature or the code because of the result (excluded: operating manual §3.4 and §3.8) |
+| Decision | (a). One script outside the repository read the same inputs through the functions of `06_backtest.py` (`read_scores`, `read_betas` through the sealed vault, `in_sample_market` with `refuse_oos_returns`), ran `size_book` and `run` at zero cost, and checked: (1) the signals of `size_book` against an independent top-2 / bottom-2 ranking of the scores with alphabetical ties: identical in all 624 weeks; (2) timing: the first forward return of the week ending 1998-12-04 is realised on 1998-12-14, the open of week t+2 (contract 7); (3) the legs, annualised weekly means: core (0.25·s) −2.18%, of which long legs +3.72% and short legs +5.90%; IVV hedge leg +0.12%; gross −1.48%; (4) the mean weekly cross-sectional rank IC of the MOM26_1 score against the forward returns: 0.0045 (t = 0.25); (5) a one-week-shift look-ahead check, the scores of week t+1 against the returns of week t: IC 0.0106, larger than at t, as expected when no future information enters at t. The positions agree with the score sums (XLK long 162 weeks, short 59; XLE long 131, short 258). Net −4.7% a year = gross −1.5% minus about 2.1% of trading costs (mean turnover 0.40 a week × 10 bps × 52) and the borrow charge. No accounting, sign or timing error was found: the result is the pre-registered rule's. No code, setting, feature, threshold, grid or score was changed because of the result; the outputs of `outputs/backtests/M0/` are those of the first run. The diagnostic evaluated no new configuration, so it adds no trial row (S23-2); the M0 row's `is_sharpe` and `is_mdd` stay empty (S23-6 (3)) |
+| Rationale | A result far from expectation must be checked for errors before it is reported, and the record must show that the check could not have changed the result |
+| Evidence | `outputs/backtests/M0/summary.json` (3 Nov 2026): `net_sharpe_rf_tbill` −0.7714, `max_drawdown` −0.4798, `mean_turnover` 0.4004; `outputs/walkforward/M0/summary.json`: `scores_sha256` `7078b900…96a8`, as recorded in S23-6; operating manual §3.4: "Don't add, remove or retune anything that isn't pre-registered", §3.8: "Never weaken a test or a threshold to make it pass", §6: "the one-week-shift test must not improve results" (here it is a look-ahead check on the scores: a higher IC with future scores shows that week t's scores hold no future information) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026 ("Investigating a bad result is fine; changing anything because of it is not"); Eliya Allam: PR review |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
