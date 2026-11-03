@@ -9,7 +9,6 @@ import pytest
 STUB_FUNCTIONS = [
     ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history"], "3.3", "Eliya"),
     ("src.agents.graph", ["build_graph", "run_lab"], "3.3", "Eliya"),
-    ("src.plots", ["equity_curves", "drawdowns", "exposures"], "3.2", "Mattia"),
 ]
 
 STUBS = [(module, name, phase, owner) for module, names, phase, owner in STUB_FUNCTIONS for name in names]
@@ -24,6 +23,7 @@ IMPLEMENTED = [
     ("src.stats", ["paired_block_bootstrap", "rank_ic", "deflated_sharpe_ratio", "pbo_cscv", "sharpe_difference_test",
                    "selection_gate", "stationary_bootstrap_indices", "newey_west_lags", "hac_variance_of_mean",
                    "weekly_rank_ic", "expected_max_sharpe", "probabilistic_sharpe_ratio", "cscv_logits"]),
+    ("src.plots", ["equity_curves", "drawdowns", "exposures", "cost_bridge", "placebo_histogram"]),
 ]
 IMPLEMENTED_NAMES = [(module, name) for module, names in IMPLEMENTED for name in names]
 

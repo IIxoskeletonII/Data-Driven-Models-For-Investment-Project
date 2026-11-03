@@ -94,6 +94,10 @@ ledger: # section 09 ledger reconciliation, Amendment 3
   tolerance: 1.0e-6 # Level A without costs; Level B remainder after the dividend-reinvestment term (Amendment 3 C1)
   tolerance_costs: 1.0e-10 # Level A with costs and borrow (Amendment 3 C2)
 
+placebo: # section 11 placebo: random ±2/±2 books with the same hedge rule, fixed seeds (decision S32-4)
+  books: 1000 # pre-registered count
+  seed_offset: 1000000 # book i (0-based) draws its random scores with seed = seed + seed_offset + i
+
 metrics: # section 11
   periods_per_year: 52
   risk_free_series: DGS3MO # weekly, time-varying: primary

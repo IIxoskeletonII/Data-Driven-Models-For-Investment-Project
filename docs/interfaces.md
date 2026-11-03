@@ -397,7 +397,7 @@ may refine in the phase pull request, which the other author reviews.
 | `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `to_weekly`, `LadderData`, `tuning_spec`, `grid`, `tie_order`, `inner_validation_weeks`, `inner_fold`, `inner_sharpe`, `choose_grid_value`, `walkforward_rung` (3.1, done; `select_m0_star_lookback` replaced by the shared Amendment 5 C1 helpers, S31-10) | Eliya |
 | `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.3, Eliya |
 | `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate`, and the helpers of contract 16 | 3.1, Eliya (done) |
-| `src/plots.py` | `equity_curves`, `drawdowns`, `exposures` (with `07_evaluate.py`) | 3.2, Mattia |
+| `src/plots.py` | `equity_curves(returns, period, realised_on, path)`, `drawdowns(returns, period, realised_on, path)`, `exposures(result, path)` (a `BacktestResult` or a frame with `long_exposure`, `short_exposure`, `net_exposure`, `residual_beta`), `cost_bridge(weekly, path)`, `placebo_histogram(sharpes, marks, path)`; each writes `path`.html and `path`.png (S32-6; with `07_evaluate.py`, S32-7) | 3.2, Mattia (done) |
 
 ### Validators and helpers of `src/contracts.py` (exact signatures)
 

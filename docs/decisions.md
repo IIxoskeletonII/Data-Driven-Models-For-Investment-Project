@@ -729,6 +729,219 @@ Format of the operating manual's evidence standard. "Session 2.3a instructions" 
 | Files affected | `src/vault.py` (`spec_hash`, `run_walkforward`), `src/models.py` (`walkforward_settings`), `05_train_walkforward.py`, `tests/test_vault.py`, `tests/test_walkforward_script.py`, `docs/trial_log.csv`, `docs/interfaces.md` (contract 15) |
 | Amendment | No |
 
+## 2026-11-03 · Session 2.3b: In-Sample backtest of M0
+
+Each entry follows the operating manual §2a. "Instruction" quotes the session 2.3b prompt (2 Nov 2026; restated 3 Nov
+2026). "Approved by" lists the approvals given so far; Eliya approves through the review of the 2.3b pull request.
+
+Numbering: these entries were drafted on 2 Nov 2026 as S23-1 to S23-6 on the unmerged 2.3b branch while Eliya's 2.3a
+pull request (#8) used the same numbers; they were never committed and are renumbered S23-7 to S23-10 after #8 merged; S23-11 records the diagnostic of the first real-data result.
+Two drafts are dropped because S23-4 to S23-6 decide the same points: the betas are read through `Vault.sizing_betas`
+(S23-4), and the walk-forward `used.yaml` is checked against `src.models.walkforward_settings(cfg)`, exactly the whole
+sections {seed, data, split, execution, features, models} (S23-5, S23-6). `06_backtest.py` imports that function and
+`src.features.features_settings` (S23-1) instead of copying them, so the check cannot drift from what 03 and 05 save.
+
+### S23-7 · The three cost scenarios pair `costs.bps` and `costs.borrow` by position
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | `config.yaml` lists the trading costs and the borrow rates as two lists. Which pairs are the baseline and the two stress scenarios? |
+| Options considered | (a) pair by position: 5 bps with 1%, 10 bps with 2%, 20 bps with 5% (chosen); (b) all nine combinations |
+| Decision | (a). `06_backtest.py: cost_scenarios` zips the two lists, refuses lists of different length or a baseline (`bps_baseline`, `borrow_baseline`) that is not one of the pairs, and labels each scenario `<bps>bps_<borrow %>pct` (`5bps_1pct`, `10bps_2pct`, `20bps_5pct`). The baseline is reported as the headline; the other two are the stress scenarios |
+| Rationale | The §09 table defines three named scenarios, each a row with one cost and one borrow rate; (b) would report six combinations that were not pre-registered |
+| Evidence | §09 cost table: "Optimistic \| 5 bps \| 1%", "Baseline (reported) \| 10 bps \| 2%", "Adverse \| 20 bps \| 5%"; `config.yaml` `costs: bps: [5, 10, 20]`, `borrow: [0.01, 0.02, 0.05]`. Test `test_cost_scenarios_pair_costs_and_borrow_by_position` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S23-8 · Prices, risk-free rate and benchmark of the model backtest
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | The vault serves model inputs, not prices or the T-bill yield. Where does `--model` read them, and which risk-free rate and benchmark enter the metrics? |
+| Options considered | Prices and DGS3MO: (a) read the raw files in `06`, cut at the In-Sample end right after reading, behind `refuse_oos_returns` (chosen, as on the ledger path, S21-14); (b) wait for vault accessors for prices and rates |
+| Decision | (a). The raw Yahoo files of the 11 tradables and `data/raw/fred/DGS3MO.csv` (`metrics.risk_free_series`) are cut at `split.in_sample_end` right after reading; forward returns come from `src.backtest.forward_returns` on adjusted weekly opens, and `refuse_oos_returns` stops the run, before the engine and before anything is written, if any return is realised after 2019-12-27. Headline rf: `tbill_weekly_returns` (DGS3MO lagged one session, Amendment 1; S21-4), with its compound annual average reported as `rf_tbill_annual`; the constant `metrics.risk_free_constant` (2%) alongside. Benchmark: SPY's forward return on the same weeks (`data.benchmark`, never traded). `period_metrics` is computed for the IS period only; a non-IS week stops the run |
+| Rationale | Prices and the T-bill rate are accounting inputs of the engine, not model inputs; they carry no label or score, and the cut plus the guard are the same defence as on the ledger path. (b) would add vault methods that are not needed to keep the seal |
+| Evidence | Instruction §1: "computes forward returns with refuse_oos_returns … rf = tbill_weekly_returns (lagged DGS3MO) as the headline and the constant 2% alongside, benchmark SPY"; §11: "Weekly FRED 3-month T-bill (time-varying), with its period average stated on the results slide; the skeleton's constant 2% is shown alongside for comparability"; S21-14 (b). Tests `test_model_backtest_stops_before_any_oos_return` (raw files not cut: the run stops and the engine is never called), `test_model_backtest_writes_the_four_outputs` (Sharpe recomputed from `weekly.csv`) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S23-9 · The model backtest writes no trial row
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | Does `06_backtest.py --model` append a row to `docs/trial_log.csv` for each cost scenario or risk-free convention? |
+| Options considered | (a) no: the model configuration's row is appended once by `Vault.run_walkforward` when `05` scores it (chosen); (b) one row per scenario |
+| Decision | (a). The scenarios and the two rf conventions report one configuration under the pre-registered costs; they are not candidates and are never selected. `06_backtest.py` writes nothing to `docs/trial_log.csv` and is not passed to `run_walkforward` as an evaluator: as S23-6 (3) decided, `is_sharpe` and `is_mdd` stay empty until the selection step of Phase 3.1 fills them from the outputs of `06_backtest.py` (`summary.json`: baseline `net_sharpe_rf_tbill` and `max_drawdown`, S23-10) |
+| Rationale | (b) would inflate the trial count that feeds the Deflated Sharpe Ratio with rows that are not separate configurations |
+| Evidence | Operating manual §3.5: "Every model configuration evaluated on In-Sample data, by a human or an agent, gets a row in `docs/trial_log.csv`"; contract 15: "`run_walkforward(spec)` … appends one row to `docs/trial_log.csv`"; S23-2 (one row per distinct configuration); S23-6 (3): "`is_sharpe` and `is_mdd` stay empty until Phase 3.1, where the selection step fills them from the outputs of `06_backtest.py`"; §09 table "Baseline (reported)" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py` (no trial-log write) |
+| Amendment | No |
+
+### S23-10 · Outputs of `outputs/backtests/<model>/`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-02 |
+| Question | What exactly do `weekly.csv`, `metrics.csv` and `summary.json` hold? |
+| Options considered | As below (chosen) |
+| Decision | Backtested weeks: the consecutive scored weeks with a realised In-Sample forward return for every traded column (contract 12), entered from cash in the first. `weekly.csv` (weekly index): `realised_on`, `period`, the baseline `gross`, `net`, `turnover` (drifted-weight), `costs`, `borrow`, `residual_beta`, `net_exposure`, `hedge`, plus `cap_binds`, `rf` (weekly T-bill) and `net_<scenario>` of the two stress scenarios; no per-ticker price or return series. `metrics.csv`: one row per (scenario, rf ∈ {`tbill`, `constant`}), every `period_metrics` metric of the IS period. `summary.json`: model, period, baseline label, weeks, `first_week`/`last_week` (`date_close` of the signal weeks), `first_realised_on`/`last_realised_on`; for the baseline `net_sharpe_rf_tbill` (headline), `net_sharpe_rf_constant`, `net_sharpe_zero_cost`, `max_drawdown`, `mean_turnover` (mean weekly drifted-weight turnover, the first week's 1.0 included); `mean_abs_residual_beta` (all weeks, dead-band weeks included), `cap_binding_weeks` (count of `cap_binds`), `missing_input_weeks` (weeks with an Amendment 2 C3 missing input, S21-2), `rf_tbill_annual`, `rf_constant`, `benchmark`, and the same Sharpe, return, drawdown and turnover figures per scenario. `used.yaml`: `used_settings` (`seed`, `split`, `execution`, `signal`, `costs`, `metrics`) ∪ `src.models.walkforward_settings` (S23-6) ∪ {`model`}. All of `outputs/` is git-ignored |
+| Rationale | The instruction's list of summary fields, with each definition stated so that `07_evaluate.py` and the reviewer read them the same way |
+| Evidence | Instruction §1: "summary.json (weeks, first/last week, net Sharpe under both conventions, max drawdown, mean turnover, mean \|residual beta\|, cap-binding weeks). Everything is git-ignored."; operating manual §3.6; `.gitignore` `outputs/*`. Tests `test_model_backtest_writes_the_four_outputs` (Sharpe, rf average, turnover, residual beta and cap-binding count recomputed from `weekly.csv`), `test_model_backtest_counts_a_missing_score_week` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 2 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S23-11 · Diagnostic of the M0 In-Sample result
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | The first real-data run of `06_backtest.py --model M0` (3 Nov 2026) gave a baseline net Sharpe of −0.77 (T-bill) and a max drawdown of −48% over 624 In-Sample weeks, although the score sums favour XLK and XLY and penalise XLE. Is this an accounting, sign or timing error, or the result of the pre-registered rule? How is the check recorded? |
+| Options considered | (a) report the result as computed, after a read-only diagnostic of the same configuration, recorded here (chosen); (b) report it without a check; (c) change a setting, feature or the code because of the result (excluded: operating manual §3.4 and §3.8) |
+| Decision | (a). One script outside the repository read the same inputs through the functions of `06_backtest.py` (`read_scores`, `read_betas` through the sealed vault, `in_sample_market` with `refuse_oos_returns`), ran `size_book` and `run` at zero cost, and checked: (1) the signals of `size_book` against an independent top-2 / bottom-2 ranking of the scores with alphabetical ties: identical in all 624 weeks; (2) timing: the first forward return of the week ending 1998-12-04 is realised on 1998-12-14, the open of week t+2 (contract 7); (3) the legs, annualised weekly means: core (0.25·s) −2.18%, of which long legs +3.72% and short legs +5.90%; IVV hedge leg +0.12%; gross −1.48%; (4) the mean weekly cross-sectional rank IC of the MOM26_1 score against the forward returns: 0.0045 (t = 0.25); (5) a one-week-shift look-ahead check, the scores of week t+1 against the returns of week t: IC 0.0106, larger than at t, as expected when no future information enters at t. The positions agree with the score sums (XLK long 162 weeks, short 59; XLE long 131, short 258). Net −4.7% a year = gross −1.5% minus about 2.1% of trading costs (mean turnover 0.40 a week × 10 bps × 52) and the borrow charge. No accounting, sign or timing error was found: the result is the pre-registered rule's. No code, setting, feature, threshold, grid or score was changed because of the result; the outputs of `outputs/backtests/M0/` are those of the first run. The diagnostic evaluated no new configuration, so it adds no trial row (S23-2); the M0 row's `is_sharpe` and `is_mdd` stay empty (S23-6 (3)) |
+| Rationale | A result far from expectation must be checked for errors before it is reported, and the record must show that the check could not have changed the result |
+| Evidence | `outputs/backtests/M0/summary.json` (3 Nov 2026): `net_sharpe_rf_tbill` −0.7714, `max_drawdown` −0.4798, `mean_turnover` 0.4004; `outputs/walkforward/M0/summary.json`: `scores_sha256` `7078b900…96a8`, as recorded in S23-6; operating manual §3.4: "Don't add, remove or retune anything that isn't pre-registered", §3.8: "Never weaken a test or a threshold to make it pass", §6: "the one-week-shift test must not improve results" (here it is a look-ahead check on the scores: a higher IC with future scores shows that week t's scores hold no future information) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026 ("Investigating a bad result is fine; changing anything because of it is not"); Eliya Allam: PR review |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
+## 2026-11-03 · Session 3.2: backtests of every model, In-Sample evaluation, shift check, placebo and plots
+
+Each entry follows the operating manual §2a. "Instruction" quotes the session 3.2 prompt (3 Nov 2026); "Answer" quotes
+Mattia's answers to the two questions asked during the session (3 Nov 2026). "Approved by" lists the approvals given so
+far; Eliya approves through the review of the 3.2 pull request.
+
+### S32-1 · `--model` accepts any walk-forward folder; `--all`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Which names does `06_backtest.py --model` accept, now that the walk-forward writes fixed variants (e.g. `M3_d2`, `M0_L13`) besides the rungs? |
+| Options considered | (a) keep the closed list `M0`, `M0_star` and `models.candidate_order` of S23-10; (b) any folder of `outputs/walkforward/` that holds a `scores.csv` (chosen) |
+| Decision | (b). `walkforward_models()` lists the folders of `outputs/walkforward/` with a `scores.csv` whose name matches `[A-Za-z0-9][A-Za-z0-9_]*`; `check_model` refuses any other name (no path separators, no `..`) and a name without scores. `--all` checks every score file (`check_used` of `walkforward_settings`, no week after the In-Sample end) before any real-data input is read, then reads the vault betas, the market cut at the In-Sample end and the T-bill once (`InSampleInputs`) and backtests every folder. The checks, the vault access and the OOS guard are those of S23-4 to S23-10, unchanged. The test `test_model_backtest_refuses_an_unknown_model` (closed list) is replaced by `test_model_backtest_refuses_a_model_without_walkforward_scores`, which still refuses `M9` and also refuses `../M0`, `M0/..`, `M-0` and the empty name |
+| Rationale | A fixed variant is a separate configuration with its own walk-forward output and trial row; the folder, not a list in the code, says what exists |
+| Evidence | Instruction §1: "06_backtest.py --model NAME for any directory under outputs/walkforward/ (rungs and fixed variants, e.g. M1, M3_d2, M0_L13), and --all. Same check_used, vault access and OOS guard as M0." Tests `test_walkforward_models_lists_folders_with_scores`, `test_a_fixed_variant_folder_is_backtested`, `test_all_backtests_every_folder_with_one_vault_read`, `test_diagnostics_stop_before_any_oos_return[--all]` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S32-2 · Exposure columns of `weekly.csv`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | The exposure plot needs the long and short legs, which `weekly.csv` (S23-10) does not hold. Are they added, and does it change the rule that no per-ticker series is written? |
+| Options considered | (a) add `long_exposure` = Σ w⁺ and `short_exposure` = Σ w⁻ of the baseline book, IVV included (chosen); (b) write the 10 weight columns; (c) re-run the engine in `07_evaluate.py` |
+| Decision | (a). `weekly.csv` gains the two columns; every column of S23-10 is unchanged (on real data, `summary.json` of M0 is byte-identical to the 2.3b run and the old columns of `weekly.csv` are equal). Σ|w| = 1 gives `long_exposure − short_exposure` = 1, and Σw = `net_exposure` (the IVV weight, because the core is dollar-neutral); both are tested. Still no per-ticker price, return or weight series |
+| Rationale | Two aggregate columns are enough for the §11 exposure chart; (b) and (c) add data or a second engine run that the chart does not need |
+| Evidence | §11: "Added: … weekly residual beta and net dollar exposure"; S23-10: "no per-ticker price or return series"; test `test_weekly_exposures_add_up`; real-data comparison with the 2.3b outputs (session log, 3 Nov 2026: "summary.json identical"; "new columns: ['long_exposure', 'short_exposure'] \| old columns identical: True") |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S32-3 · The §12 one-week-shift check: definition, verdict rule and the `src/stats.py` hooks
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) What is "M0 with its signals delayed one extra week"? (2) What counts as "outperforming"? (3) How are the rank IC and the paired bootstrap computed while `src/stats.py` is a Phase 3.1 stub? |
+| Options considered | (1) (a) delay the scores one row of the weekly index and re-size the hedge from week t's BETA52 (chosen); (b) delay the whole book, hedge included. (2) (c) any higher net Sharpe fails; (d) fail only if the delayed book has the higher net Sharpe and the paired bootstrap gives P(delayed > base) ≥ 0.80 (chosen). (3) (e) hooks that call `src.stats` and report "pending" while it raises `NotImplementedError` (chosen); (f) a local implementation in Mattia's files |
+| Decision | (1a): `delayed_scores` gives week t the scores of week t − 1 on the full weekly index (a week whose previous week has no score is a missing input, Amendment 2 C3); the first scored week has no delayed score, so the two books are compared on their common weeks (623 for M0), with baseline costs and the weekly T-bill. (2d): `shift_verdict` returns FAIL only if the delayed net Sharpe (T-bill) is higher and P(delayed > base) ≥ `selection.bootstrap_prob`; PENDING if it is higher and the bootstrap is not available; PASS otherwise. The bootstrap uses `selection.bootstrap_resamples`, `selection.bootstrap_block` and `seed`, on the paired weekly net returns (delayed as candidate, base as baseline). A FAIL is investigated, never fixed by a change of settings. Reported side by side: net Sharpe (both conventions), gross Sharpe, return, drawdown, turnover, mean rank IC and P. (3e): `stats_hook(name, …)` returns `None` while `src.stats.<name>` raises `NotImplementedError`. The keys read are `p_uplift_positive` (`BOOTSTRAP_P_KEY`) and `mean` (`RANK_IC_MEAN_KEY`); contract 16 does not name the keys, so Eliya confirms or renames them in the review of this pull request, and a bootstrap result without the key stops the run. `shift_check(cfg, model)` runs on any walk-forward folder (`--shift-check M1 M2 …`), so the same check runs on every candidate at Gate 3 |
+| Rationale | (1a) moves only the signal timing; the hedge rule stays identical. (2d) M0's rank IC is about zero (0.0045, S23-11), so a delayed book can beat it by noise; the bootstrap threshold of the selection rule separates noise from a real timing gain. (3e) keeps one implementation of each statistic, in its owner's file |
+| Evidence | Instruction §3: "Leakage check (§12): M0 with its signals delayed one extra week must not outperform M0. Report both."; protocol §12 table, lookahead row: "One-week-shift test must not improve results"; Answer 2: "Option 1. Report M0 and M0-delayed side by side: net Sharpe, mean rank IC and the paired bootstrap P(delayed > M0). M0 has almost no signal (IC 0.0045), so the delayed version can beat it by noise. Treat the check as failed only if the delayed version is better with bootstrap P ≥ 0.80, and investigate it then. Make the function generic, so the same check runs on every candidate rung in Phase 3.2/Gate 3. Record the rule as an S32 decision."; `config.yaml` `selection.bootstrap_prob: 0.80`. Planted test `test_shift_check_flags_scores_that_are_one_week_early` (scores equal to the next week's forward return: the delayed book wins and, with P = 1, the verdict is FAIL); `test_shift_verdict`, `test_delayed_scores_hand_case` |
+| Proposed by | Mattia Cervelli (definition and hooks); Mattia Cervelli, Answer 2 (verdict rule) |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review (including the two key names) |
+| Files affected | `06_backtest.py`, `07_evaluate.py`, `tests/test_backtest_script.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: applies §12; the verdict rule reuses the pre-registered bootstrap threshold |
+
+### S32-4 · The §11 placebo: count, seeds, weeks and percentile
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How are the "1,000 random ±2/±2 portfolios with the same hedge rule, fixed seeds" built, where do the count and the seeds live, and how is a model's percentile defined? |
+| Options considered | Count: (a) a separate `config.yaml` pull request; (b) a new additive `placebo:` section in this pull request (chosen); (c) a constant in `06_backtest.py`. Seeds: seed + offset + i (chosen); a `SeedSequence` spawn |
+| Decision | `config.yaml` gains `placebo: {books: 1000, seed_offset: 1000000}`, an additive section like `ledger:` (S21-11), flagged in the pull request body; it is not part of any `used.yaml` checked by the backtests (the M0 outputs stay valid). Book i (0-based) draws standard normal sector scores with `numpy.random.default_rng(seed + seed_offset + i)` (`random_scores`), seeds 1000042 to 1001041, disjoint from the ledger books (seed + 100·year + book, at most 201951). Each book goes through the same `size_book` (top 2 / bottom 2, alphabetical ties, BETA52 hedge through the vault, cap, dead-band, scaling) and `run` with the baseline costs, on the scored weeks of a reference model (`--placebo` defaults to M0; 624 weeks, 2008-01-04 to 2019-12-13). Statistic: net Sharpe with the weekly T-bill. Percentile of a model: 100 · (#{placebo < model} + ½ #{placebo = model}) / n, computed by `07_evaluate.py` for every model on the same weeks. Because random books are redrawn every week, their turnover is far above a model's; the percentile of the gross zero-cost Sharpe is reported alongside as information only |
+| Rationale | The count is pre-registered, so it comes from `config.yaml` like every setting; an offset keeps the placebo seeds apart from the ledger seeds; the same sizing and costs make the placebo differ from the model only in the scores |
+| Evidence | §11 comparator table: "1,000 random ±2/±2 portfolios with the same hedge rule, fixed seeds \| How much is luck? \| Placebo (skeleton's random baseline)"; skeleton `docs/metrics.md` robustness table: "Random baseline \| Compare with random signals \| A good strategy should clearly beat random signals"; operating manual §3.4; Answer 1: "Option 2: add placebo: {books: 1000, seed_offset: ...} as a new additive section, flagged in the PR body under the S21 shared-file exception. Seed rule: book i uses config.seed + offset + i; record it as an S32 decision." Tests `test_placebo_seeds_follow_the_config`, `test_placebo_settings_refuse_bad_values`, `test_placebo_percentile_hand_case`, `test_placebo_books_are_seeded_and_on_the_reference_weeks` (two runs give the same summary) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026 (Answer 1); Eliya Allam: PR review (shared file) |
+| Files affected | `config.yaml`, `06_backtest.py`, `07_evaluate.py`, `tests/test_backtest_script.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: implements the pre-registered placebo |
+
+### S32-5 · The shift check and the placebo are not trials
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Do the delayed book and the 1,000 placebo books get rows in `docs/trial_log.csv`? |
+| Options considered | (a) no row (chosen); (b) one row each |
+| Decision | (a). They are diagnostics of a configuration that already has its trial row: they are not candidates, are never selected and their scores do not come from a model. `06_backtest.py` writes nothing to the trial log in any mode (S23-9) |
+| Rationale | The Deflated Sharpe Ratio counts the configurations among which the winner was chosen; 1,001 diagnostic rows would inflate N with books that could never be chosen |
+| Evidence | Operating manual §3.5: "Every model configuration evaluated on In-Sample data, by a human or an agent, gets a row in `docs/trial_log.csv`. The deflated Sharpe ratio uses that count."; §11: "Selection bias \| Deflated Sharpe Ratio, N = all human and agent trials \| Is the winner more than the luckiest of N?"; S23-9 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | none (no trial-log write) |
+| Amendment | No |
+
+### S32-6 · Plot conventions and the refined `src/plots.py` signatures
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | How are the §11 charts dated, coloured and written, and which arguments do the stubs of contract 17 take? |
+| Options considered | As below (chosen); keep the stub argument lists `equity_curves(returns, period, path)`, `exposures(result, path)` |
+| Decision | Each chart writes `path.html` (plotly; `plotly.min.js` written once into the folder, so the files open offline) and `path.png` (matplotlib, `Figure` objects, no display backend). Equity and drawdown points are dated by `realised_on` (the open of week t + 2), and each period starts at 100 on the execution date of its first week (the open of week t + 1), as in the skeleton's `plots.equity_curves`; equity on a log axis. Signatures: `equity_curves(returns, period, realised_on, path, *, title)`, `drawdowns(returns, period, realised_on, path, *, title)` (`realised_on` added: the weekly index alone does not give the realisation dates), `exposures(result, path, *, title)` with `result` a `BacktestResult` or a frame with `long_exposure`, `short_exposure`, `net_exposure`, `residual_beta` (07 reads `weekly.csv`, not a `BacktestResult`); residual beta in its own panel (another unit). New: `cost_bridge(weekly, path)`, the waterfall gross → −costs → −borrow → net of the mean weekly returns × 52 (arithmetic, so the steps add up exactly; the compound net return is in the tables), and `placebo_histogram(sharpes, marks, path)`. Colours follow the entity: fixed categorical slots per rung (M0 blue, M1 orange, M2 aqua, M3 yellow, M5 magenta, ENS green, M0_star violet), a variant `<rung>_<x>` its rung's colour dashed; benchmarks grey, the T-bill dotted. The equal-weight basket is the skeleton's: 1/9 of each sector's forward return, rebalanced weekly, no cost. `docs/interfaces.md` contract 17 is updated in this pull request; `tests/test_module_stubs.py` moves `src.plots` from the stub list to the implemented list (its row only) |
+| Rationale | Contract 17 lets the owner refine a stub's argument list in the phase pull request; the dating follows the skeleton the graders know |
+| Evidence | §11: "Every series starts at 100 in each period, on a shared dated axis, log scale." and "Added: … a gross → after-costs → after-borrow bridge"; Amendment 2 C5; skeleton `src/plots.py: equity_curves` ("Equity curve of every series, starting at 100 in each period, dated when each return is realized"); skeleton `docs/metrics.md`: "Equal weight \| (1/N) Σ R^fwd_{t,i}"; contract 17: "a stub's exact argument list is a proposal that its owner may refine in the phase pull request, which the other author reviews"; tests `tests/test_plots.py` (hand cases: 100 → 110 → 55 → 66 dated by realisation; drawdown 0, 0, −50%, −40%; restart at 100 per period; the bridge adds up; HTML and PNG written) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review (contract 17, `tests/test_module_stubs.py`) |
+| Files affected | `src/plots.py`, `tests/test_plots.py`, `tests/test_module_stubs.py`, `docs/interfaces.md` |
+| Amendment | No |
+
+### S32-7 · `07_evaluate.py`: In-Sample only, inputs and outputs
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | What does `07_evaluate.py` read and write, and how does it make sure that it shows nothing after 2019-12-27? |
+| Options considered | As below (chosen) |
+| Decision | Reads every `outputs/backtests/<model>/` (not `synthetic`) after `check_used` of its `used.yaml` (`backtest_used`: `used_settings` ∪ `walkforward_settings` ∪ {model}), and the shift checks and the placebo after `check_used`; stops (nothing written) if any weekly row has a period other than IS, a signal week after `split.in_sample_end` or a return realised after it. SPY and the equal-weight basket come from `06_backtest.py: in_sample_market` (raw files cut at the In-Sample end, `refuse_oos_returns`), the T-bill from `weekly.csv`. Writes `outputs/metrics/is_models.csv` (one row per model, baseline costs: net Sharpe with the T-bill and with the constant 2%, zero-cost and gross Sharpe, return, volatility, Sortino, drawdown, Calmar, hit rate, turnover, holding period, the bridge terms, beta, correlation, alpha, residual beta, cap and missing-input weeks, the stress Sharpes, `rank_ic_mean` through the hook of S32-3, `placebo_percentile`), `is_benchmarks.csv` (T-bill, SPY, equal weight on M0's weeks), `shift_check.csv`, `placebo.csv`, `used.yaml`, and the plots of S32-6 in `outputs/plots/` (`<model>_equity`, `_drawdown`, `_exposure`, `_bridge`, `all_models_equity` for the models on M0's weeks, `placebo_sharpe`). The §07 selection gate is not applied here (Phase 3.1, `src.stats.selection_gate`) |
+| Rationale | One table the selection step and the slides read; the IS check is a second guard behind the one in 06 |
+| Evidence | Instruction §2: "07_evaluate.py, In-Sample only: one table of every model's IS metrics (net Sharpe under both conventions, MDD, turnover, rank IC hook) plus src/plots.py: equity curves rebased to 100 (strategy vs T-bill vs SPY vs equal weight, log scale, IS only), drawdowns, exposures, and the gross → costs → borrow bridge."; operating manual §3.3; tests `tests/test_evaluate_script.py` (a week labelled OOS and a return realised on 2019-12-30 are refused before anything is written; a backtest or placebo built with another config is refused) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No |
+
+### S32-8 · First real-data results of the shift check and the placebo (M0)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | What did the first runs give, and how are they read? |
+| Options considered | Report as computed (chosen); change anything because of them (excluded: operating manual §3.4, §3.8) |
+| Decision | Shift check (`06_backtest.py --shift-check M0`, 623 common weeks 2008-01-11 to 2019-12-13, 10 bps / 2%): net Sharpe (T-bill) M0 −0.7767, delayed −0.8039; zero-cost −0.6897 / −0.7152; gross zero-cost −0.2564 / −0.2727; max drawdown −47.98% / −47.39%; mean turnover 0.3994 / 0.4004. The delayed book is not better, so the verdict is PASS whatever the bootstrap gives; P and the rank IC are pending `src/stats.py`. Placebo (`--placebo`, 1,000 books on M0's 624 weeks): net Sharpe mean −1.819, sd 0.280, 5% −2.286, median −1.828, 95% −1.364, mean turnover 1.555 a week; M0 −0.771, percentile 100.0. Before costs, M0's gross zero-cost Sharpe −0.249 against a placebo median of −0.025: percentile 22.1. M0 beats every random book after costs because it trades about a quarter as much (0.40 against 1.56 a week), not because its ranking is better than random; this is how the placebo result is reported. Benchmarks on the same weeks: SPY Sharpe 0.487, equal weight 0.476, T-bill average 0.60% a year. M0's numbers equal those of S23-11 (`summary.json` byte-identical). No code, setting or score was changed because of these results |
+| Rationale | The placebo's net comparison mixes skill and trading frequency; stating both percentiles keeps the reading honest |
+| Evidence | `outputs/metrics/shift_check.csv`, `outputs/metrics/placebo.csv`, `outputs/metrics/is_benchmarks.csv` (3 Nov 2026); `outputs/diagnostics/placebo/summary.json`; S23-11 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
 ## 2026-11-03 · Session 3.1: model ladder and inference statistics
 
 Format of the operating manual's evidence standard. "Session 3.1 instructions" quotes the task list Eliya set for the
