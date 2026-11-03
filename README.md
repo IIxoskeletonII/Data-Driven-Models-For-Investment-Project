@@ -17,6 +17,8 @@ The hypotheses, the split, the benchmarks, the gate and the tests are pre-regist
 
 Install [uv](https://docs.astral.sh/uv/), then from the project folder:
 
+macOS: run `brew install libomp` once (LightGBM needs the OpenMP runtime).
+
 ```bash
 uv sync                                    # Python 3.12 and every dependency, pinned by uv.lock
 uv run python 00_smoke_test_data.py        # check that every data series is available (saves nothing)
@@ -24,7 +26,7 @@ uv run python 01_download_data.py          # download once, archive with checksu
 uv run python 02_validate_data.py          # QA gates -> docs/qa_report.md and data/qa/
 uv run python 03_build_features.py         # features and market states            (Gate 2)
 uv run python 04_agent_lab.py              # research lab, replayed from data/cache/ (Gate 2)
-uv run python 05_train_walkforward.py      # AI ladder, walk-forward In-Sample      (Gate 2)
+uv run python 05_train_walkforward.py --model M0  # AI ladder, walk-forward In-Sample (Gate 2)
 uv run python 06_backtest.py               # sizing, hedge, costs                   (Gate 2)
 uv run python 07_evaluate.py               # metrics, selection gate, plots         (Gate 3)
 uv run python 08_run_oos.py                # single Out-of-Sample run               (Gate 4)
