@@ -1,13 +1,21 @@
-"""06_backtest.py: CLI wiring only; refuses real-data runs until the vault exists (Phase 2.3), and the ledger check accepts
-In-Sample years only."""
+"""06_backtest.py: CLI wiring only; refuses to run without a mode, the ledger check accepts In-Sample years only, and the
+--model backtest reads walk-forward scores and vault betas and never computes an Out-of-Sample return."""
 
 import copy
 import importlib.util
+import json
+import logging
 
+import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
-from src.config import ROOT, load_config
+from src.config import ROOT, load_config, save_used
+from src.data import write_csv
+from src.features import features_settings
+from src.models import walkforward_settings
+from src.vault import OOSAccessError
 
 
 @pytest.fixture(scope="module")
@@ -21,7 +29,7 @@ def script():
 def test_refuses_to_run_without_a_flag(script):
     with pytest.raises(SystemExit) as raised:
         script.main([])
-    assert "vault" in str(raised.value)
+    assert "--model" in str(raised.value) and "vault" in str(raised.value)
 
 
 @pytest.mark.parametrize("year", [2019, 2020, 2024])
@@ -120,3 +128,196 @@ def test_ledger_check_uses_the_configured_books_and_tolerances(script, synthetic
     assert summary.loc[2012, "books"] == 2
     out = capsys.readouterr().out
     assert "|ledger - engine| <= 1e-07: PASS" in out and "<= 1e-10: PASS" in out
+
+
+# -- --model: In-Sample backtest of walk-forward scores (session 2.3b, decisions S23-4 to S23-10) -------------------------
+
+IS_END = pd.Timestamp("2019-12-27")
+FIRST_SCORED = pd.Timestamp("2013-01-04")
+LAST_IS_SIGNAL_WEEK = pd.Timestamp("2019-12-13")  # contract 7: its return is realised at the open of 2019-12-23
+
+
+def _m0_scores(market) -> pd.DataFrame:
+    """Contract-8 scores of the M0 rule on the synthetic weekly closes, ln C(t−1) − ln C(t−26), weeks 2013 to the last
+    In-Sample signal week."""
+    sectors = list(load_config()["data"]["tickers"])
+    log_close = np.log(market.weekly_close[sectors])
+    scores = (log_close.shift(1) - log_close.shift(26)).astype(np.float64)
+    closes = pd.DatetimeIndex(scores.index.get_level_values("date_close"))
+    return scores.loc[(closes >= FIRST_SCORED) & (closes <= LAST_IS_SIGNAL_WEEK)]
+
+
+@pytest.fixture
+def model_inputs(script, synthetic_market, tmp_path, monkeypatch):
+    """The real-data layout of --model M0 under tmp_path, built from the synthetic market: raw Yahoo and FRED files cut
+    at the In-Sample end, walk-forward scores with used.yaml (src.models.walkforward_settings, as 05 saves it),
+    features_config.yaml (src.features.features_settings, as 03 saves it) and data/processed/sizing_betas.csv, which the
+    real src.vault.Vault serves (S23-4)."""
+    from src.features import sizing_betas
+
+    cfg = load_config()
+    market = synthetic_market
+    yahoo, fred = tmp_path / "data" / "raw" / "yahoo", tmp_path / "data" / "raw" / "fred"
+    yahoo.mkdir(parents=True)
+    fred.mkdir(parents=True)
+    for ticker, frame in market.raw.items():
+        frame.loc[frame.index <= IS_END].rename_axis("Date").to_csv(yahoo / f"{ticker}.csv")
+    dgs3mo = market.fred[["DGS3MO"]]
+    dgs3mo.loc[dgs3mo.index <= IS_END].rename_axis("Date").to_csv(fred / "DGS3MO.csv")
+
+    scores = _m0_scores(market)
+    folder = tmp_path / "outputs" / "walkforward" / "M0"
+    write_csv(scores, folder / "scores.csv")
+    save_used(walkforward_settings(cfg), folder / "used.yaml")
+    processed = tmp_path / cfg["data"]["data_dir"] / "processed"
+    save_used(features_settings(cfg), processed / "features_config.yaml")
+
+    betas = sizing_betas(market.daily_close.loc[market.daily_close.index <= IS_END], cfg)
+    write_csv(betas, processed / "sizing_betas.csv")
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    return {"cfg": cfg, "scores": scores, "betas": betas, "log": tmp_path / "outputs" / "vault_access_log.jsonl",
+            "out": tmp_path / "outputs" / "backtests" / "M0"}
+
+
+def test_settings_checked_are_those_03_and_05_save(script):
+    # S23-1, S23-5, S23-6: 06 checks the walk-forward used.yaml and features_config.yaml with the functions that write them
+    assert script.walkforward_settings is walkforward_settings and script.features_settings is features_settings
+    cfg = load_config()
+    settings = script.walkforward_settings(cfg)
+    assert sorted(settings) == sorted(["seed", "data", "split", "execution", "features", "models"])
+    assert all(settings[key] == cfg[key] for key in settings)  # whole sections
+
+
+def test_cost_scenarios_pair_costs_and_borrow_by_position(script):
+    cfg = load_config()
+    assert script.cost_scenarios(cfg) == [("5bps_1pct", 5.0, 0.01, False), ("10bps_2pct", 10.0, 0.02, True),
+                                          ("20bps_5pct", 20.0, 0.05, False)]
+    bad = copy.deepcopy(cfg)
+    bad["costs"]["borrow"] = [0.01, 0.02]
+    with pytest.raises(SystemExit, match="pair by position"):
+        script.cost_scenarios(bad)
+
+
+def test_model_backtest_writes_the_four_outputs(script, model_inputs):
+    script.main(["--model", "M0"])
+    out = model_inputs["out"]
+    assert sorted(p.name for p in out.iterdir()) == ["metrics.csv", "summary.json", "used.yaml", "weekly.csv"]
+
+    weekly = pd.read_csv(out / "weekly.csv", index_col=[0, 1], parse_dates=[0, 1, 2])
+    closes = pd.DatetimeIndex(weekly.index.get_level_values("date_close"))
+    assert closes[0] == FIRST_SCORED and closes[-1] == LAST_IS_SIGNAL_WEEK
+    assert (weekly["period"] == "IS").all()
+    assert pd.Timestamp(weekly["realised_on"].max()) <= IS_END
+    assert weekly["turnover"].iloc[0] == pytest.approx(1.0)  # first week entered from cash
+    np.testing.assert_allclose(weekly["costs"], 10 / 10_000 * weekly["turnover"], rtol=0, atol=1e-12)
+    assert "SPY" not in weekly.columns  # the benchmark is never traded and no per-ticker series is written
+    assert {"net_5bps_1pct", "net_20bps_5pct"} <= set(weekly.columns)
+    assert weekly["net_5bps_1pct"].sum() > weekly["net"].sum() > weekly["net_20bps_5pct"].sum()
+
+    metrics = pd.read_csv(out / "metrics.csv", index_col=[0, 1])
+    assert len(metrics) == 6 and (metrics["period"] == "IS").all()
+    assert set(metrics.index.get_level_values("rf")) == {"tbill", "constant"}
+    assert metrics.loc[("10bps_2pct", "constant"), "rf_annual"] == pytest.approx(0.02)
+
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["model"] == "M0" and summary["period"] == "IS" and summary["baseline"] == "10bps_2pct"
+    assert summary["weeks"] == len(weekly)
+    assert (summary["first_week"], summary["last_week"]) == ("2013-01-04", "2019-12-13")
+    assert summary["last_realised_on"] == "2019-12-23"
+    assert summary["cap_binding_weeks"] == int(weekly["cap_binds"].sum())
+    assert summary["mean_abs_residual_beta"] == pytest.approx(weekly["residual_beta"].abs().mean(), abs=1e-12)
+    assert summary["mean_turnover"] == pytest.approx(weekly["turnover"].mean(), abs=1e-12)
+    assert summary["missing_input_weeks"] == 0
+    assert set(summary["scenarios"]) == {"5bps_1pct", "10bps_2pct", "20bps_5pct"}
+
+    # headline Sharpe recomputed from the weekly file: (annualised net return − compound annual T-bill) / volatility
+    r, rf = weekly["net"], weekly["rf"]
+    annual = (1 + r).prod() ** (52 / len(r)) - 1
+    rf_annual = (1 + rf).prod() ** (52 / len(rf)) - 1
+    vol = r.std() * np.sqrt(52)
+    assert summary["net_sharpe_rf_tbill"] == pytest.approx((annual - rf_annual) / vol, rel=1e-9)
+    assert summary["net_sharpe_rf_constant"] == pytest.approx((annual - 0.02) / vol, rel=1e-9)
+    assert summary["net_sharpe_zero_cost"] == pytest.approx(annual / vol, rel=1e-9)
+    assert summary["max_drawdown"] == pytest.approx(metrics.loc[("10bps_2pct", "tbill"), "max_drawdown"], abs=1e-12)
+    assert summary["rf_tbill_annual"] == pytest.approx(rf_annual, rel=1e-9)
+
+    used = yaml.safe_load((out / "used.yaml").read_text(encoding="utf-8"))
+    assert used["model"] == "M0" and used["costs"] == model_inputs["cfg"]["costs"]
+
+
+def test_model_backtest_asks_the_vault_only_for_in_sample_dates(script, model_inputs):
+    script.main(["--model", "M0"])
+    lines = [json.loads(line) for line in model_inputs["log"].read_text(encoding="utf-8").splitlines()]
+    assert [(r["method"], r["as_of"], r["result"]) for r in lines] == [("sizing_betas", "2019-12-27", "ok")]
+
+
+def test_model_backtest_vault_is_sealed_at_the_in_sample_end(script, model_inputs):
+    vault = script.open_vault(model_inputs["cfg"])
+    assert vault.is_end == IS_END
+    with pytest.raises(OOSAccessError):
+        vault.sizing_betas(pd.Timestamp("2020-01-03"))
+    betas = script.read_betas(vault, IS_END)
+    pd.testing.assert_frame_equal(betas, model_inputs["betas"], check_freq=False, atol=1e-12)
+
+
+def test_model_backtest_refuses_a_features_build_with_another_config(script, model_inputs):
+    other = copy.deepcopy(model_inputs["cfg"])
+    other["execution"]["type"] = "close_to_close"
+    processed = model_inputs["out"].parents[2] / other["data"]["data_dir"] / "processed"
+    save_used(features_settings(other), processed / "features_config.yaml")
+    with pytest.raises(ValueError, match="different config.yaml"):
+        script.main(["--model", "M0"])
+    assert not model_inputs["out"].exists()
+
+
+def test_model_backtest_refuses_scores_built_with_another_config(script, model_inputs):
+    folder = model_inputs["out"].parents[1] / "walkforward" / "M0"
+    other = copy.deepcopy(model_inputs["cfg"])
+    other["models"]["M0"]["feature"] = "MOM52_4"
+    save_used(walkforward_settings(other), folder / "used.yaml")
+    with pytest.raises(ValueError, match="different config.yaml"):
+        script.main(["--model", "M0"])
+    assert not model_inputs["out"].exists()
+
+
+def test_model_backtest_refuses_scores_after_the_in_sample_end(script, model_inputs):
+    folder = model_inputs["out"].parents[1] / "walkforward" / "M0"
+    scores = model_inputs["scores"]
+    late = scores.iloc[[-1]].copy()
+    late.index = pd.MultiIndex.from_arrays([[pd.Timestamp("2019-12-30")], [pd.Timestamp("2020-01-03")]],
+                                           names=["date_open", "date_close"])
+    write_csv(pd.concat([scores, late]), folder / "scores.csv")
+    with pytest.raises(SystemExit, match="after the In-Sample end"):
+        script.main(["--model", "M0"])
+    assert not model_inputs["out"].exists()
+
+
+def test_model_backtest_stops_before_any_oos_return(script, model_inputs, synthetic_market, monkeypatch):
+    # if the In-Sample cut of the raw files failed, refuse_oos_returns stops the run before the engine and writes nothing
+    monkeypatch.setattr(script, "read_raw_in_sample", lambda tickers, is_end: {t: synthetic_market.raw[t] for t in tickers})
+    monkeypatch.setattr(script, "run", lambda *args, **kwargs: pytest.fail("the engine ran on an OOS return"))
+    with pytest.raises(SystemExit, match="after the In-Sample end"):
+        script.main(["--model", "M0"])
+    assert not model_inputs["out"].exists()
+
+
+def test_model_backtest_counts_a_missing_score_week(script, model_inputs, caplog):
+    folder = model_inputs["out"].parents[1] / "walkforward" / "M0"
+    scores = model_inputs["scores"].copy()
+    scores.iloc[100, 3] = np.nan  # one sector score missing: Amendment 2 C3 carries the previous targets
+    write_csv(scores, folder / "scores.csv")
+    with caplog.at_level(logging.WARNING, logger="src.sizing"):
+        summary = script.backtest_model(model_inputs["cfg"], "M0")
+    assert summary["missing_input_weeks"] == 1
+    week = pd.Timestamp(scores.index[100][1]).strftime("%Y-%m-%d")
+    assert any(week in record.getMessage() for record in caplog.records)
+
+
+def test_model_backtest_refuses_an_unknown_model(script, model_inputs):
+    with pytest.raises(SystemExit, match="--model must be one of"):
+        script.main(["--model", "M9"])
+
+
+def test_read_scores_round_trips_the_contract_8_file(script, model_inputs):
+    read = script.read_scores("M0", model_inputs["cfg"], IS_END)
+    pd.testing.assert_frame_equal(read, model_inputs["scores"], check_freq=False, check_index_type=False, atol=1e-12)
