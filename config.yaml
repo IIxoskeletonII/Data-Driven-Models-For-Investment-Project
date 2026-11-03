@@ -58,6 +58,18 @@ selection: # section 07 gate, applied to walk-forward In-Sample results
   bootstrap_block: 4 # weeks, stationary bootstrap mean block length
   bootstrap_block_sensitivity: 8
 
+tuning: # Amendment 5 C1 (Phase 3.1, additive; S31-2, S31-3): choice within the fixed grids at each refit
+  inner_validation_weeks: 104 # the last 104 weeks of each refit's training window score each grid value
+  tie_order: # equal inner Sharpe (within 1e-12): the simpler value, listed first
+    M1: [10, 1, 0.1] # the larger lambda
+    M2: [10, 1, 0.1]
+    M3: [2, 3] # the smaller depth
+    M0_star: [26, 13, 52] # the 26-week lookback, then the lookback nearer to 26
+
+inference: # section 11 (Phase 3.1, additive; S31-8, S31-9)
+  pbo_blocks: 16 # PBO by CSCV
+  confidence: 0.95 # level of the bootstrap percentile intervals
+
 agent_lab: # section 08
   max_candidates: 40
   budget_usd: 5 # hard stop in code
