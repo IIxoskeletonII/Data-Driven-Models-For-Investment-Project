@@ -313,11 +313,186 @@ def test_model_backtest_counts_a_missing_score_week(script, model_inputs, caplog
     assert any(week in record.getMessage() for record in caplog.records)
 
 
-def test_model_backtest_refuses_an_unknown_model(script, model_inputs):
-    with pytest.raises(SystemExit, match="--model must be one of"):
+def test_model_backtest_refuses_a_model_without_walkforward_scores(script, model_inputs):
+    # S32-1: --model accepts any folder of outputs/walkforward/ with a scores.csv, and nothing else
+    with pytest.raises(SystemExit, match="no outputs/walkforward/M9/scores.csv"):
         script.main(["--model", "M9"])
+    for name in ("../M0", "M0/..", "", "M-0"):
+        with pytest.raises(SystemExit, match="not a model name"):
+            script.check_model(name)
+    assert not model_inputs["out"].exists()
 
 
 def test_read_scores_round_trips_the_contract_8_file(script, model_inputs):
     read = script.read_scores("M0", model_inputs["cfg"], IS_END)
     pd.testing.assert_frame_equal(read, model_inputs["scores"], check_freq=False, check_index_type=False, atol=1e-12)
+
+
+# -- session 3.2: every walk-forward folder, --all, exposures, shift check, placebo (decisions S32-1 to S32-4) -----------
+
+def _copy_walkforward(model_inputs, name: str, scores: pd.DataFrame | None = None) -> None:
+    folder = model_inputs["out"].parents[1] / "walkforward" / name
+    write_csv(model_inputs["scores"] if scores is None else scores, folder / "scores.csv")
+    save_used(walkforward_settings(model_inputs["cfg"]), folder / "used.yaml")
+
+
+def test_walkforward_models_lists_folders_with_scores(script, model_inputs):
+    _copy_walkforward(model_inputs, "M3_d2")
+    _copy_walkforward(model_inputs, "M0_L13")
+    (model_inputs["out"].parents[1] / "walkforward" / "empty").mkdir()  # no scores.csv: not a model
+    assert script.walkforward_models() == ["M0", "M0_L13", "M3_d2"]
+
+
+def test_a_fixed_variant_folder_is_backtested(script, model_inputs):
+    _copy_walkforward(model_inputs, "M3_d2")
+    script.main(["--model", "M3_d2"])
+    folder = model_inputs["out"].parent / "M3_d2"
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["model"] == "M3_d2"
+    assert yaml.safe_load((folder / "used.yaml").read_text(encoding="utf-8"))["model"] == "M3_d2"
+
+
+def test_all_backtests_every_folder_with_one_vault_read(script, model_inputs):
+    _copy_walkforward(model_inputs, "M0_L13")
+    script.main(["--all"])
+    out = model_inputs["out"].parent
+    assert sorted(p.name for p in out.iterdir()) == ["M0", "M0_L13"]
+    a = pd.read_csv(out / "M0" / "weekly.csv", index_col=[0, 1])
+    b = pd.read_csv(out / "M0_L13" / "weekly.csv", index_col=[0, 1])
+    pd.testing.assert_frame_equal(a, b)  # same scores, same book
+    lines = model_inputs["log"].read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["method"] for line in lines] == ["sizing_betas"]
+
+
+def test_all_refuses_when_there_is_no_model(script, tmp_path, monkeypatch):
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="--all: no outputs/walkforward"):
+        script.main(["--all"])
+
+
+def test_weekly_exposures_add_up(script, model_inputs):
+    script.main(["--model", "M0"])
+    weekly = pd.read_csv(model_inputs["out"] / "weekly.csv", index_col=[0, 1])
+    # Σ|w| = 1, and Σw = the IVV weight h / (1 + |h|) because the core is dollar-neutral (§09)
+    np.testing.assert_allclose(weekly["long_exposure"] - weekly["short_exposure"], 1.0, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(weekly["long_exposure"] + weekly["short_exposure"], weekly["net_exposure"], rtol=0,
+                               atol=1e-12)
+
+
+def _week_index(n: int, start: str = "2010-01-04") -> pd.MultiIndex:
+    mondays = pd.date_range(start, periods=n, freq="7D")
+    return pd.MultiIndex.from_arrays([mondays, mondays + pd.Timedelta(days=4)], names=["date_open", "date_close"])
+
+
+def test_delayed_scores_hand_case(script):
+    index = _week_index(6)
+    scores = pd.DataFrame({"XLB": [1.0, 2, 3, 4], "XLE": [5.0, 6, 7, 8]}, index=index[[1, 2, 4, 5]])  # week 3 unscored
+    delayed = script.delayed_scores(scores, index)
+    assert list(delayed.index) == list(index[[2, 4, 5]])  # the first scored week has no delayed score
+    assert delayed["XLB"].iloc[0] == 1.0  # week 2 trades the scores of week 1
+    assert np.isnan(delayed["XLB"].iloc[1])  # week 4 would trade week 3's, which has none: a missing input (C3)
+    assert delayed["XLE"].iloc[2] == 7.0
+    with pytest.raises(ValueError, match="outside the weekly index"):
+        script.delayed_scores(scores, index[:3])
+
+
+@pytest.mark.parametrize("base,delayed,p,verdict", [
+    (0.5, 0.4, None, "PASS"),
+    (0.5, 0.5, None, "PASS"),
+    (0.5, 0.6, None, "PENDING"),
+    (0.5, 0.6, 0.79, "PASS"),
+    (0.5, 0.6, 0.80, "FAIL"),
+    (0.5, 0.4, 0.95, "PASS"),
+])
+def test_shift_verdict(script, base, delayed, p, verdict):
+    assert script.shift_verdict(base, delayed, p, 0.80) == verdict
+
+
+def test_shift_check_writes_both_books_on_common_weeks(script, model_inputs):
+    script.main(["--shift-check"])  # default M0
+    out = model_inputs["out"].parents[1] / "diagnostics" / "shift" / "M0"
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    weekly = pd.read_csv(out / "weekly.csv", index_col=[0, 1], parse_dates=[0, 1, 2])
+    assert summary["weeks"] == len(model_inputs["scores"]) - 1 == len(weekly)
+    assert summary["first_week"] == pd.Timestamp(model_inputs["scores"].index[1][1]).strftime("%Y-%m-%d")
+    assert pd.Timestamp(weekly["realised_on"].max()) <= IS_END
+    r = weekly["net_delayed"]
+    annual = (1 + r).prod() ** (52 / len(r)) - 1
+    assert summary["delayed"]["net_sharpe_zero_cost"] == pytest.approx(annual / (r.std() * np.sqrt(52)), rel=1e-9)
+    assert summary["p_delayed_better"] is None  # src.stats is still a Phase 3.1 stub: the hook returns None
+    assert summary["verdict"] == script.shift_verdict(summary["base"]["net_sharpe_rf_tbill"],
+                                                      summary["delayed"]["net_sharpe_rf_tbill"], None, 0.80)
+
+
+def test_shift_check_flags_scores_that_are_one_week_early(script, model_inputs, synthetic_market, monkeypatch):
+    # planted misalignment: the score of week t is the forward return of week t + 1, so the delayed book trades on the
+    # return it earns and beats the base book; with a bootstrap P of 1 the check fails
+    fwd, _, _ = script.forward_returns(synthetic_market.weekly_open, is_end=IS_END)
+    sectors = list(model_inputs["scores"].columns)
+    early = fwd[sectors].shift(-1).reindex(model_inputs["scores"].index).iloc[:-2]
+    write_csv(early, model_inputs["out"].parents[1] / "walkforward" / "M0" / "scores.csv")
+    real_hook = script.stats_hook
+
+    def hook(name, *args, **kwargs):
+        return {"p_uplift_positive": 1.0} if name == "paired_block_bootstrap" else real_hook(name, *args, **kwargs)
+
+    monkeypatch.setattr(script, "stats_hook", hook)
+    summary = script.shift_check(model_inputs["cfg"], "M0")
+    assert summary["delayed"]["net_sharpe_rf_tbill"] > summary["base"]["net_sharpe_rf_tbill"]
+    assert summary["verdict"] == "FAIL"
+
+
+def test_shift_check_refuses_a_bootstrap_without_the_probability_key(script, model_inputs, monkeypatch):
+    monkeypatch.setattr(script, "stats_hook", lambda name, *a, **k: {"p": 0.5} if name == "paired_block_bootstrap" else None)
+    with pytest.raises(SystemExit, match="p_uplift_positive"):
+        script.shift_check(model_inputs["cfg"], "M0")
+
+
+def test_placebo_seeds_follow_the_config(script):
+    cfg = load_config()
+    assert cfg["placebo"] == {"books": 1000, "seed_offset": 1000000}  # §11: 1,000 books, pre-registered
+    seeds = script.placebo_seeds(cfg)
+    assert len(seeds) == 1000 and seeds[0] == 42 + 1_000_000 and seeds[-1] == 42 + 1_000_000 + 999
+
+
+@pytest.mark.parametrize("change,message", [({"books": 0}, "books"), ({"books": 2.5}, "books"),
+                                            ({"seed_offset": -1}, "seed_offset"), ({"books": True}, "books")])
+def test_placebo_settings_refuse_bad_values(script, change, message):
+    cfg = copy.deepcopy(load_config())
+    cfg["placebo"] |= change
+    with pytest.raises(SystemExit, match=message):
+        script.placebo_settings(cfg)
+
+
+def test_placebo_percentile_hand_case(script):
+    values = pd.Series([0.1, 0.2, 0.3, 0.4])
+    assert script.placebo_percentile(values, 0.25) == 50.0
+    assert script.placebo_percentile(values, 0.3) == 62.5  # a tie counts half
+    assert script.placebo_percentile(values, -1.0) == 0.0
+
+
+def test_placebo_books_are_seeded_and_on_the_reference_weeks(script, model_inputs):
+    cfg = copy.deepcopy(model_inputs["cfg"])
+    cfg["placebo"] = {"books": 4, "seed_offset": 7}
+    first = script.run_placebo(cfg, "M0")
+    out = model_inputs["out"].parents[1] / "diagnostics" / "placebo"
+    books = pd.read_csv(out / "books.csv", index_col=0)
+    assert books["seed"].tolist() == [49, 50, 51, 52]
+    assert first["weeks"] == len(model_inputs["scores"]) and first["books"] == 4
+    assert first["reference_percentile"] == script.placebo_percentile(books["net_sharpe_rf_tbill"],
+                                                                      first["reference_row"]["net_sharpe_rf_tbill"])
+    assert books["mean_turnover"].min() > first["reference_row"]["mean_turnover"]  # random books trade more than M0
+    assert first["reference_percentile_gross"] == script.placebo_percentile(
+        books["gross_sharpe_zero_cost"], first["reference_row"]["gross_sharpe_zero_cost"])
+    assert script.run_placebo(cfg, "M0") == first  # fixed seeds: the same distribution
+    used = yaml.safe_load((out / "used.yaml").read_text(encoding="utf-8"))
+    assert used["placebo"] == cfg["placebo"] and used["reference"] == "M0"
+
+
+@pytest.mark.parametrize("argv", [["--shift-check", "M0"], ["--placebo"], ["--all"]])
+def test_diagnostics_stop_before_any_oos_return(script, model_inputs, synthetic_market, monkeypatch, argv):
+    monkeypatch.setattr(script, "read_raw_in_sample", lambda tickers, is_end: {t: synthetic_market.raw[t] for t in tickers})
+    monkeypatch.setattr(script, "run", lambda *args, **kwargs: pytest.fail("the engine ran on an OOS return"))
+    with pytest.raises(SystemExit, match="after the In-Sample end"):
+        script.main(argv)
+    outputs = model_inputs["out"].parents[1]
+    assert not (outputs / "diagnostics").exists() and not (outputs / "backtests").exists()
