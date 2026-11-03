@@ -26,6 +26,7 @@ Modes (one is required):
 """
 
 import argparse
+import functools
 import importlib.util
 import json
 import logging
@@ -48,7 +49,7 @@ from src.ledger import dividend_reinvestment_term, run_ledger
 from src.metrics import performance, period_metrics, tbill_weekly_returns
 from src.models import walkforward_settings
 from src.sizing import size_book
-from src.vault import Vault
+from src.vault import Vault, spec_hash
 
 WEEK_COLUMNS = ["date_open", "date_close"]
 WEEKLY_FIELDS = ("gross", "net", "turnover", "costs", "borrow", "residual_beta", "net_exposure", "hedge")
@@ -283,11 +284,13 @@ def read_scores(model: str, cfg: dict, is_end: pd.Timestamp) -> pd.DataFrame:
     File outputs/walkforward/<model>/scores.csv in contract-8 format: columns date_open, date_close (ISO dates, the weekly
     index), then the 9 sectors in universe order, floats, empty for a missing score; row t known after Friday close t.
     Refuses scores built with a different config.yaml (check_used of src.models.walkforward_settings, exactly
-    {seed, data, split, execution, features, models}, against used.yaml in the same folder) and scores of
-    any week after is_end. Returns a frame that passes validate_scores.
+    {seed, data, split, execution, features, models}, against used.yaml in the same folder), scores whose
+    summary.json["spec_hash"] differs from the one the current config.yaml gives (check_spec_hash, decision S32-10) and
+    scores of any week after is_end. Returns a frame that passes validate_scores.
     """
     folder = ROOT / "outputs" / "walkforward" / model
     check_used(walkforward_settings(cfg), folder / "used.yaml", "05_train_walkforward.py")
+    check_spec_hash(model, cfg)
     path = folder / "scores.csv"
     if not path.exists():
         raise FileNotFoundError(f"{path.relative_to(ROOT).as_posix()} not found: run 05_train_walkforward.py first")
@@ -299,6 +302,47 @@ def read_scores(model: str, cfg: dict, is_end: pd.Timestamp) -> pd.DataFrame:
         raise SystemExit(f"{path.relative_to(ROOT).as_posix()} has no scored week")
     _refuse_after(scores.index, is_end, f"outputs/walkforward/{model}/scores.csv")
     return scores
+
+
+@functools.cache
+def _walkforward_script():
+    """05_train_walkforward.py, loaded by path (read only: its spec_for builds the spec of every --model and --fixed
+    name; decision S32-10)."""
+    path = Path(__file__).resolve().parent / "05_train_walkforward.py"  # the code next to this file, whatever ROOT is
+    spec = importlib.util.spec_from_file_location("walkforward_script", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def expected_spec_hash(model: str, cfg: dict) -> str:
+    """The trial log's spec_hash of `model` under `cfg` (S23-6, decision S32-10): src.vault.spec_hash of the spec that
+    05_train_walkforward.py's spec_for builds for that --model rung or --fixed name. Stops for a name 05 has no spec for,
+    since its scores cannot be checked."""
+    try:
+        spec = _walkforward_script().spec_for(model, cfg)
+    except ValueError as error:
+        raise SystemExit(f"{model}: 05_train_walkforward.py has no spec for this name, so its spec_hash cannot be checked "
+                         f"(decision S32-10): {error}") from None
+    return spec_hash(spec, cfg)
+
+
+def check_spec_hash(model: str, cfg: dict) -> str:
+    """Stop unless outputs/walkforward/<model>/summary.json (written by 05_train_walkforward.py) holds the spec_hash the
+    current config.yaml gives (expected_spec_hash): scores built before a change of any setting in the trial's identity
+    (the walk-forward settings, models.*, the Amendment 5 C1 tuning entry) are stale (decision S32-10). Returns it."""
+    path = ROOT / "outputs" / "walkforward" / model / "summary.json"
+    shown = path.relative_to(ROOT).as_posix()
+    if not path.exists():
+        raise SystemExit(f"{shown} not found: run 05_train_walkforward.py for {model} (its spec_hash is checked, S32-10)")
+    recorded = json.loads(path.read_text(encoding="utf-8")).get("spec_hash")
+    if not isinstance(recorded, str) or not recorded:
+        raise SystemExit(f"{shown} has no spec_hash: run 05_train_walkforward.py for {model} again (S32-10)")
+    expected = expected_spec_hash(model, cfg)
+    if recorded != expected:
+        raise SystemExit(f"{model}: stale scores. {shown} has spec_hash {recorded[:12]}…, the current config.yaml gives "
+                         f"{expected[:12]}…; run 05_train_walkforward.py for {model} again (decision S32-10)")
+    return expected
 
 
 def open_vault(cfg: dict) -> Vault:
@@ -484,7 +528,8 @@ def backtest_model(cfg: dict, model: str, inputs: InSampleInputs | None = None) 
             weekly[f"net_{label}"] = results[label].net
 
     summary = {
-        "model": model, "period": "IS", "baseline": baseline, "weeks": len(weeks),
+        "model": model, "spec_hash": expected_spec_hash(model, cfg), "period": "IS", "baseline": baseline,
+        "weeks": len(weeks),
         "first_week": _week(_closes(weeks)[0]), "last_week": _week(_closes(weeks)[-1]),
         "first_realised_on": _week(realised_on.loc[weeks].iloc[0]),
         "last_realised_on": _week(realised_on.loc[weeks].iloc[-1]),

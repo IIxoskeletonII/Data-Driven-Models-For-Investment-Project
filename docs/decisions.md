@@ -1195,6 +1195,41 @@ session (3 Nov 2026). "Approved by" is completed by Mattia's approving review of
 | Files affected | `.github/workflows/ci.yml`, `README.md` |
 | Amendment | No |
 
+## 2026-11-03 · Session 3.2b: backtests of every model and the reproduction of the walk-forwards
+
+"Instruction" quotes the session 3.2b prompt (3 Nov 2026). "Approved by" lists the approvals given so far; Eliya
+approves through the review of the 3.2b pull request.
+
+### S32-10 · `06_backtest.py` refuses stale walk-forward scores by `spec_hash`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | `check_used` compares `used.yaml` with `walkforward_settings(cfg)` only, but a trial's identity (`spec_hash`, S23-6) also holds the spec, and the spec of a tuned rung holds `tuning_spec(cfg)` (the `tuning:` section, the baseline costs, `signal`, `metrics.periods_per_year`; S31-2). A change there leaves `used.yaml` valid while the scores are stale. How does 06 detect it? |
+| Options considered | (a) recompute the spec_hash of the folder's name from the current `config.yaml` with 05's own `spec_for` and `src.vault.spec_hash`, and refuse the scores unless it equals `summary.json["spec_hash"]` (chosen); (b) add the tuning sections to the `used.yaml` check (changes the `walkforward_settings` contract, Eliya's file); (c) compare `summary.json` with the trial log only (a row of an old config stays in the log, so it cannot show staleness) |
+| Decision | (a). `read_scores`, used by `--model`, `--all`, `--shift-check` and `--placebo`, calls `check_spec_hash(model, cfg)` right after the `used.yaml` check and before any real-data input is read or any output written. `expected_spec_hash(model, cfg)` = `spec_hash(spec_for(model, cfg), cfg)`, with `05_train_walkforward.py` loaded by path from the script folder, read only (Eliya's file, unchanged). The run stops (`SystemExit`) when `summary.json` is missing, has no or an empty `spec_hash`, holds another hash ("stale scores", both hashes shown, rerun 05), or when 05 has no spec for the folder name (a folder outside the 17 names of S31-10 cannot be checked, so it is refused; the M5 and agent folders of Phase 3.3 need their spec in 05 first). The folder name, not `summary.json`, selects the spec, so a summary copied from another folder is refused. The backtest `summary.json` gains `spec_hash`, which links each backtest to its trial-log row (the PBO matrix of S31-7). `--all` checks every folder before reading any input, as in S32-1 |
+| Rationale | The spec_hash is the identity the trial log, the DSR and the PBO matrix use, so it is the right staleness key; recomputing it with 05's own `spec_for` keeps one definition of every spec |
+| Evidence | Instruction §1: "06_backtest.py: before backtesting a model, recompute its spec_hash from the current config.yaml and refuse it if it differs from summary.json["spec_hash"] (stale scores after a config change). Add tests and an S32 decision."; S23-6 (spec_hash over `walkforward_settings` and the spec); S31-2 (`tuning_spec` in the spec); S31-10 (`summary.json` of every run holds `spec_hash`). Tests `test_model_backtest_refuses_stale_scores`, `test_a_tuning_change_makes_the_scores_stale_although_used_yaml_still_matches` (a `tuning.inner_validation_weeks` change: `used.yaml` still matches, M1 is refused, M0 is not, `--all` writes nothing), `test_a_fixed_value_folder_holding_another_names_scores_is_refused`, `test_model_backtest_needs_the_spec_hash_of_05`, `test_a_folder_05_has_no_spec_for_is_refused`, `test_diagnostics_refuse_stale_scores`, `test_the_backtest_summary_records_the_spec_hash`, and `test_expected_spec_hash_is_the_trial_log_hash_of_05s_spec` (the 17 names give 16 hashes, all rows of `docs/trial_log.csv`). With the check removed, eight of these tests fail |
+| Proposed by | Mattia Cervelli (instruction) |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `06_backtest.py`, `tests/test_backtest_script.py`, `tests/test_evaluate_script.py` |
+| Amendment | No |
+
+### S32-11 · Reproduction of the walk-forwards and the In-Sample results of every model
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | Do the walk-forwards reproduce on Mattia's machine, and what do the In-Sample backtests and shift checks of every model give? |
+| Options considered | Report as computed (chosen); change anything because of them (excluded: operating manual §3.4, §3.8) |
+| Decision | Environment: Windows 11, Python 3.12.14, lightgbm 4.7.0, scikit-learn 1.9.1, numpy 2.5.4, pandas 3.1.0. `03_build_features.py` reproduces `data/checksums_features.json` byte for byte (no diff). The 17 runs of `05_train_walkforward.py` (6 rungs, 11 fixed values) end without error and add no row to `docs/trial_log.csv`, so every spec_hash equals a logged one; M0's `scores_sha256` is `7078b900…96a8`, as in S31-11, and `M0_L26` equals it (S31-6). The other 16 `scores_sha256` are compared with Eliya's table in the review of this pull request (M3 above all). In-Sample, 624 weeks 2008-01-04 to 2019-12-13, 10 bps / 2%, headline net Sharpe (weekly T-bill) and zero-cost net Sharpe: M0 −0.771 / −0.684, M1 −1.286 / −1.183, M2 −0.986 / −0.887, M3 −1.417 / −1.311, ENS −1.192 / −1.095, M0\* −0.634 / −0.545; max drawdown −48.0%, −58.5%, −49.1%, −61.3%, −58.2%, −40.1%; turnover a week 0.400, 1.190, 1.121, 1.185, 1.244, 0.397; mean rank IC 0.0045, −0.0037, −0.0001, 0.0160, 0.0078, 0.0158. Among M1–M3 the highest headline net Sharpe is M2's. The fitted rungs lose 1.11 to 1.22 of zero-cost Sharpe to costs and borrow (gross zero-cost M1 0.005, M2 0.223, M3 −0.096, ENS 0.074), against 0.43 for M0 and M0\*, because they trade about three times as much. Shift check (623 common weeks, bootstrap with the T-bill Sharpe, S32-9): every rung PASSes; P(delayed > base) is M0 0.410, M1 0.278, M2 0.071, M3 0.093, ENS 0.065. For M0\* the delayed book is better (−0.563 against −0.639; rank IC 0.0186 against 0.0156) with P = 0.755, below the 0.80 of S32-3, so it PASSes; it is the closest to the threshold and is reported as such. M0's placebo is unchanged from S32-8. The §07 gate (`src.stats.selection_gate`) was not run in this session. No code, setting or score was changed because of these results |
+| Rationale | The results feed the agent lab (it builds on the best of M1–M3) and the Gate 3 scorecard; stating the M0\* margin keeps the shift-check reading honest |
+| Evidence | `outputs/metrics/is_models.csv`, `outputs/metrics/shift_check.csv`, `outputs/diagnostics/shift/M0_star/summary.json` (uplift 0.076, 95% interval −0.136 to 0.288), `outputs/walkforward/*/summary.json` (3 Nov 2026); S31-11; S32-8 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 3 Nov 2026; Eliya Allam: PR review |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
