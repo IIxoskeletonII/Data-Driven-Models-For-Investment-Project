@@ -900,6 +900,21 @@ session (3 Nov 2026). "Approved by" is completed by Mattia's approving review of
 | Files affected | none (gate record) |
 | Amendment | No |
 
+### S31-12 · Interface names agreed with Phase 3.2 and fixes from the session audit
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-03 |
+| Question | (1) Which keyword names and result keys of `src/stats.py` does Mattia's Phase 3.2 code read? (2) May a spec give a grid value with another type (`{"alpha": 1.0}` or `{"alpha": true}` for the grid value 1)? (3) In which units does `deflated_sharpe_ratio` take the trial Sharpes? (4) Must a weekly rf series given to the bootstrap cover exactly the weeks of the returns? |
+| Options considered | (1) keep the key `p_uplift` or use `p_uplift_positive`; (2) accept any value equal to a grid value, or require the grid value with its type; (3) weekly Sharpes only, or also the trial return matrix; (4) exact index, or the weeks of the returns as in `src.metrics` |
+| Decision | (1) `paired_block_bootstrap(candidate, baseline, n_resamples=..., block=..., seed=..., *, rf=None, confidence=None)` returns the probability under the key `p_uplift_positive` (not `p_uplift`); the gate's per-candidate keys are `p_uplift_positive` and `p_uplift_positive_sensitivity`; `rank_ic(...)` returns `mean`. Every signature and result key is listed in contract 17. (2) The value must equal a grid value and have its type (int 1, float 0.1); `bool` is refused. Otherwise one configuration could be logged under several `spec_hash` values, inflating N and duplicating PBO columns. (3) The trial Sharpes are per week (mean/std, `ddof=1`). `deflated_sharpe_ratio(..., *, trial_returns=None)` also accepts the weekly return matrix and computes them; the annualised `is_sharpe` of the trial log must never be passed. (4) The rf series is reindexed to the weeks of the returns, as `src.metrics.sharpe_ratio` does; a missing week raises `ValueError`. Also: the vault checks the forward-returns table against its own `cfg`; two tests added (the inner fits ignore the labels of the inner validation weeks; a label moved into (inner purge_end, outer purge_end] trips the inner purge check) |
+| Rationale | (1) Mattia's hooks are already written against these names; the contract follows them rather than the reverse. (2)–(4) Findings of the session's independent audit; (2) and the two tests close gaps that a mutation of the code would otherwise pass |
+| Evidence | Session 3.1 instructions, interface note: "his hooks call paired_block_bootstrap(a, b, n_resamples=..., block=..., seed=...) and read result["p_uplift_positive"], and rank_ic(...) and read result["mean"]. Use exactly these keyword names and result keys in src/stats.py, and document every function's signature and result keys in contract 17 of docs/interfaces.md."; audit findings 1, 2, 3 and 5 and the notes on the rf index and the vault configuration; S23-2 ("one row per distinct configuration"); §10 "Deflated Sharpe Ratio with N = every human and agent trial" |
+| Proposed by | Eliya Allam (2–4); Mattia Cervelli (1, names used by Phase 3.2) |
+| Approved by | Mattia Cervelli (pull request review; contract change, `docs/interfaces.md` contracts 16 and 17) |
+| Files affected | `src/stats.py`, `src/vault.py`, `tests/test_stats.py`, `tests/test_vault.py`, `tests/test_ladder.py`, `docs/interfaces.md` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
