@@ -1337,6 +1337,23 @@ Amendment 7 (committed alone, before any code of this session).
 | Files affected | `src/vault.py`, `src/agents/vault_server.py`, `docs/trial_log.csv` |
 | Amendment | No |
 
+### S33-11 · Fixes from the audit of the vault, DSL and model-pipeline changes
+
+S33-10 is reserved for the base rung (S33-5), recorded once the In-Sample backtests of M1–M3 exist.
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-04 |
+| Question | The session's independent audit of the S33-2 to S33-4 code (no look-ahead or seal breach found) raised: (1) a pre-built `FeatureSpec` skipped DSL validation; (2) one configuration could get several `spec_hash` values (a state as `"VIX"` or `["VIX"]`, two states in either order, a renamed feature, the same feature twice); (3) `unlock()` kept tables cut at `is_end` while sealed; (4) lag, diff and rolling count the rows of the weekly grid, not calendar weeks; (5) an agent value missing in a training row refuses the whole run; (6) smaller points. How is each settled? |
+| Options considered | (2): (a) refuse non-canonical forms; (b) hash a canonical form (chosen) |
+| Decision | (1) `parse` validates a `FeatureSpec` again from its name and expression; the vault accepts agent features only as JSON objects. (2b) `src.agents.dsl.canonical(spec)` = `{"expr": …}` with a root `mul_state`'s states as a list in the order of `STATES` (BEAR24, MKT_VAR, VIX, TERM, CREDIT; the product commutes) and without the name, which never reaches the design; `spec_hash` hashes each agent feature in that form (the trial row's `params_json` keeps the spec as given), `FeatureSpec.states` and the design column names follow the same order, and the same feature twice in one spec is refused. This refines S33-3 ("in the given order") and S33-9 (the hash). (3) `unlock()` clears the cached tables, and `tbill_weekly` cuts the yield at `as_of`. (4) Weeks are the rows of `src.features.weekly_index` (calendar weeks with at least one session), so `n` counts those rows; a week without any session is absent rather than NaN, which corrects the wording of S33-3. It only ever reaches further back. (5) Kept: `fit` refuses a non-finite training input (S31-4), so a mid-sample gap refuses the run, logged `refused`; the Validator's warm-up check (S33-6 (3)) rejects such a feature first. A gap in a week that only scores gives a NaN score that week (Amendment 2 C3). (6) Non-string operations, inputs, statistics or states raise `DSLError`; `evaluate` must return two or three values. Tests: `tests/test_dsl.py` and `tests/test_agent_vault.py` (the S33-4 tests are in this new file, not in `tests/test_ladder.py` as S33-4 listed) |
+| Rationale | One configuration must have one hash, or the trial count of the Deflated Sharpe Ratio grows with renamings (S31-12) |
+| Evidence | Audit report of 4 Nov 2026 (findings M1–M3, L1–L5); S31-12 "Otherwise one configuration could be logged under several `spec_hash` values, inflating N"; S23-2; S31-4 |
+| Proposed by | Eliya Allam |
+| Approved by | Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/dsl.py`, `src/vault.py`, `tests/test_dsl.py`, `tests/test_agent_vault.py`, `docs/interfaces.md` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
