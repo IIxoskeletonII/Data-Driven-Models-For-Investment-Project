@@ -304,6 +304,8 @@ class ScoreModel(Protocol):          # src/contracts.py
 | `labels(as_of)` | labels (contract 6), rows with `label_end ≤ as_of` |
 | `sizing_betas(as_of)` | sizing betas (contract 10), rows with `date_close ≤ as_of` (S23-4) |
 | `forward_returns(as_of)` | `(fwd, realised_on, period)` of contract 7 on the rows with `realised_on ≤ as_of`: returns already realised at `as_of` (S31-1); the full table is validated on first read, a slice does not satisfy the "last two rows NaN" rule |
+| `daily_closes(as_of)` | adjusted daily closes (contract 1) of the 9 sectors and SPY on the sessions ≤ `as_of`, from `data_dir/daily_close.csv` cut at `is_end` right after reading: the input of the agent feature DSL (S33-4) |
+| `tbill_weekly(as_of)` | weekly T-bill returns (`src.metrics.tbill_weekly_returns`, DGS3MO lagged one session, decimal) on the weeks of the forward returns realised by `as_of`, from `raw_dir/fred/DGS3MO.csv` cut at `is_end` right after reading (S33-4) |
 | `run_walkforward(spec)` | weekly scores (contract 8) of a model spec over the In-Sample folds (contract 13); appends one row to `docs/trial_log.csv` |
 
 - Optional keyword arguments (S22-8; they keep the behaviour above): `Vault(..., *, data_dir=ROOT / "data" / "processed",
@@ -311,16 +313,26 @@ class ScoreModel(Protocol):          # src/contracts.py
   `sizing_betas.csv`, `forward_returns.csv`) from `data_dir` unless in-memory `frames` are given; `unlock()` raises `OOSAccessError` unless `FROZEN.lock` exists and is
   called only by `08_run_oos.py`; `run_walkforward(spec, evaluate=None, *, trial_path=...)` fills `is_sharpe` and
   `is_mdd` only when an evaluator is passed (the engine, from Phase 2.3).
-  A spec holds only `rung`, `feature`, `author`, `kind`, `notes`, `params`, `tuning`, `members`, `as_of`, `end` (other keys
-  refused); `Vault(is_end)` refuses an `is_end` after `split.in_sample_end`; every failed call is logged as `refused`
-  (S22-12).
-- Ladder specs (S31-2): `rung` is `M0`, `M1`, `M2`, `M3`, `M0_star` or `ENS`. M0: `{"rung": "M0", "feature": F}` (F a
-  feature column or a `MOM{L}_1` variant). Fixed grid value: `{"rung": "M1"|"M2", "params": {"alpha": λ}}` or
+  A spec holds only `rung`, `feature`, `author`, `kind`, `notes`, `params`, `tuning`, `members` (other keys refused); a
+  spec carrying `as_of` or `end` is refused, with `OOSAccessError` when the date is after `is_end` and `ValueError`
+  otherwise (S33-2); `Vault(is_end)` refuses an `is_end` after `split.in_sample_end`; every failed call is logged as
+  `refused` (S22-12).
+- Ladder specs (S31-2): `rung` is `M0`, `M1`, `M2`, `M3`, `M0_star` or `ENS`. M0: `{"rung": "M0", "feature": F}` (F is
+  `models.M0.feature`, `MOM26_1`, or `MOM{L}_1` for L in `models.M0_star.lookback_weeks`; any other column is refused,
+  S33-2). Fixed grid value: `{"rung": "M1"|"M2", "params": {"alpha": λ}}` or
   `{"rung": "M3", "params": {"max_depth": d}}`, the value taken from the `config.yaml` grid. Tuned rung (Amendment 5 C1):
   `{"rung": "M1"|"M2"|"M3"|"M0_star", "tuning": T}`; ENS: `{"rung": "ENS", "members": ["M1", "M2", "M3"], "tuning": T}`, with
   `T = src.models.tuning_spec(cfg)` (the `tuning` section, baseline costs, `signal`, `metrics.periods_per_year`); any other
-  combination is refused. The C1 settings therefore enter `spec_hash` through the spec, and `walkforward_settings(cfg)` is
+  combination is refused. Agent features (S33-4, Amendment 7 C2): an M1, M2 or M3 spec (with `params` or `tuning`) may add
+  `"agent_features": [F1, F2, …]`, a non-empty list of DSL specs (`src.agents.dsl`); feature k enters the design as the
+  column `AG<k>` (the DSL asset part on `daily_closes(is_end)`) and, for a root `mul_state`, the product
+  `AG<k>_x_<state>[_x_<state>]` with the in-fold scaled states (`src.models.agent_design_columns`). An invalid DSL spec
+  raises `DSLError` (a `ValueError`), logged `refused`; the same feature twice is refused, and `spec_hash` uses each
+  feature's canonical form (`src.agents.dsl.canonical`: no name, states in a fixed order; S33-11). The optional
+  `Vault(..., *, raw_dir=ROOT / "data" / "raw")` locates DGS3MO; in-memory `frames` may hold `daily_close` and `dgs3mo`
+  (date index); `unlock()` clears the tables cached while sealed. The C1 settings therefore enter `spec_hash` through the spec, and `walkforward_settings(cfg)` is
   unchanged. After a tuned call, `Vault.last_selection` holds the per-refit selection table (else `None`).
+  `evaluate(scores)` may return a third value, the trial row's notes (default: the spec's `notes`; S33-4).
 - This access log is separate from `oos_access_log.json`, the single-entry log written only by `08_run_oos.py` (§10),
   which CI checks.
 - Every call appends one JSON line to the access log (git-ignored under `outputs/`): UTC time, method, `as_of` or spec hash,
@@ -393,9 +405,10 @@ may refine in the phase pull request, which the other author reviews.
 | `src/metrics.py` | `performance`, `return_stats`, `behaviour`, `market`, `tbill_weekly_returns`, `period_average_rf` | 2.1, Mattia |
 | `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas`; helpers `weekly_index`, `last_sessions`, `raw_asset_features`, `cross_sectional_zscore`; `features_settings` (2.3a) | 2.2, Eliya |
 | `src/labels.py` | `make_labels`, `walk_forward_folds`; helpers `label_end_by_week`, `assert_purged` | 2.2, Eliya |
-| `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a); `Vault.forward_returns`, `Vault.last_selection`, `split_forward_returns` (3.1) | 2.2, Eliya |
-| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `to_weekly`, `LadderData`, `tuning_spec`, `grid`, `tie_order`, `inner_validation_weeks`, `inner_fold`, `inner_sharpe`, `choose_grid_value`, `walkforward_rung` (3.1, done; `select_m0_star_lookback` replaced by the shared Amendment 5 C1 helpers, S31-10) | Eliya |
+| `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a); `Vault.forward_returns`, `Vault.last_selection`, `split_forward_returns` (3.1); `Vault.daily_closes`, `Vault.tbill_weekly` (3.3, S33-4) | 2.2, Eliya |
+| `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `to_weekly`, `LadderData`, `tuning_spec`, `grid`, `tie_order`, `inner_validation_weeks`, `inner_fold`, `inner_sharpe`, `choose_grid_value`, `walkforward_rung` (3.1, done; `select_m0_star_lookback` replaced by the shared Amendment 5 C1 helpers, S31-10); `agent_design_columns`, `LadderData.agent_columns`, `fit_transform_train(..., *, agent_columns=())` (3.3, S33-4) | Eliya |
 | `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`; `build_graph`, `run_lab` | 3.3, Eliya |
+| `src/agents/dsl.py` | `DSLError`, `FeatureSpec`, `parse(spec)`, `evaluate(spec, daily_close, cfg=None)` (the asset part on the index of contract 3, known after Friday close t), `state_terms(spec)`; constants `STATES`, `MAX_WINDOW`, `MAX_NODES`, `MAX_DEPTH` (S33-3) | 3.3, Eliya (done) |
 | `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate`, and the helpers of contract 16 | 3.1, Eliya (done) |
 | `src/plots.py` | `equity_curves(returns, period, realised_on, path)`, `drawdowns(returns, period, realised_on, path)`, `exposures(result, path)` (a `BacktestResult` or a frame with `long_exposure`, `short_exposure`, `net_exposure`, `residual_beta`), `cost_bridge(weekly, path)`, `placebo_histogram(sharpes, marks, path)`; each writes `path`.html and `path`.png (S32-6; with `07_evaluate.py`, S32-7) | 3.2, Mattia (done) |
 

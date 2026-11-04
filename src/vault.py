@@ -2,6 +2,7 @@
 until FROZEN.lock exists, and is the only path from the built data to models and agents.
 
 Phase 2.2 (Eliya); decisions S22-7 and S22-8. Phase 3.1: forward returns (S31-1) and the ladder specs (S31-2).
+Phase 3.3: daily closes and the weekly T-bill for the agent lab, and agent features added to a base rung (S33-2, S33-4).
 Interfaces: docs/interfaces.md, contract 15.
 """
 
@@ -16,8 +17,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.agents.dsl import canonical as canonical_feature
+from src.agents.dsl import evaluate as evaluate_feature
+from src.agents.dsl import parse as parse_feature
 from src.config import ROOT, load_config
 from src.contracts import (
+    universe,
     validate_betas,
     validate_features,
     validate_forward_returns,
@@ -26,6 +31,7 @@ from src.contracts import (
     validate_scores,
 )
 from src.labels import label_end_by_week, walk_forward_folds
+from src.metrics import tbill_weekly_returns
 from src.models import (
     ENS_MEMBERS,
     GRID_KEYS,
@@ -40,12 +46,16 @@ from src.models import (
 TRIAL_COLUMNS = ["trial_id", "timestamp", "author", "kind", "rung", "spec_hash", "params_json", "is_sharpe", "is_mdd",
                  "notes"]
 TRIAL_KINDS = ("human", "agent")
-FRAME_NAMES = ("features", "market_states", "labels", "momentum_variants", "sizing_betas", "forward_returns")
+FRAME_NAMES = ("features", "market_states", "labels", "momentum_variants", "sizing_betas", "forward_returns", "daily_close",
+               "dgs3mo")
+DAILY_FRAMES = ("daily_close", "dgs3mo")  # date-indexed; cut at is_end right after reading (S33-4)
 WEEKLY_FRAMES = ("market_states", "sizing_betas", "forward_returns")  # weekly index; the others (date_close, ticker)
 REALISED_ON, PERIOD = "realised_on", "period"  # the date and period columns of forward_returns.csv (S31-1)
-SPEC_DATE_KEYS = ("as_of", "end")
+SPEC_DATE_KEYS = ("as_of", "end")  # refused in any spec (S33-2): OOSAccessError after is_end, ValueError otherwise
 # anything else is refused (S22-12); params, tuning and members added for the ladder (S31-2)
-SPEC_KEYS = ("rung", "feature", "author", "kind", "notes", "params", "tuning", "members") + SPEC_DATE_KEYS
+SPEC_KEYS = ("rung", "feature", "author", "kind", "notes", "params", "tuning", "members", "agent_features")
+AGENT_RUNGS = ("M1", "M2", "M3")  # rungs that take agent features (Amendment 7, S33-4)
+AGENT_PREFIX = "AG"  # agent feature k (1-based, list order) is the design column AG<k> (S33-4)
 MOMENTUM_VARIANT = re.compile(r"MOM\d+_1")
 IMPLEMENTED_RUNGS = ("M0", "M1", "M2", "M3", "M0_star", "ENS")
 
@@ -67,15 +77,27 @@ def _spec_json(spec: Mapping[str, object]) -> str:
 def spec_hash(spec: Mapping[str, object], cfg: dict) -> str:
     """The trial log's spec_hash (S23-6): SHA-256 (hex) of the canonical JSON (sorted keys, no spaces) of
     {"config": walkforward_settings(cfg), "spec": spec}. The config sections that determine the scores are part of the
-    trial's identity, so the same spec under a changed config is a new trial.
+    trial's identity, so the same spec under a changed config is a new trial. Agent features enter in their canonical
+    form (src.agents.dsl.canonical: no name, states in a fixed order; S33-11), so one configuration has one hash.
     """
-    return hashlib.sha256(_spec_json({"config": walkforward_settings(cfg), "spec": dict(spec)}).encode("utf-8")).hexdigest()
+    keyed = dict(spec)
+    features = keyed.get("agent_features")
+    if isinstance(features, list | tuple) and all(isinstance(f, Mapping) for f in features):
+        try:
+            keyed["agent_features"] = [canonical_feature(f) for f in features]
+        except ValueError:
+            pass  # an invalid spec is refused by run_walkforward; its hash is that of the raw spec
+    return hashlib.sha256(_spec_json({"config": walkforward_settings(cfg), "spec": keyed}).encode("utf-8")).hexdigest()
 
 
 def _read_frame(name: str, path: Path) -> pd.DataFrame:
     """One built table of data/processed (git-ignored), with the index of its contract."""
     if not path.exists():
         raise FileNotFoundError(f"{path} not found: run 03_build_features.py (labels: Phase 2.3, S22-7)")
+    if name in DAILY_FRAMES:  # daily_close.csv (01_download_data.py) and data/raw/fred/DGS3MO.csv
+        frame = pd.read_csv(path, index_col=0, parse_dates=True)
+        frame.index = pd.DatetimeIndex(frame.index, name="date")
+        return frame.astype(np.float64)
     if name == "forward_returns":
         frame = pd.read_csv(path, index_col=["date_open", "date_close"],
                             parse_dates=["date_open", "date_close", REALISED_ON], dtype={PERIOD: object})
@@ -101,6 +123,8 @@ def _validate_frame(name: str, frame: pd.DataFrame, cfg: dict | None = None) -> 
         validate_labels(frame)
     elif name == "sizing_betas":
         validate_betas(frame)
+    elif name in DAILY_FRAMES:
+        _validate_daily(name, frame, cfg)
     elif name == "forward_returns":
         fwd, realised_on, period = split_forward_returns(frame)
         validate_forward_returns(fwd, realised_on, period)
@@ -111,6 +135,24 @@ def _validate_frame(name: str, frame: pd.DataFrame, cfg: dict | None = None) -> 
                                  f"end {configured_end.date()} (S31-1)")
     else:
         validate_features(frame, columns=list(frame.columns))
+
+
+def _validate_daily(name: str, frame: pd.DataFrame, cfg: dict | None) -> None:
+    """A daily table entering the vault (S33-4): sorted unique DatetimeIndex, float64 values, no ±inf; daily_close holds
+    the 9 sectors and SPY, dgs3mo the yield column metrics.risk_free_series (percent per year)."""
+    cfg = load_config() if cfg is None else cfg
+    index = frame.index
+    if not isinstance(index, pd.DatetimeIndex) or not index.is_monotonic_increasing or not index.is_unique:
+        raise ValueError(f"{name}: the index must be a sorted, unique DatetimeIndex")
+    if name == "daily_close":
+        u = universe(cfg)
+        required = list(u.sectors) + [u.benchmark]
+    else:
+        required = [cfg["metrics"]["risk_free_series"]]
+    if not isinstance(frame, pd.DataFrame) or any(column not in frame.columns for column in required):
+        raise ValueError(f"{name}: columns must include {required}")
+    if np.isinf(frame[required].to_numpy(dtype=np.float64)).any():
+        raise ValueError(f"{name}: ±inf values")
 
 
 def split_forward_returns(table: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
@@ -142,11 +184,12 @@ class Vault:
     def __init__(self, is_end: pd.Timestamp, lock_path: Path = ROOT / "FROZEN.lock",
                  log_path: Path = ROOT / "outputs" / "vault_access_log.jsonl", *,
                  data_dir: Path = ROOT / "data" / "processed", frames: Mapping[str, pd.DataFrame] | None = None,
-                 cfg: dict | None = None) -> None:
+                 cfg: dict | None = None, raw_dir: Path = ROOT / "data" / "raw") -> None:
         self.is_end = pd.Timestamp(is_end)
         self.lock_path = Path(lock_path)
         self.log_path = Path(log_path)
         self.data_dir = Path(data_dir)
+        self.raw_dir = Path(raw_dir)
         self._given = None if frames is None else dict(frames)
         self._cfg = cfg
         self._cache: dict[str, pd.DataFrame] = {}
@@ -191,6 +234,7 @@ class Vault:
             self._log("unlock", "refused")
             raise OOSAccessError(f"Vault.unlock: {self.lock_path} does not exist; the vault stays sealed (§10)")
         self._unlocked = True
+        self._cache.clear()  # tables read while sealed were cut at is_end (S33-11)
         self._log("unlock", "ok")
 
     # -- tables ---------------------------------------------------------------------------------------------------------
@@ -203,15 +247,24 @@ class Vault:
                     raise KeyError(f"Vault: frames has no {name!r} table")
                 frame = self._given[name]
             else:
-                frame = _read_frame(name, self.data_dir / f"{name}.csv")
+                frame = _read_frame(name, self._path(name))
+            if name in DAILY_FRAMES and not self._is_open():  # cut at the In-Sample end right after reading (S33-4)
+                frame = frame.loc[frame.index <= self.is_end]
             _validate_frame(name, frame, self._cfg)
             self._cache[name] = frame
         return self._cache[name]
 
+    def _path(self, name: str) -> Path:
+        """File of a table: data_dir/<name>.csv; dgs3mo is raw_dir/fred/<metrics.risk_free_series>.csv (S33-4)."""
+        if name == "dgs3mo":
+            cfg = load_config() if self._cfg is None else self._cfg
+            return self.raw_dir / "fred" / f"{cfg['metrics']['risk_free_series']}.csv"
+        return self.data_dir / f"{name}.csv"
+
     def _has_frame(self, name: str) -> bool:
         if self._given is not None:
             return name in self._given
-        return (self.data_dir / f"{name}.csv").exists()
+        return self._path(name).exists()
 
     def _rows_until(self, method: str, name: str, as_of) -> pd.DataFrame:
         """Rows of a table with date_close ≤ as_of, after the seal check; logged ok or refused (any failure)."""
@@ -257,6 +310,42 @@ class Vault:
         self._log("forward_returns", "ok", as_of=as_of)
         return result
 
+    def daily_closes(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        """Adjusted daily closes (total-return index, contract 1) of the 9 sectors and SPY on the sessions ≤ as_of: the
+        input of the agent feature DSL (S33-3, S33-4). Cut at the In-Sample end right after reading; sealed and logged.
+        """
+        as_of = pd.Timestamp(as_of)
+        try:
+            self._check_date("daily_closes", as_of)
+            u = universe(load_config() if self._cfg is None else self._cfg)
+            frame = self._frame("daily_close")
+            rows = frame.loc[frame.index <= as_of, list(u.sectors) + [u.benchmark]].copy()
+        except Exception:
+            self._log("daily_closes", "refused", as_of=as_of)
+            raise
+        self._log("daily_closes", "ok", as_of=as_of)
+        return rows
+
+    def tbill_weekly(self, as_of: pd.Timestamp) -> pd.Series:
+        """Weekly T-bill returns (src.metrics.tbill_weekly_returns: DGS3MO lagged one session, rate/100 · 7/365, decimal)
+        on the weeks of the forward returns realised by as_of (S33-4): the rf of the headline Sharpe (Amendment 6 C1).
+        DGS3MO is cut at the In-Sample end right after reading; sealed and logged.
+        """
+        as_of = pd.Timestamp(as_of)
+        try:
+            self._check_date("tbill_weekly", as_of)
+            cfg = load_config() if self._cfg is None else self._cfg
+            rates = self._frame("dgs3mo")[cfg["metrics"]["risk_free_series"]]
+            fwd, realised_on, _ = split_forward_returns(self._frame("forward_returns"))
+            keep = np.asarray(~realised_on.isna() & (realised_on <= as_of))
+            sessions = pd.DatetimeIndex(self._frame("daily_close").index)
+            rf = tbill_weekly_returns(rates.loc[rates.index <= as_of], fwd.index[keep], sessions)
+        except Exception:
+            self._log("tbill_weekly", "refused", as_of=as_of)
+            raise
+        self._log("tbill_weekly", "ok", as_of=as_of)
+        return rf
+
     def labels(self, as_of: pd.Timestamp) -> pd.DataFrame:
         """Labels (contract 6) with label_end ≤ as_of: only returns already realised at as_of."""
         as_of = pd.Timestamp(as_of)
@@ -273,26 +362,34 @@ class Vault:
     # -- walk-forward ---------------------------------------------------------------------------------------------------
 
     def _feature_column(self, feature: str, cfg: dict) -> None:
-        """Raise ValueError unless `feature` is the momentum column of an M0 spec (contract 5): a feature column or a
-        MOM{L}_1 variant (§07 M0*).
+        """Raise ValueError unless `feature` is the momentum column of a pre-registered M0 spec (contract 5, S33-2):
+        models.M0.feature (MOM26_1) or MOM{L}_1 for L in models.M0_star.lookback_weeks (§07 M0*), present in the data.
         """
+        allowed = {str(cfg["models"]["M0"]["feature"])}
+        allowed |= {f"MOM{int(weeks)}_1" for weeks in cfg["models"]["M0_star"]["lookback_weeks"]}
+        if feature not in allowed:
+            raise ValueError(f"run_walkforward: feature {feature!r} is not a pre-registered M0 column {sorted(allowed)} "
+                             "(S33-2)")
         if feature in cfg["features"]["asset"]:
             return
         variants = self._has_frame("momentum_variants") and MOMENTUM_VARIANT.fullmatch(feature)
         if variants and feature in self._frame("momentum_variants").columns:
             return
-        raise ValueError(f"run_walkforward: unknown feature {feature!r} (features.asset or a MOM{{L}}_1 variant)")
+        raise ValueError(f"run_walkforward: feature {feature!r} is in neither the features nor the momentum variants")
 
     def _check_spec(self, spec: Mapping[str, object], cfg: dict) -> str:
         """Unknown keys, then the seal check of the spec's dates, then its rung, kind and ladder keys; returns the rung
         (S22-12, S31-2).
         """
+        for key in SPEC_DATE_KEYS:  # S33-2: the walk-forward never uses a spec date, so a spec may not carry one
+            if key in spec:
+                if spec[key] is not None:
+                    self._check_date("run_walkforward", pd.Timestamp(spec[key]))
+                raise ValueError(f"run_walkforward: a spec may not carry {key!r}; the walk-forward always covers the "
+                                 "In-Sample folds (S33-2)")
         unknown = sorted(set(spec) - set(SPEC_KEYS))
         if unknown:
             raise ValueError(f"run_walkforward: unknown spec keys {unknown}; allowed {list(SPEC_KEYS)}")
-        for key in SPEC_DATE_KEYS:
-            if spec.get(key) is not None:
-                self._check_date("run_walkforward", pd.Timestamp(spec[key]))
         rung = spec.get("rung")
         if rung is None:
             raise ValueError("run_walkforward: the spec must name a rung")
@@ -304,15 +401,35 @@ class Vault:
         _check_ladder_keys(str(rung), spec, cfg)
         return str(rung)
 
-    def _ladder_data(self, cfg: dict, tuned: bool) -> LadderData:
-        """The In-Sample tables of the ladder (rows known by is_end); betas and forward returns only for tuned runs."""
+    def _with_agent_features(self, features: pd.DataFrame, agent_specs, cfg: dict) -> tuple[pd.DataFrame, tuple]:
+        """The features plus one column AG<k> per agent spec (the DSL asset part on the In-Sample closes, Amendment 7 C2)
+        and the (column, states) pairs of the model design (S33-4)."""
+        closes = self._frame("daily_close")
+        closes = closes.loc[closes.index <= self.is_end]
+        features = features.copy()
+        pairs = []
+        for k, spec in enumerate(agent_specs, start=1):
+            column = f"{AGENT_PREFIX}{k}"
+            values = evaluate_feature(spec, closes, cfg)
+            features[column] = values.reindex(features.index).to_numpy(dtype=np.float64)
+            pairs.append((column, tuple(parse_feature(spec).states)))
+        return features, tuple(pairs)
+
+    def _ladder_data(self, cfg: dict, tuned: bool, agent_specs=None) -> LadderData:
+        """The In-Sample tables of the ladder (rows known by is_end); betas and forward returns only for tuned runs;
+        the agent feature columns when the spec has agent_features (S33-4)."""
         is_end = self.is_end
         features = self._frame("features")
         labels = self._frame("labels")
         states = self._frame("market_states")
         momentum = self._frame("momentum_variants") if self._has_frame("momentum_variants") else None
+        features = features.loc[np.asarray(_closes(features) <= is_end)]
+        agent_columns: tuple = ()
+        if agent_specs:
+            features, agent_columns = self._with_agent_features(features, agent_specs, cfg)
         data = {
-            "features": features.loc[np.asarray(_closes(features) <= is_end)],
+            "features": features,
+            "agent_columns": agent_columns,
             "states": states.loc[np.asarray(_closes(states) <= is_end)],
             "labels": labels.loc[np.asarray(pd.DatetimeIndex(labels["label_end"]) <= is_end)],
             "momentum": None if momentum is None else momentum.loc[np.asarray(_closes(momentum) <= is_end)],
@@ -330,7 +447,7 @@ class Vault:
         """Scores of the test weeks of every In-Sample fold (contract 13) on the weekly index (contract 8), and the
         selection table of a tuned rung (S31-10). Every fit asserts the purge (src.models.walkforward_rung).
         """
-        data = self._ladder_data(cfg, tuned="tuning" in spec)
+        data = self._ladder_data(cfg, tuned="tuning" in spec, agent_specs=spec.get("agent_features"))
         folds = walk_forward_folds(data.states.index, label_end_by_week(data.labels, data.states.index), cfg)
         if rung == "M0":
             feature = str(spec.get("feature") or cfg["models"]["M0"]["feature"])
@@ -352,12 +469,14 @@ class Vault:
         spec (S31-2): "rung" M0, M1, M2, M3, M0_star or ENS; M0 takes "feature" (default models.M0.feature, MOM26_1, or a
         MOM{L}_1 variant); M1/M2/M3 take exactly one of "params" ({"alpha": λ} or {"max_depth": d}, a value of the
         config grid) and "tuning" (= src.models.tuning_spec(cfg): the Amendment 5 C1 choice); M0_star takes "tuning";
-        ENS takes "members" (M1, M2, M3) and "tuning". Optional "author", "kind" ("human"/"agent"), "notes", "as_of",
-        "end"; any other key is refused (ValueError), and a spec "as_of" or "end" after is_end is refused
-        (OOSAccessError); every failure is logged as refused (S22-12). Only labels and returns realised by is_end are
+        ENS takes "members" (M1, M2, M3) and "tuning". Optional "author", "kind" ("human"/"agent"), "notes"; any other
+        key is refused (ValueError); a spec carrying "as_of" or "end" is refused, with OOSAccessError when the date is
+        after is_end and ValueError otherwise (S33-2); every failure is logged as refused (S22-12). Only labels and returns realised by is_end are
         used; every fit is purged (assert_purged). Score of week t is known after Friday close t. A tuned rung leaves
         its selection table in `last_selection`. evaluate(scores) -> (In-Sample net Sharpe, max drawdown) fills
-        is_sharpe and is_mdd (S22-8).
+        is_sharpe and is_mdd (S22-8); an optional third value replaces the spec's notes in the trial row (S33-4).
+        "agent_features" (M1, M2, M3 only): a list of DSL specs (src.agents.dsl) added to the design as AG1, AG2, ...
+        with their in-fold state products (Amendment 7 C2, S33-4).
         """
         params_json = _spec_json(spec)
         cfg = load_config() if self._cfg is None else self._cfg
@@ -367,7 +486,11 @@ class Vault:
             rung = self._check_spec(spec, cfg)
             scores, selection = self._walkforward_scores(spec, rung, cfg)
             validate_scores(scores)
-            sharpe, mdd = evaluate(scores) if evaluate is not None else ("", "")
+            evaluated = evaluate(scores) if evaluate is not None else ("", "")
+            if len(evaluated) not in (2, 3):
+                raise ValueError("run_walkforward: evaluate must return (sharpe, mdd) or (sharpe, mdd, notes) (S33-4)")
+            sharpe, mdd = evaluated[0], evaluated[1]
+            notes = evaluated[2] if len(evaluated) > 2 else spec.get("notes", "")
         except Exception:
             self._log("run_walkforward", "refused", spec_hash=digest)
             raise
@@ -375,7 +498,7 @@ class Vault:
         if digest not in logged_spec_hashes(trial_path):
             append_trial({"author": spec.get("author", ""), "kind": spec.get("kind", ""), "rung": rung,
                           "spec_hash": digest, "params_json": params_json, "is_sharpe": sharpe, "is_mdd": mdd,
-                          "notes": spec.get("notes", "")}, path=trial_path)
+                          "notes": notes}, path=trial_path)
         self._log("run_walkforward", "ok", spec_hash=digest)
         return scores
 
@@ -383,6 +506,17 @@ class Vault:
 def _check_ladder_keys(rung: str, spec: Mapping[str, object], cfg: dict) -> None:
     """Raise ValueError unless the spec's feature, params, tuning and members fit its rung (S31-2)."""
     params, tuning, members = spec.get("params"), spec.get("tuning"), spec.get("members")
+    agent = spec.get("agent_features")
+    if agent is not None:
+        if rung not in AGENT_RUNGS:
+            raise ValueError(f"run_walkforward: 'agent_features' belongs to a spec of {list(AGENT_RUNGS)}, not {rung}")
+        if not isinstance(agent, list | tuple) or not agent:
+            raise ValueError("run_walkforward: 'agent_features' must be a non-empty list of DSL specs (S33-4)")
+        if not all(isinstance(feature, Mapping) for feature in agent):
+            raise ValueError("run_walkforward: each agent feature must be a JSON object {name, expr} (S33-11)")
+        forms = [_canonical(canonical_feature(feature)) for feature in agent]  # DSLError (a ValueError) if invalid
+        if len(set(forms)) != len(forms):
+            raise ValueError("run_walkforward: the same agent feature appears twice (S33-11)")
     if spec.get("feature") is not None and rung != "M0":
         raise ValueError(f"run_walkforward: 'feature' belongs to an M0 spec, not {rung}")
     if members is not None and rung != "ENS":
