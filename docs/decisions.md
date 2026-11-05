@@ -1494,6 +1494,21 @@ S33-10 is reserved for the base rung (S33-5), recorded once the In-Sample backte
 | Files affected | `04_agent_lab.py`, `src/agents/prompts.py`, `agent_lab/run/` |
 | Amendment | No |
 
+### S33-18 · Results of the In-Sample agent run and the recognition probe
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What did the real In-Sample lab run and the recognition probe give? |
+| Options considered | Report as computed (chosen); change anything because of them (excluded: manual §3.4, §3.8) |
+| Decision | **Run** (`04_agent_lab.py --insample`, code `13aa688`, base rung M2 at −0.986488, S33-10): one invocation, no failed call, no resumption. 40 proposals, every one a `docs/trial_log.csv` row of kind "agent" (16 rows before, 56 after). 24 invalid specs: 13 `mul_state` below the root (Amendment 7 C2), 4 Coder answers whose JSON braces do not balance (the largest answer used 932 of the 1,500 output tokens, so none was cut off), 2 unknown operation `abs`, 2 `cs_z` with an extra key, 1 unknown operation `close`, 1 `ratio` without `a`, 1 `lag` with n 0. 4 stopped at redundancy (3 with REV1, \|corr\| 0.961 to 1.000; 1 with MOM26_1, 0.977). 12 reached the walk-forward and all failed the §07 gate against M2: the largest uplift was +0.146 with P(uplift > 0) 0.755 (candidate 4, `rel_mom_26_4_credit`), the largest P 0.857 (candidate 22, uplift +0.126; candidate 33, uplift +0.133), and the other uplifts ran from −0.176 to +0.090. No candidate reached the Skeptic or Risk; validated 0, vetoed 0, surviving 0, so `agent_lab/run/review.md` lists no feature for approval. Spend: 80 live calls (40 Hypothesis, 40 Coder), USD 0.127144. A replay into a folder outside `agent_lab/` made 0 live calls, left `docs/trial_log.csv` unchanged, and reproduced `candidates.jsonl` byte for byte and `summary.json` field for field. The first replay differed only in the summary's spend and call count, because these summed every cache file, including `probe.jsonl` written after the run; they now count the run's own cache file, and the live values (USD 0.127144, 80 calls) are unchanged. `review.md` prints uplift and P with 3 decimals, so candidate 4's +0.146 does not read as the 0.15 threshold. **Probe** (S33-17): 9 live calls, USD 0.002564; 3 hits of 9 (hit rate 0.33 against 0.11 by chance): A5 named XLK, A6 XLU and A7 XLE, all correct. The model answered XLE five times, XLU three times and XLK once, so the hits are the three codes with the most distinctive profiles (strong momentum and high beta; the lowest beta and volatility; deep negative momentum with high volatility). This is the measured residual of the anonymisation; every Hypothesis prompt holds all nine codes' summaries, so it applies to the run. It changes nothing in the run. The probe prompt dates the summary to the end of December 2019 (the In-Sample end), which may have helped recognition. `probe.json` keeps each answer and hit as S33-17 asks, so the three hits show their tickers; the true ticker of a miss is not written. **Lab total** (planted runs, In-Sample run, probe): 127 live calls, USD 0.162325, under the USD 5 stop. **Open for Eliya and Mattia:** Amendment 7 C3 defines M5 as the base rung plus the human-approved agent features; with no survivor there is no feature to approve, so whether M5 is built (and what it would be) needs their decision. Nothing about M5 was started |
+| Rationale | The record states the outcome, including the failures and the probe residual, so the deflated Sharpe's trial count (56 rows) and the Gate 3 scorecard rest on the logged run |
+| Evidence | `agent_lab/run/summary.json`, `candidates.jsonl`, `review.md`, `probe.json`, `run_log.jsonl` (one live invocation), `cache/insample.jsonl` (80 entries, cost sum USD 0.127144), `cache/probe.jsonl` (9 entries, USD 0.002564), `agent_lab/cache/` (38 entries, USD 0.032617); `docs/trial_log.csv` (rows 17 to 56); Eliya's spend approval (5 Nov 2026) |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam; Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md`; `04_agent_lab.py` (summary spend and call fields; `review.md` prints uplift and P with 3 decimals) |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
