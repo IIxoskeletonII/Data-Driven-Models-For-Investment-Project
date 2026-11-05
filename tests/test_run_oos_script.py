@@ -444,3 +444,199 @@ def test_run_refuses_a_lock_that_is_not_json(script, project, tmp_path):
     with pytest.raises(SystemExit, match="not valid JSON"):
         script.run_oos(root)
     assert nothing_accessed(root)
+
+
+# ---------------------------------------------------------------- the rerun of Amendment 8 C1 (decision S36-1)
+
+
+def rerun_decision(decision_id: str, fix: str, files, bug: str = "a synthetic bug found after the run of record") -> str:
+    """A rerun decision entry of docs/decisions.md with the fields of S36-1."""
+    named = ", ".join(f"`{path}`" for path in files)
+    return (f"\n### {decision_id} · Rerun after a synthetic fix\n\n| Field | Content |\n| --- | --- |\n"
+            f"| Date | 2026-11-08 |\n| Bug | {bug} |\n| Fix commit | `{fix}` |\n| Fix files | {named} |\n"
+            "| Approved by | Test |\n")
+
+
+def record_decision(root: Path, text: str) -> None:
+    with open(root / "docs" / "decisions.md", "a", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    commit(root, "docs: record a rerun decision")
+
+
+def make_fix(root: Path, files: dict | None = None) -> str:
+    """Commit a synthetic fix and return its full hash."""
+    for name, content in (files or {"fix.py": "x = 2\n"}).items():
+        (root / name).write_text(content, encoding="utf-8", newline="\n")
+    commit(root, "fix: a synthetic bug")
+    return git(root, "rev-parse", "HEAD").strip()
+
+
+def commit_log(root: Path) -> None:
+    """Commit the access log as S34-4 prescribes after the run (outputs/ is git-ignored)."""
+    git(root, "add", "-f", "outputs/oos_access_log.json")
+    commit(root, "data: the Out-of-Sample access log")
+
+
+def ran_copy(ran: dict, tmp_path: Path) -> Path:
+    target = tmp_path / "project"
+    shutil.copytree(ran["root"], target)
+    return target
+
+
+def log_entries(root: Path) -> list[dict]:
+    return json.loads((root / "outputs" / "oos_access_log.json").read_text(encoding="utf-8"))
+
+
+def nothing_rerun(root: Path, entries: int = 1) -> bool:
+    return len(log_entries(root)) == entries and not (root / "outputs" / "oos_reruns").exists() \
+        and not (root / "data" / "processed" / "oos_reruns").exists()
+
+
+def tree_hashes(folder: Path, script) -> dict:
+    return {p.relative_to(folder).as_posix(): script.file_sha256(p) for p in sorted(folder.rglob("*")) if p.is_file()}
+
+
+def test_parse_rerun_decision_reads_the_three_fields(script):
+    text = "# Decision log\n" + rerun_decision("S99-1", "ABCDEF1", ["b.py", "a.py", "b.py"], bug="x \\| y")
+    tables = script.decision_tables(text)
+    decision = script.parse_rerun_decision("S99-1", tables["S99-1"])
+    assert decision == script.RerunDecision("S99-1", "x \\| y", "abcdef1", ("a.py", "b.py"))
+    assert script.rerun_decisions(text) == {"S99-1": decision}
+    with pytest.raises(ValueError, match="not found"):
+        script.parse_rerun_decision("S99-2", tables.get("S99-2", []))
+    with pytest.raises(ValueError, match="exactly one commit hash"):
+        script.parse_rerun_decision("S99-1", [{**tables["S99-1"][0], "Fix commit": "`abcdef1` then `abcdef2`"}])
+    with pytest.raises(ValueError, match="heads 2 entries"):
+        script.parse_rerun_decision("S99-1", script.decision_tables(text + text)["S99-1"])
+
+
+def test_no_decision_up_to_s36_1_reads_as_a_rerun_decision(script):
+    text = (ROOT / "docs" / "decisions.md").read_text(encoding="utf-8")
+    ids = list(script.decision_tables(text))  # in the order of the file
+    up_to_s36_1 = ids[: ids.index("S36-1") + 1]
+    assert len(up_to_s36_1) > 90 and not set(up_to_s36_1) & set(script.rerun_decisions(text))
+
+
+def test_a_second_plain_run_points_to_rerun(script, ran):
+    with pytest.raises(SystemExit, match="--rerun DECISION_ID"):
+        script.run_oos(ran["root"])
+
+
+@pytest.mark.parametrize("case", ["missing", "no_fields", "bad_id"])
+def test_a_rerun_naming_no_valid_decision_is_refused(script, ran, tmp_path, case):
+    root = ran_copy(ran, tmp_path)
+    fix = make_fix(root)
+    if case == "no_fields":  # an ordinary decision: no Bug, Fix commit or Fix files
+        record_decision(root, "\n### S99-1 · An ordinary decision\n\n| Field | Content |\n| --- | --- |\n"
+                              f"| Decision | fixed in `{fix[:10]}` |\n| Files affected | `fix.py` |\n")
+    expected = {"missing": "decision S99-1 not found", "no_fields": "is not a rerun decision",
+                "bad_id": "is not a decision ID"}[case]
+    with pytest.raises(SystemExit, match=expected):
+        script.run_oos(root, rerun="S99 1" if case == "bad_id" else "S99-1")
+    assert nothing_rerun(root)
+
+
+def test_a_rerun_needs_the_run_of_record(script, project, tmp_path):
+    root = frozen_copy(script, project, tmp_path)
+    fix = make_fix(root)
+    record_decision(root, rerun_decision("S99-1", fix, ["fix.py"]))
+    with pytest.raises(SystemExit, match="no run of record"):
+        script.run_oos(root, rerun="S99-1")
+    assert nothing_accessed(root)
+
+
+def test_a_rerun_refuses_fix_files_that_differ_from_the_fix_commit(script, ran, tmp_path):
+    root = ran_copy(ran, tmp_path)
+    fix = make_fix(root)
+    record_decision(root, rerun_decision("S99-1", fix[:10], ["fix.py", "other.py"]))
+    with pytest.raises(SystemExit, match=r"changes \['fix.py'\], but 'Fix files' names"):
+        script.run_oos(root, rerun="S99-1")
+    assert nothing_rerun(root)
+
+
+def test_a_rerun_refuses_files_changed_since_the_freeze_that_the_decision_does_not_name(script, ran, tmp_path):
+    root = ran_copy(ran, tmp_path)
+    fix = make_fix(root)
+    record_decision(root, rerun_decision("S99-1", fix, ["fix.py"]))
+    (root / "extra.py").write_text("y = 1\n", encoding="utf-8")
+    commit(root, "feat: an unrecorded change")
+    with pytest.raises(SystemExit, match=r"files changed since the freeze: \['extra.py'\]"):
+        script.run_oos(root, rerun="S99-1")
+    assert nothing_rerun(root)
+
+
+def test_a_rerun_refuses_a_fix_of_a_setting_or_a_fix_before_the_freeze(script, ran, tmp_path):
+    root = ran_copy(ran, tmp_path)
+    fix = make_fix(root)
+    record_decision(root, rerun_decision("S99-1", fix, ["config.yaml"]))
+    with pytest.raises(SystemExit, match="changes no setting"):
+        script.run_oos(root, rerun="S99-1")
+    record_decision(root, rerun_decision("S99-2", ran["lock"]["code_commit"], ["fix.py"]))
+    with pytest.raises(SystemExit, match="does not come after the frozen commit"):
+        script.run_oos(root, rerun="S99-2")
+    record_decision(root, rerun_decision("S99-3", "0" * 40, ["fix.py"]))
+    with pytest.raises(SystemExit, match="not a commit of this repository"):
+        script.run_oos(root, rerun="S99-3")
+    assert nothing_rerun(root)
+
+
+_RERAN: dict = {}
+
+
+@pytest.fixture
+def reran(script, ran, tmp_path_factory) -> dict:
+    """A copy of the run project with the log committed (S34-4), a fix, its rerun decision S99-1 and one rerun (read-only,
+    built once)."""
+    if not _RERAN:
+        root = tmp_path_factory.mktemp("oos_reran") / "project"
+        shutil.copytree(ran["root"], root)
+        before = tree_hashes(root / "outputs" / "oos", script)
+        commit_log(root)
+        fix = make_fix(root)
+        record_decision(root, rerun_decision("S99-1", fix[:10], ["fix.py"]))
+        report = script.run_oos(root, rerun="S99-1")
+        _RERAN.update(root=root, fix=fix, report=report, before=before)
+    return _RERAN
+
+
+def test_a_rerun_appends_one_entry_naming_its_decision(script, ran, reran):
+    root = reran["root"]
+    entries = log_entries(root)
+    assert len(entries) == 2 and entries[0] == log_entries(ran["root"])[0]
+    assert entries[1]["rerun_decision"] == "S99-1" and entries[1]["fix_commit"] == reran["fix"]
+    assert entries[1]["lock_sha256"] == entries[0]["lock_sha256"]
+    decisions = (root / "docs" / "decisions.md").read_text(encoding="utf-8")
+    text = (root / "outputs" / "oos_access_log.json").read_text(encoding="utf-8")
+    assert script.check_oos_log_text(text, decisions_text=decisions) == 2
+    before = (ran["root"] / "docs" / "decisions.md").read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="2 entries"):  # against the decisions before S99-1 was recorded
+        script.check_oos_log_text(text, decisions_text=before)
+
+
+def test_a_rerun_writes_its_own_folders_and_leaves_the_run_of_record_untouched(script, ran, reran):
+    root = reran["root"]
+    assert tree_hashes(root / "outputs" / "oos", script) == reran["before"]
+    for path, digest in ran["lock"]["artefacts"].items():
+        assert script.file_sha256(root / path) == digest
+    report = json.loads((root / "outputs" / "oos_reruns" / "S99-1" / "run.json").read_text(encoding="utf-8"))
+    assert report["rerun"] == {"decision": "S99-1", "bug": "a synthetic bug found after the run of record",
+                               "fix_commit": reran["fix"], "fix_files": ["fix.py"]}
+    assert json.loads((root / "outputs" / "oos" / "run.json").read_text(encoding="utf-8"))["rerun"] is None
+    assert (root / "data" / "processed" / "oos_reruns" / "S99-1" / "forward_returns.csv").exists()
+    for name in ran["lock"]["models"]:  # the synthetic fix touches no code the run uses: the same books
+        first = read_weekly(root / "outputs" / "oos" / name / "weekly.csv")
+        second = read_weekly(root / "outputs" / "oos_reruns" / "S99-1" / name / "weekly.csv")
+        assert first.index.equals(second.index) and np.allclose(first["net"], second["net"], atol=1e-12, rtol=0)
+
+
+def test_a_decision_allows_one_rerun_and_a_later_rerun_may_follow_an_earlier_fix(script, reran, tmp_path):
+    root = tmp_path / "project"
+    shutil.copytree(reran["root"], root)
+    commit_log(root)
+    with pytest.raises(SystemExit, match="already holds the rerun of decision S99-1"):
+        script.run_oos(root, rerun="S99-1")
+    fix = make_fix(root, {"fix2.py": "z = 3\n"})
+    record_decision(root, rerun_decision("S99-2", fix, ["fix2.py"]))
+    _, _, decision = script.verify_lock(root, "S99-2")  # fix.py of S99-1 also changed since the freeze: recorded
+    assert decision.files == ("fix2.py",) and decision.fix_commit == fix
+    assert len(log_entries(root)) == 2  # the checks write nothing
