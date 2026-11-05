@@ -1621,6 +1621,73 @@ lists the approvals given so far; Eliya approves through the review of the 3.4 p
 | Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
 | Amendment | No |
 
+## 2026-11-05 · Session 3.5: submission packaging
+
+"Instruction" quotes the session 3.5 prompt (5 Nov 2026); "Answer" quotes Mattia's answers of the same day to the two
+questions the session asked before any code was written. "Course instructions" quotes `Mid-Term Project
+Instructions.pdf` (DDMI 2026-27, the reference folder outside the repository), pages 3, 4 and 6. "Approved by" lists the
+approvals given so far; Eliya approves through the review of the 3.5 pull request.
+
+### S35-1 · What the course requires of the zip; the session prompt's refusal of raw data was wrong
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | The session 3.5 prompt asked `make_submission.py` to refuse "raw vendor data (data/raw/)", "any full price or return series" and "outputs that are not committed". S2-3 and `docs/licensing.md` ship `data/raw/**`, `data/processed/**` and `outputs/**` in the zip. Which governs? |
+| Options considered | (a) the course instructions and S2-3: the zip ships the raw data, the processed data and the outputs (chosen); (b) the prompt literally: no raw data, no price series, no uncommitted output; (c) wait for a joint decision |
+| Decision | (a). The course instructions rank above the session prompt (operating manual §2), and they require the raw data, the processed data and the results in `project/`, with results reproducible without downloading. The prompt's refusal of `data/raw/` and of full price or return series was wrong for the zip: it applies to the git repository only, where the pre-commit hook and `tests/test_hooks_policy.py` already enforce it (operating manual §3.6). "Outputs that are not committed" is replaced by S35-3: every output ships, synthetic wiring outputs are left out, and a stale output stops the build. The conflict was reported before any code was written |
+| Rationale | A zip without data could not reproduce a single result, which the course instructions require and grade ("Code & Presentation Quality … reproducibility") |
+| Evidence | Course instructions, Deliverables (p. 3): "You will submit a single file group_<group-number>.zip (e.g., group_4.zip) containing: project/: The code repository of your project; presentation.pdf (or .pptx): The slides used to present your project". Project code (p. 4): "the repository includes the data and the outputs of every step (e.g., in data/): raw data (including data from licensed sources such as Bloomberg), processed data, and final results. The results must be reproducible without downloading any data;"; "random seeds are fixed for all stochastic components, paths are relative to the repository root, and no API keys or credentials are included in the code;"; "it includes a way to recreate the environment (e.g., requirements.txt or pyproject.toml with a lock file such as uv.lock, or environment.yml) and specifies the Python version;"; "it includes a README.md with all the information needed to set up the environment, and the commands required to run the code (scripts or notebooks), in order."; "All results must be reproducible starting from the contents of the code repository. All steps will be reproduced by running the code, except for costly or non-deterministic steps (e.g., LLM or paid API calls): their saved outputs will be used as the starting point." Submission Method (p. 6): "A dedicated submission section will be created on the my.luiss platform where you will upload your single .zip file." S2-3: "the files of `project/` in `group_7.zip` are exactly `git ls-files` + `data/raw/**` + `data/processed/**` + `outputs/**`"; `docs/licensing.md`: "It stays local in `data/raw/` (git-ignored) and ships only in the LUISS submission zip, as the instructions require."; Answer 1: "ship the data, as the course PDF requires; S2-3. Note in S35 that the 3.5 prompt's refusal of data/raw/ and of price series was wrong for the zip; it applies to the git repository only, which CI already enforces." |
+| Proposed by | Mattia Cervelli (Answer 1) |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `tests/test_make_submission.py` |
+| Amendment | No: packaging, not specification |
+
+### S35-2 · Contents of `group_7.zip` and what the build refuses
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | Which files enter the zip, which are left out, and when does the build stop? |
+| Options considered | Assistant and tool files: (a) left out of the list, as S2-3 does, and reported (chosen); (b) stop the build. Secrets: (c) stop the build (chosen); (d) leave the file out |
+| Decision | `project/` holds `submission_files()` of S2-3, unchanged in rule (`git ls-files` + `data/raw/**` + `data/processed/**` + `outputs/**`, never a walk of the folder), minus: assistant and tool settings files at any depth (the local settings folder and instruction files of operating manual §3.2, matched by `make_submission.py: FORBIDDEN`; S2-3 covered four of them, this session adds `AGENTS.md` and `.codex/`), which are left out and listed in the output; and synthetic outputs, any path under `outputs/` with a folder named `synthetic` (S35-3). The build stops, writing nothing, when: (1) a file in the list is a `.env` file (`.env`, `.env.*`) at any depth; (2) any file in the list contains a key-like string: `sk-` followed by 20 or more key characters (DeepSeek and similar keys), an AWS access key id, a GitHub token, a Slack token, a Google API key, a PEM private-key header, an assignment of a name ending in `API_KEY`, `SECRET`, `TOKEN` or `PASSWORD` to a 16-character value holding a digit, or the value of the environment variable `DEEPSEEK_API_KEY` of the lab (S33-1) when it is set; the only exception is an exact match of `ALLOWED_FAKE_KEYS`, which holds one string, the fake sentinel key of `tests/test_agents_llm.py` (`sk-test-SENTINEL-…`, used to test that the lab never logs its key), found by the first dry run on the repository; (3) a tracked file has uncommitted changes (`git status --porcelain --untracked-files=no`), so `project/` is a committed state; (4) `README.md`, `pyproject.toml`, `uv.lock` or `config.yaml` is missing; (5) the presentation file is missing or is neither `.pdf` nor `.pptx`; (6) an output is stale (S35-3). The scan reads every file as bytes, data files included |
+| Rationale | Tool files are local and harmless to omit, as S2-3 already does; a secret in any file means a leak that a human must fix, so the build cannot pass over it |
+| Evidence | Instruction §2: "It refuses: … .env files, the API key or any key-like string; assistant or tool settings files (… AGENTS.md, .codex/, .mcp.json)" (the first two names omitted here, as in every committed file); course instructions (p. 4): "no API keys or credentials are included in the code", "it includes a way to recreate the environment … and specifies the Python version", "it includes a README.md"; operating manual §3.2; S2-3; S33-1 and `src/agents/llm.py` (`API_KEY_ENV = "DEEPSEEK_API_KEY"`) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `tests/test_make_submission.py` |
+| Amendment | No |
+
+### S35-3 · Every output ships; synthetic outputs are left out; a stale output stops the build
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | Which of `outputs/` ships (it is git-ignored, so almost nothing in it is committed), and how is a stale result kept out? |
+| Options considered | (a) all of `outputs/`, minus synthetic wiring outputs, and a `check_used` of every settings file against the current `config.yaml` (chosen); (b) a fixed allow-list of folders; (c) only tracked files |
+| Decision | (a). Every `used.yaml` (and `oos_used.yaml`) under `outputs/`, and `data/processed/config.yaml` and `features_config.yaml`, is checked with `src.config.check_used` against the settings its writer saves, taken from the writer's own function: `data/processed/config.yaml` `data_settings`; `features_config.yaml` `features_settings`; `outputs/walkforward/<name>/` `walkforward_settings`; `outputs/backtests/<name>/` and `outputs/diagnostics/shift/<name>/` `06_backtest.py: backtest_used(cfg, name)`; `outputs/diagnostics/placebo/` `placebo_used(cfg, reference)` with the reference of its `summary.json`; `outputs/ledger/` `ledger_used`; `outputs/metrics/used.yaml` `07_evaluate.py: metrics_used`; `outputs/metrics/oos_used.yaml` `oos_metrics_used`; `outputs/oos/<name>/` `08_run_oos.py: oos_used(cfg, name)`. A settings file in any other place stops the build, since it cannot be checked. Every failure is listed and nothing is written. `06_backtest.py: ledger_used` and `07_evaluate.py: metrics_used`, `oos_metrics_used` are the expressions those scripts already saved, moved into functions (no change in content) |
+| Rationale | The zip must hold results of the submitted code and config; one writer function per settings file means the check cannot drift from what the scripts save |
+| Evidence | Answer 2: "all of outputs/, with two safeguards: (a) exclude synthetic wiring outputs (outputs/backtests/synthetic/ and any other synthetic-only folder); (b) refuse to build if any output folder with a used.yaml fails check_used against the current config.yaml, so no stale result can enter the zip. The manifest lists every file with its SHA-256 and size, and the zip's total size."; operating manual §6 ("Scripts use the skeleton's `check_used` pattern to refuse outputs built with a different config"); S23-10, S32-4, S32-7, S34-7, S34-8 (the settings each writer saves) |
+| Proposed by | Mattia Cervelli (Answer 2) |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `06_backtest.py`, `07_evaluate.py`, `tests/test_make_submission.py` |
+| Amendment | No |
+
+### S35-4 · Zip layout, determinism and the manifest
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How is the zip laid out and described? |
+| Options considered | As below (chosen) |
+| Decision | `group_7.zip` holds `project/<path>` for every file of S35-2 and the presentation at the root as `presentation.pdf` (or `presentation.pptx`), nothing else. Entries are sorted, deflated, with a fixed timestamp (1980-01-01) and mode 0644, so the same files give the same zip bytes. Defaults: output `group_7.zip` in the project folder (git-ignored by `*.zip`), presentation `presentation.pdf` in the project folder; both can be given on the command line (`--out`, `--presentation`). The manifest, printed and optionally written with `--manifest PATH`, lists every entry with its SHA-256 and size in bytes, then the number of files, the total uncompressed size, the zip's size and the zip's SHA-256 |
+| Rationale | A reproducible archive and a manifest let the reviewer and the teaching team check what was submitted |
+| Evidence | Course instructions (p. 3), quoted in S35-1; Instruction §2: "It prints a manifest with SHA-256s."; Answer 2 (manifest with SHA-256, size and the zip's total size); decision sheet item 19: "Submission named `group_7.zip`" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `tests/test_make_submission.py` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
