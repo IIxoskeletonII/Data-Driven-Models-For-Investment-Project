@@ -15,7 +15,7 @@ from src.config import ROOT, load_config, save_used
 from src.data import write_csv
 from src.features import features_settings
 from src.models import walkforward_settings
-from src.vault import OOSAccessError
+from src.vault import OOSAccessError, logged_spec_hashes, spec_hash
 
 
 @pytest.fixture(scope="module")
@@ -24,6 +24,27 @@ def script():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_walkforward_script(name: str):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "05_train_walkforward.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def walkforward():
+    """05_train_walkforward.py, loaded independently of 06 (its spec_for gives the spec of every name)."""
+    return _load_walkforward_script("walkforward_for_tests")
+
+
+def save_walkforward_summary(folder, name: str, cfg: dict, digest: str | None = None) -> None:
+    """The summary.json 05 writes next to scores.csv, reduced to the fields 06 reads: name and spec_hash (S32-10)."""
+    if digest is None:
+        digest = spec_hash(_load_walkforward_script("walkforward_for_summary").spec_for(name, cfg), cfg)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "summary.json").write_text(json.dumps({"name": name, "spec_hash": digest}), encoding="utf-8")
 
 
 def test_refuses_to_run_without_a_flag(script):
@@ -169,6 +190,7 @@ def model_inputs(script, synthetic_market, tmp_path, monkeypatch):
     folder = tmp_path / "outputs" / "walkforward" / "M0"
     write_csv(scores, folder / "scores.csv")
     save_used(walkforward_settings(cfg), folder / "used.yaml")
+    save_walkforward_summary(folder, "M0", cfg)
     processed = tmp_path / cfg["data"]["data_dir"] / "processed"
     save_used(features_settings(cfg), processed / "features_config.yaml")
 
@@ -334,6 +356,7 @@ def _copy_walkforward(model_inputs, name: str, scores: pd.DataFrame | None = Non
     folder = model_inputs["out"].parents[1] / "walkforward" / name
     write_csv(model_inputs["scores"] if scores is None else scores, folder / "scores.csv")
     save_used(walkforward_settings(model_inputs["cfg"]), folder / "used.yaml")
+    save_walkforward_summary(folder, name, model_inputs["cfg"])
 
 
 def test_walkforward_models_lists_folders_with_scores(script, model_inputs):
@@ -528,3 +551,95 @@ def test_diagnostics_stop_before_any_oos_return(script, model_inputs, synthetic_
         script.main(argv)
     outputs = model_inputs["out"].parents[1]
     assert not (outputs / "diagnostics").exists() and not (outputs / "backtests").exists()
+
+
+# -- session 3.2b: stale walk-forward scores (spec_hash, decision S32-10) ------------------------------------------------
+
+def test_expected_spec_hash_is_the_trial_log_hash_of_05s_spec(script, walkforward):
+    cfg = load_config()
+    names = list(walkforward.RUNGS) + walkforward.fixed_names(cfg)
+    assert len(names) == 17
+    hashes = {name: script.expected_spec_hash(name, cfg) for name in names}
+    for name in names:
+        assert hashes[name] == spec_hash(walkforward.spec_for(name, cfg), cfg)
+    # every rung and fixed grid value of the current config.yaml is a row of the committed trial log (S31-7: 16 rows;
+    # M0_L26 is M0's row, S31-6)
+    assert hashes["M0_L26"] == hashes["M0"]
+    assert len(set(hashes.values())) == 16
+    assert set(hashes.values()) <= logged_spec_hashes(ROOT / "docs" / "trial_log.csv")
+
+
+def test_model_backtest_refuses_stale_scores(script, model_inputs):
+    folder = model_inputs["out"].parents[1] / "walkforward" / "M0"
+    save_walkforward_summary(folder, "M0", model_inputs["cfg"], digest="0" * 64)
+    with pytest.raises(SystemExit, match="stale scores"):
+        script.main(["--model", "M0"])
+    assert not model_inputs["out"].exists()
+    assert not model_inputs["log"].exists()  # stopped before the vault was opened
+
+
+def test_a_tuning_change_makes_the_scores_stale_although_used_yaml_still_matches(script, model_inputs):
+    # the Amendment 5 C1 tuning entry is part of the spec (S31-2), not of walkforward_settings: used.yaml cannot see it
+    _copy_walkforward(model_inputs, "M1")
+    other = copy.deepcopy(model_inputs["cfg"])
+    other["tuning"]["inner_validation_weeks"] = 52
+    assert walkforward_settings(other) == walkforward_settings(model_inputs["cfg"])
+    with pytest.raises(SystemExit, match="stale scores"):
+        script.backtest_model(other, "M1")
+    script.check_spec_hash("M0", other)  # M0's spec has no tuning entry: still current
+    with pytest.raises(SystemExit, match="stale scores"):
+        script.run_all(other)  # --all checks every folder before any input is read
+    assert not model_inputs["out"].parent.exists()
+    assert not model_inputs["log"].exists()
+
+
+def test_a_fixed_value_folder_holding_another_names_scores_is_refused(script, model_inputs):
+    # the folder name, not summary.json, says which spec the scores must have: M1_a1's summary copied into M1_a10
+    _copy_walkforward(model_inputs, "M1_a1")
+    _copy_walkforward(model_inputs, "M1_a10")
+    folder = model_inputs["out"].parents[1] / "walkforward"
+    (folder / "M1_a10" / "summary.json").write_bytes((folder / "M1_a1" / "summary.json").read_bytes())
+    with pytest.raises(SystemExit, match="stale scores"):
+        script.main(["--model", "M1_a10"])
+    assert script.check_spec_hash("M1_a1", model_inputs["cfg"]) == script.expected_spec_hash("M1_a1", model_inputs["cfg"])
+
+
+@pytest.mark.parametrize("content, message", [(None, "summary.json not found"), ({"name": "M0"}, "has no spec_hash"),
+                                              ({"spec_hash": ""}, "has no spec_hash")])
+def test_model_backtest_needs_the_spec_hash_of_05(script, model_inputs, content, message):
+    path = model_inputs["out"].parents[1] / "walkforward" / "M0" / "summary.json"
+    path.unlink()
+    if content is not None:
+        path.write_text(json.dumps(content), encoding="utf-8")
+    with pytest.raises(SystemExit, match=message):
+        script.main(["--model", "M0"])
+    assert not model_inputs["out"].exists()
+
+
+def test_a_folder_05_has_no_spec_for_is_refused(script, model_inputs):
+    folder = model_inputs["out"].parents[1] / "walkforward" / "M9_x"
+    write_csv(model_inputs["scores"], folder / "scores.csv")
+    save_used(walkforward_settings(model_inputs["cfg"]), folder / "used.yaml")
+    save_walkforward_summary(folder, "M9_x", model_inputs["cfg"], digest="0" * 64)
+    with pytest.raises(SystemExit, match="no spec for this name"):
+        script.main(["--model", "M9_x"])
+    with pytest.raises(SystemExit, match="no spec for this name"):
+        script.main(["--all"])
+    assert not model_inputs["out"].parent.exists()
+
+
+def test_the_backtest_summary_records_the_spec_hash(script, model_inputs):
+    script.main(["--model", "M0"])
+    summary = json.loads((model_inputs["out"] / "summary.json").read_text(encoding="utf-8"))
+    path = model_inputs["out"].parents[1] / "walkforward" / "M0" / "summary.json"
+    assert summary["spec_hash"] == json.loads(path.read_text(encoding="utf-8"))["spec_hash"]
+
+
+@pytest.mark.parametrize("flag", [["--shift-check", "M0"], ["--placebo", "M0"]])
+def test_diagnostics_refuse_stale_scores(script, model_inputs, flag):
+    folder = model_inputs["out"].parents[1] / "walkforward" / "M0"
+    save_walkforward_summary(folder, "M0", model_inputs["cfg"], digest="f" * 64)
+    with pytest.raises(SystemExit, match="stale scores"):
+        script.main(flag)
+    assert not (model_inputs["out"].parents[1] / "diagnostics").exists()
+    assert not model_inputs["log"].exists()
