@@ -73,6 +73,11 @@ def cost_scenarios(cfg: dict) -> list[tuple[str, float, float, bool]]:
     return [(f"{b:g}bps_{100 * r:g}pct", float(b), float(r), (b, r) == baseline) for b, r in pairs]
 
 
+def ledger_used(cfg: dict) -> dict:
+    """used.yaml of outputs/ledger/ (checked by make_submission.py, decision S35-3)."""
+    return used_settings(cfg) | {"ledger": cfg["ledger"]}
+
+
 def ledger_settings(cfg: dict) -> dict:
     """The ledger section of config.yaml, checked: In-Sample years only (every week realised before split.in_sample_end),
     a positive number of books per year, tolerances in (0, 1e-6] (the pre-registered §09 tolerance is the loosest allowed).
@@ -261,7 +266,7 @@ def run_ledger_check(cfg: dict, years: list[int] | None = None) -> None:
     out = ROOT / "outputs" / "ledger"
     write_csv(summary, out / "reconciliation.csv", float_format="%.6g")
     write_csv(by_ticker, out / "level_b_reinvestment_term_by_ticker.csv", float_format="%.6g")
-    save_used(used_settings(cfg) | {"ledger": cfg["ledger"]}, out / "used.yaml")
+    save_used(ledger_used(cfg), out / "used.yaml")
     print(summary.T.to_string(float_format=lambda x: f"{x:.3e}"))
     print()
     print("Level B: max |w * reinvestment term| by ticker and year")
