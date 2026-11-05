@@ -293,6 +293,11 @@ class Vault:
         """
         return self._rows_until("sizing_betas", "sizing_betas", as_of)
 
+    def momentum_variants(self, as_of: pd.Timestamp) -> pd.DataFrame:
+        """M0* momentum variants MOM13_1, MOM26_1, MOM52_1 (contract 3) with date_close ≤ as_of, known after Friday close
+        as_of; sealed and logged like the other tables (S37-3, S34-5 hook 3)."""
+        return self._rows_until("momentum_variants", "momentum_variants", as_of)
+
     def forward_returns(self, as_of: pd.Timestamp) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
         """Forward returns of contract 7 already realised at as_of (S31-1): (fwd, realised_on, period) on the rows with
         realised_on ≤ as_of. fwd[t] = O(t+2)/O(t+1) − 1 (decimal) for the 11 tradables, realised at the open of week
