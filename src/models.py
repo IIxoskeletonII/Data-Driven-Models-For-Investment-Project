@@ -2,7 +2,8 @@
 
 Phase 2.2 (Eliya): M0 and the in-fold scaling pipeline (decisions S22-6, S22-11; Amendment 2 C1, C7; Amendment 4 C1).
 Phase 3.1 (Eliya): ridge (M1, M2), LightGBM (M3), ENS, M0* and the choice within the fixed grids of Amendment 5 C1
-(decisions S31-2 to S31-6), with the walk-forward loop the vault runs. Interfaces: docs/interfaces.md, contracts 5, 8,
+(decisions S31-2 to S31-6), with the walk-forward loop the vault runs. Phase 3.3 (Eliya): agent feature columns and
+their in-fold state products in the design (Amendment 7 C2, S33-4). Interfaces: docs/interfaces.md, contracts 5, 8,
 13 and 14.
 """
 
@@ -133,7 +134,7 @@ def _design(features: pd.DataFrame, states: pd.DataFrame, params: Mapping) -> pd
     columns = list(params["columns"])
     assets = [column for column in columns if INTERACTION_SEPARATOR not in column]
     design = features[assets].astype(np.float64)
-    if params["interactions"]:
+    if any(INTERACTION_SEPARATOR in column for column in columns):
         terms = pd.concat([design, _row_states(features, scale_states(states, params))], axis=1)
         for column in columns:
             if INTERACTION_SEPARATOR in column:
@@ -144,8 +145,19 @@ def _design(features: pd.DataFrame, states: pd.DataFrame, params: Mapping) -> pd
     return design[columns].astype(np.float64)
 
 
+def agent_design_columns(agent_columns: Sequence[tuple[str, Sequence[str]]]) -> list[str]:
+    """Design columns of agent features (Amendment 7 C2, S33-4): each column AG<k>, then, for one with states, the
+    product AG<k>_x_<state>[_x_<state>] with the scaled state names (VIX as VIX_Z, BEAR24 raw)."""
+    columns = [str(name) for name, _ in agent_columns]
+    for name, terms in agent_columns:
+        if terms:
+            columns.append(INTERACTION_SEPARATOR.join([str(name)] + [_scaled_name(str(t)) for t in terms]))
+    return columns
+
+
 def fit_transform_train(features: pd.DataFrame, states: pd.DataFrame, interactions: bool = True,
-                        cfg: dict | None = None) -> tuple[pd.DataFrame, dict]:
+                        cfg: dict | None = None, *,
+                        agent_columns: Sequence[tuple[str, Sequence[str]]] = ()) -> tuple[pd.DataFrame, dict]:
     """Design matrix of the training rows and the fitted scaling parameters (§06, contract 5, S22-6).
 
     features: z-scored asset features (contract 3) of the purged training rows, index (date_close, ticker), known after
@@ -153,6 +165,8 @@ def fit_transform_train(features: pd.DataFrame, states: pd.DataFrame, interactio
     VIX, TERM and CREDIT is fitted on the distinct training weeks only (the date_close values of `features`). X holds
     the six asset columns (features.asset) and, with interactions=True, the five columns of
     src.contracts.interaction_columns(cfg) in that order: z-scored asset feature × raw BEAR24 × scaled MKT_VAR or VIX_Z.
+    agent_columns (S33-4): (column, states) pairs of agent features held in `features`; X gains each column and, for
+    one with states, its product with the in-fold scaled states (agent_design_columns), after the interactions.
     Returns (X float64 on features' index, params = fit_state_scaling output plus "interactions" (bool) and "columns"
     (list of X's columns)) for transform_test.
     """
@@ -163,7 +177,10 @@ def fit_transform_train(features: pd.DataFrame, states: pd.DataFrame, interactio
     if absent.any():
         raise ValueError(f"states: no market-state row for the training week {weeks[absent][0].date()}")
     params = fit_state_scaling(weekly.loc[weekly.index.isin(weeks)], cfg)
-    columns = list(cfg["features"]["asset"]) + (interaction_columns(cfg) if interactions else [])
+    agent = agent_design_columns(agent_columns)
+    plain = [column for column in agent if INTERACTION_SEPARATOR not in column]
+    products = [column for column in agent if INTERACTION_SEPARATOR in column]
+    columns = list(cfg["features"]["asset"]) + plain + (interaction_columns(cfg) if interactions else []) + products
     params["interactions"], params["columns"] = bool(interactions), columns
     return _design(features, states, params), params
 
@@ -338,7 +355,8 @@ class LadderData:
 
     features: asset features (contract 3); states: market states (contract 4; its weekly index is the calendar);
     labels: labels (contract 6); betas: sizing betas (contract 10); fwd, realised_on, period: forward returns of contract
-    7 (rows realised by the In-Sample end); momentum: the M0* variants MOM13_1, MOM26_1, MOM52_1 (contract 3).
+    7 (rows realised by the In-Sample end); momentum: the M0* variants MOM13_1, MOM26_1, MOM52_1 (contract 3); agent_columns: (column, states) pairs of
+    agent features held as extra columns of `features` (Amendment 7 C2, S33-4), empty for the human rungs.
     """
 
     features: pd.DataFrame
@@ -349,6 +367,7 @@ class LadderData:
     realised_on: pd.Series | None = None
     period: pd.Series | None = None
     momentum: pd.DataFrame | None = None
+    agent_columns: tuple = ()
 
 
 def grid(rung: str, cfg: dict | None = None) -> list:
@@ -491,9 +510,12 @@ def _fit_score(rung: str, value, data: LadderData, fold: WalkForwardFold, cfg: d
     """
     labels = data.labels
     if rung in ("M0", "M0_star"):
+        if data.agent_columns:
+            raise ValueError(f"{rung} takes no agent features (Amendment 7, S33-4)")
         source = _momentum_column(data, value if rung == "M0" else f"MOM{int(value)}_1")
     else:
-        source = data.features[list(cfg["features"]["asset"])]
+        agent_names = [str(name) for name, _ in data.agent_columns]
+        source = data.features[list(cfg["features"]["asset"]) + agent_names]
     dates = _closes_of(source)
     train_index = source.index[np.asarray((dates >= fold.train_start) & (dates <= fold.train_end))]
     train_index = train_index[train_index.isin(labels.index)]
@@ -503,7 +525,8 @@ def _fit_score(rung: str, value, data: LadderData, fold: WalkForwardFold, cfg: d
     if rung in ("M0", "M0_star"):
         model = M0(feature=source.columns[0], name=rung)
         return model.fit(source.loc[train_index], y).score(source.loc[test_index])
-    X_train, params = fit_transform_train(data.features.loc[train_index], data.states, rung != "M1", cfg)
+    X_train, params = fit_transform_train(data.features.loc[train_index], data.states, rung != "M1", cfg,
+                                          agent_columns=data.agent_columns)
     X_test = transform_test(data.features.loc[test_index], data.states, params)
     if rung == "M3":
         m3 = cfg["models"]["M3"]

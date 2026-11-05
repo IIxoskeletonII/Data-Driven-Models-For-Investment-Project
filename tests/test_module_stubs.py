@@ -1,17 +1,9 @@
-"""Every public name of contract 17 (docs/interfaces.md) exists, and functions not yet implemented say who builds them when."""
+"""Every public name of contract 17 (docs/interfaces.md) exists, is callable and is documented."""
 
 import importlib
 import inspect
 
 import pytest
-
-# (module, functions, phase, owner) of the contract 17 table, for the functions that are stubs until their phase
-STUB_FUNCTIONS = [
-    ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history"], "3.3", "Eliya"),
-    ("src.agents.graph", ["build_graph", "run_lab"], "3.3", "Eliya"),
-]
-
-STUBS = [(module, name, phase, owner) for module, names, phase, owner in STUB_FUNCTIONS for name in names]
 
 # public functions implemented in their phase: they must exist, be callable and documented
 IMPLEMENTED = [
@@ -24,6 +16,8 @@ IMPLEMENTED = [
                    "selection_gate", "stationary_bootstrap_indices", "newey_west_lags", "hac_variance_of_mean",
                    "weekly_rank_ic", "expected_max_sharpe", "probabilistic_sharpe_ratio", "cscv_logits"]),
     ("src.plots", ["equity_curves", "drawdowns", "exposures", "cost_bridge", "placebo_histogram"]),
+    ("src.agents.vault_server", ["get_features", "run_walkforward", "get_trial_history", "risk_checks"]),
+    ("src.agents.graph", ["build_graph", "run_lab", "risk_verdict"]),
 ]
 IMPLEMENTED_NAMES = [(module, name) for module, names in IMPLEMENTED for name in names]
 
@@ -42,35 +36,10 @@ CONTRACT_NAMES = ["ContractError", "Universe", "universe", "interaction_name", "
                   "BacktestResult", "WalkForwardFold", "ScoreModel"] + VALIDATORS
 
 
-def call_with_nones(func):
-    """Call func with None for every required parameter (positional or keyword-only)."""
-    args, kwargs = [], {}
-    for parameter in inspect.signature(func).parameters.values():
-        if parameter.default is not inspect.Parameter.empty:
-            continue
-        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
-            args.append(None)
-        elif parameter.kind is inspect.Parameter.KEYWORD_ONLY:
-            kwargs[parameter.name] = None
-    return func(*args, **kwargs)
-
-
 @pytest.mark.parametrize("name", CONTRACT_NAMES)
 def test_contracts_public_names(name):
     contracts = importlib.import_module("src.contracts")
     assert hasattr(contracts, name), name
-
-
-@pytest.mark.parametrize("module,name,phase,owner", STUBS, ids=[f"{m}.{n}" for m, n, _, _ in STUBS])
-def test_stub_raises_with_phase_and_owner(module, name, phase, owner):
-    func = getattr(importlib.import_module(module), name)
-    assert callable(func)
-    assert inspect.getdoc(func), f"{module}.{name} has no docstring"
-    with pytest.raises(NotImplementedError) as raised:
-        call_with_nones(func)
-    message = str(raised.value)
-    assert f"Phase {phase}" in message, message
-    assert owner in message, message
 
 
 @pytest.mark.parametrize("module,name", IMPLEMENTED_NAMES, ids=[f"{m}.{n}" for m, n in IMPLEMENTED_NAMES])
