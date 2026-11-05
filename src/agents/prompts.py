@@ -144,3 +144,19 @@ def risk_messages(spec: dict, checks: dict, metrics: dict) -> list[dict]:
             "\"concern\": \"concentration\"|\"mechanism\"|\"instability\"|null, \"notes\": str}.")
     return [{"role": "system", "content": "You are a risk officer reviewing a proposed trading feature. Answer in JSON."},
             {"role": "user", "content": f"Spec: {_json(spec)}\nRisk review inputs: {_json(shown)}\n\n{task}"}]
+
+
+SECTOR_ETFS = {"XLB": "Materials", "XLE": "Energy", "XLF": "Financials", "XLI": "Industrials", "XLK": "Technology",
+               "XLP": "Consumer Staples", "XLU": "Utilities", "XLV": "Health Care", "XLY": "Consumer Discretionary"}
+
+
+def probe_messages(code: str, summary: dict) -> list[dict]:
+    """The recognition probe (S33-17): one anonymised code's six features at the In-Sample end, as get_features gives
+    them; the model names the sector ETF it believes the code is."""
+    task = (f"The summary below describes one US sector ETF, anonymised as {code}, at the end of December 2019. Which of "
+            f"these ETFs is it: {_json(SECTOR_ETFS)}? Answer with the JSON object {{\"ticker\": one of the nine tickers, "
+            f"\"reason\": str}}.")
+    return [{"role": "system", "content": "You are a quantitative analyst. Answer in JSON."},
+            {"role": "user", "content": f"Features of {code} (z-scored across the nine sectors each week; value at the "
+                                        f"last week, mean and standard deviation over the last 104 weeks): "
+                                        f"{_json(summary)}\n\n{task}"}]

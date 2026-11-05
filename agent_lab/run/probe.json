@@ -1,0 +1,62 @@
+{
+  "chance": 0.1111,
+  "hit_rate": 0.3333,
+  "hits": 3,
+  "n": 9,
+  "results": [
+    {
+      "answer": "XLE",
+      "code": "A1",
+      "hit": false,
+      "reason": "A1 has a strongly elevated BETA52 z-score (0.541, well above its 104w mean of 0.451) combined with negative 26-week momentum but positive 52-week momentum and high recent short-term reversal, a profile typical of Energy at end-2019: high market sensitivity, weak recent trend after the late-2019 cons"
+    },
+    {
+      "answer": "XLE",
+      "code": "A2",
+      "hit": false,
+      "reason": "A2 shows a strongly negative drawdown score (DD13 = -0.916, far below its 104w mean of -0.138) combined with negative 26w and 52w momentum (MOM26_1 = -0.583, MOM52_4 = -0.275) and below-average beta (BETA52 = 0.266 vs mean 0.335). This pattern of deep drawdown plus weak medium/long-term momentum is "
+    },
+    {
+      "answer": "XLU",
+      "code": "A3",
+      "hit": false,
+      "reason": "A3 has the lowest BETA52 (-0.19 z, well below the 0.058 mean) and the strongest REV1 (-0.52, meaning it was the worst recent 1-week performer, consistent with a defensive/utilities fund having run up). Its DD13 is modestly above average (0.26) while MOM26_1 is positive (0.61) but MOM52_4 is negative"
+    },
+    {
+      "answer": "XLE",
+      "code": "A4",
+      "hit": false,
+      "reason": "A4 shows strongly negative DD13 (drawdown) with high MOM26_1 and MOM52_4, low BETA52, and weak REV1. High medium/long-term momentum, low beta, and less-negative short-term momentum combined with a pronounced drawdown is most consistent with Energy (XLE), which had lagged into late 2019 but was recov"
+    },
+    {
+      "answer": "XLK",
+      "code": "A5",
+      "hit": true,
+      "reason": "A5 shows strongly elevated momentum (MOM52_4 z=1.80, MOM26_1 z=1.55) and elevated beta/volatility characteristics (BETA52 1.30, above its own 104w mean), with relatively low short-term volatility (VOL13 z=0.35). In late-2019 this combination—high long-term momentum, above-average beta, and compresse"
+    },
+    {
+      "answer": "XLU",
+      "code": "A6",
+      "hit": true,
+      "reason": "A6 shows a persistently very negative BETA52 (value -2.07, 104w mean -2.11), i.e. a strong low-beta defensive sector, plus very negative VOL13 (-0.70 vs mean -0.96) and negative REV1 (-1.75), consistent with a low-volatility, defensive, recently underperforming sector. Among the nine sectors, Utilit"
+    },
+    {
+      "answer": "XLE",
+      "code": "A7",
+      "hit": true,
+      "reason": "A7 shows an extreme negative momentum profile (MOM26_1 and MOM52_4 both strongly negative, around -1.9 z-scores, well below their 104-week means) combined with elevated volatility (VOL13 +2.2) and a low/negative beta (0.43). This combination of severe underperformance, high realized volatility and d"
+    },
+    {
+      "answer": "XLU",
+      "code": "A8",
+      "hit": false,
+      "reason": "A8 shows the classic defensive/utilities profile: low beta (BETA52 z=-1.07, mean 104w=-1.02), very low volatility (VOL13 z=-1.31, persistently low mean -1.31), and elevated drawdown-recovery/quality (DD13 z=1.18), with muted momentum and weak short-term reversal. This combination of very low market "
+    },
+    {
+      "answer": "XLE",
+      "code": "A9",
+      "hit": false,
+      "reason": "A9's profile is a high drawdown (DD13 z=1.14), high short-term reversal/oversold (REV1 z=1.60), negative medium-term momentum (MOM26_1 z=-0.58), strongly negative volatility score (VOL13 z=-0.79) and modest beta—a combination typical of an energy sector that sold off sharply into end-2019 while vola"
+    }
+  ]
+}

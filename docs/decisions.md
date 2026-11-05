@@ -1449,6 +1449,81 @@ S33-10 is reserved for the base rung (S33-5), recorded once the In-Sample backte
 | Files affected | `src/agents/graph.py`, `src/agents/prompts.py`, `src/agents/llm.py`, `src/agents/vault_server.py`, `04_agent_lab.py`, `tests/test_vault_server.py`, `tests/test_planted_signal.py`, `agent_lab/` |
 | Amendment | No |
 
+### S33-10 · The base rung of the agent lab and M5 is M2
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | Which rung do agent features extend (Amendment 7 C1)? |
+| Options considered | M1, M2, M3 by In-Sample headline net Sharpe (the rule of Amendment 7 C1; no other option) |
+| Decision | M2. In-Sample headline net Sharpe (weekly T-bill, 10 bps / 2%, 624 weeks 2008-01-04 to 2019-12-13): M1 −1.2856, M2 −0.9865, M3 −1.4169; M2 is the highest. The lab's server rebuilds M2's book from the vault and gets the same headline Sharpe as `06_backtest.py` (−0.986488 against −0.986488, difference 0.0), with the trial log unchanged (M2's spec hash is already logged) |
+| Rationale | Amendment 7 C1 fixes the rule; this entry records its outcome and the local reproduction |
+| Evidence | S32-11 (Mattia, 3 Nov 2026): "M1 −1.286 / −1.183, M2 −0.986 / −0.887, M3 −1.417 / −1.311 … Among M1–M3 the highest headline net Sharpe is M2's"; local `06_backtest.py --all` on main `e88f940` (5 Nov 2026), `outputs/backtests/M2/summary.json` `net_sharpe_rf_tbill` −0.986487564971885 (M1 −1.285581, M3 −1.416857; M0, ENS and M0\* also equal S32-11); `src.agents.vault_server.real_server("M2").base()["net_sharpe"]` −0.986487564971885 |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `04_agent_lab.py`, `agent_lab/run/` |
+| Amendment | No (Amendment 7 C1 applied) |
+
+### S33-16 · The real In-Sample run: trial-log snapshot, limits, cache and resume
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How does the real In-Sample run see the trial history so that a replay reproduces it, and what are its limits? |
+| Options considered | (a) Hypothesis reads the live `docs/trial_log.csv` (rejected: a replay sees the run's own rows and later rows, so its prompts differ, S33-15 audit); (b) a snapshot at the start plus this run's own trials (chosen, Eliya's instruction) |
+| Decision | `04_agent_lab.py --insample` copies `docs/trial_log.csv` at its start to `agent_lab/run/trial_log_snapshot.csv`. `get_trial_history` then returns the snapshot's rows plus the rows of the trial log whose spec hash this run's server wrote or evaluated, in trial-log order; it never shows a row written by anyone else after the snapshot. Every proposal of the run (accepted, rejected or invalid) is a row of `docs/trial_log.csv` (S33-9: spec hash, metrics, cost). A replay (`--insample --replay --out <folder outside agent_lab/>`) copies the committed snapshot to `<folder>/trial_log.csv` and writes there, never to `docs/trial_log.csv`, so its history and prompts equal the live run's. Limits: 40 LLM candidates (`agent_lab.max_candidates`), no injected specs, base rung M2 (S33-10); the budget is USD 5 minus the spend already in `agent_lab/cache/` (the planted runs, USD 0.032617), so the lab's total stays under the hard stop; the meter keeps the peak prices of S33-1. Every LLM call is cached in `agent_lab/run/cache/insample.jsonl`. The run writes `agent_lab/run/candidates.jsonl`, `summary.json`, `vault_server_log.jsonl` and the snapshot. If a call fails (network or API error), the same command is run again: identical requests are answered from the cache at zero cost and the run continues live; each resumption is recorded. No prompt, threshold or setting changes during the run |
+| Rationale | The snapshot fixes what Hypothesis can see at every round, so a replay rebuilds identical requests; writing every proposal to the real trial log keeps the deflated Sharpe's trial count complete (manual §3.5); counting the planted spend keeps the whole lab under USD 5 |
+| Evidence | Eliya's instruction (5 Nov 2026): "the run snapshots docs/trial_log.csv at its start into agent_lab/run/; Hypothesis reads only that snapshot plus this run's own trials, so a replay sees the same history", "at most 40 candidates, under the $5 hard stop, with the meter at peak prices", "every LLM call is cached under agent_lab/run/cache/", "if a call fails, resume from the cache as you did in attempt 4, and record it", "no prompt, threshold or setting changes during the run"; audit of 5 Nov 2026 (S2); S33-1; S33-7; S33-9; S33-15 |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction and spend approval of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/vault_server.py`, `04_agent_lab.py`, tests, `agent_lab/run/`, `docs/trial_log.csv` |
+| Amendment | No |
+
+### S33-17 · The recognition probe
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How is the residual risk measured that the model recognises the sectors behind the anonymised codes A1 … A9? |
+| Options considered | (a) one call per code: the model sees that code's anonymised summary from `get_features` and names the ETF (chosen); (b) one call with all nine codes (rejected: the answers would be a joint assignment, not nine independent guesses) |
+| Decision | After the run, 9 calls of the lab's model, one per code, each with the code's six features at the In-Sample end (value, 104-week mean and standard deviation, exactly as `get_features("2019-12-27")` gives them) and the list of the 9 sector ETFs with their sector names; the model answers `{"ticker": one of the 9, "reason": str}`. A hit is the code's true ticker; an unparseable or unlisted answer is a miss. The hit rate (hits / 9, against 1/9 by chance) is reported as a measured residual of the anonymisation, with each code's answer; it changes nothing in the run. The calls are cached in `agent_lab/run/cache/probe.jsonl`, under the same meter and budget; the mapping itself is used only to score the answers and is written only as hit or miss per code |
+| Rationale | Independent calls measure what a single proposal's context could reveal; the result shows how much the anonymisation protects against the model's memory of sector behaviour |
+| Evidence | Session 3.3 instructions §6 ("Recognition probe"); Eliya's instruction (5 Nov 2026): "run the recognition probe (one call per code A1…A9; report the hit rate as a measured residual)"; S33-5 (anonymisation) |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `04_agent_lab.py`, `src/agents/prompts.py`, `agent_lab/run/` |
+| Amendment | No |
+
+### S33-18 · Results of the In-Sample agent run and the recognition probe
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What did the real In-Sample lab run and the recognition probe give? |
+| Options considered | Report as computed (chosen); change anything because of them (excluded: manual §3.4, §3.8) |
+| Decision | **Run** (`04_agent_lab.py --insample`, code `13aa688`, base rung M2 at −0.986488, S33-10): one invocation, no failed call, no resumption. 40 proposals, every one a `docs/trial_log.csv` row of kind "agent" (16 rows before, 56 after). 24 invalid specs: 13 `mul_state` below the root (Amendment 7 C2), 4 Coder answers whose JSON braces do not balance (the largest answer used 932 of the 1,500 output tokens, so none was cut off), 2 unknown operation `abs`, 2 `cs_z` with an extra key, 1 unknown operation `close`, 1 `ratio` without `a`, 1 `lag` with n 0. 4 stopped at redundancy (3 with REV1, \|corr\| 0.961 to 1.000; 1 with MOM26_1, 0.977). 12 reached the walk-forward and all failed the §07 gate against M2: the largest uplift was +0.146 with P(uplift > 0) 0.755 (candidate 4, `rel_mom_26_4_credit`), the largest P 0.857 (candidate 22, uplift +0.126; candidate 33, uplift +0.133), and the other uplifts ran from −0.176 to +0.090. No candidate reached the Skeptic or Risk; validated 0, vetoed 0, surviving 0, so `agent_lab/run/review.md` lists no feature for approval. Spend: 80 live calls (40 Hypothesis, 40 Coder), USD 0.127144. A replay into a folder outside `agent_lab/` made 0 live calls, left `docs/trial_log.csv` unchanged, and reproduced `candidates.jsonl` byte for byte and `summary.json` field for field. The first replay differed only in the summary's spend and call count, because these summed every cache file, including `probe.jsonl` written after the run; they now count the run's own cache file, and the live values (USD 0.127144, 80 calls) are unchanged. `review.md` prints uplift and P with 3 decimals, so candidate 4's +0.146 does not read as the 0.15 threshold. **Probe** (S33-17): 9 live calls, USD 0.002564; 3 hits of 9 (hit rate 0.33 against 0.11 by chance): A5 named XLK, A6 XLU and A7 XLE, all correct. The model answered XLE five times, XLU three times and XLK once, so the hits are the three codes with the most distinctive profiles (strong momentum and high beta; the lowest beta and volatility; deep negative momentum with high volatility). This is the measured residual of the anonymisation; every Hypothesis prompt holds all nine codes' summaries, so it applies to the run. It changes nothing in the run. The probe prompt dates the summary to the end of December 2019 (the In-Sample end), which may have helped recognition. `probe.json` keeps each answer and hit as S33-17 asks, so the three hits show their tickers; the true ticker of a miss is not written. **Lab total** (planted runs, In-Sample run, probe): 127 live calls, USD 0.162325, under the USD 5 stop. **Open for Eliya and Mattia:** Amendment 7 C3 defines M5 as the base rung plus the human-approved agent features; with no survivor there is no feature to approve, so whether M5 is built (and what it would be) needs their decision. Nothing about M5 was started |
+| Rationale | The record states the outcome, including the failures and the probe residual, so the deflated Sharpe's trial count (56 rows) and the Gate 3 scorecard rest on the logged run |
+| Evidence | `agent_lab/run/summary.json`, `candidates.jsonl`, `review.md`, `probe.json`, `run_log.jsonl` (one live invocation), `cache/insample.jsonl` (80 entries, cost sum USD 0.127144), `cache/probe.jsonl` (9 entries, USD 0.002564), `agent_lab/cache/` (38 entries, USD 0.032617); `docs/trial_log.csv` (rows 17 to 56); Eliya's spend approval (5 Nov 2026) |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam; Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md`; `04_agent_lab.py` (summary spend and call fields; `review.md` prints uplift and P with 3 decimals) |
+| Amendment | No |
+
+### S33-19 · M5 is absent; the gate evaluates M1, M2, M3 and ENS; H5 result
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What happens to M5 and ENS when no agent feature is approved? |
+| Options considered | (a) M5 is absent, ENS stays M1–M3 (chosen); (b) a re-run of the lab to look for a feature (rejected: every trial is already logged, and a re-run until something passes would be a search the deflated Sharpe has to pay for, with no pre-registered basis) |
+| Decision | M5 does not exist: no candidate of the In-Sample run survived (S33-18), so there is no agent feature to approve and the base rung plus approved agent features cannot be formed. The selection rule evaluates M1, M2, M3 and ENS in that order, with M5 marked absent (`src.stats.selection_gate(..., absent=("M5",))`). ENS stays the equal-weight rank average of M1–M3. **H5 result:** no agent-proposed feature survived the gate, so H0 (DSR below threshold) is not rejected; all 40 agent trials stay in `docs/trial_log.csv` and count in the trial number of the deflated Sharpe. Reported as limitations: the invalid-spec rate of the run (24 of 40 proposals, mostly `mul_state` below the root and unbalanced JSON) and the recognition-probe hit rate (3 of 9 against 1 of 9 by chance, S33-17). There is no re-run |
+| Rationale | The pre-registration names M5 conditionally ("+ M5 if it exists") and builds it from approved features only; with none, the ladder runs without it, and the agent trials still count against the result |
+| Evidence | Pre-registration §07 table: M5 "Best rung + approved agent features", "Research-lab output (H5)"; ENS "Equal-weight average of the cross-sectional rank scores of M1–M3 (+ M5 if it exists)"; §02 H5 "Agent-proposed features survive the same gate as human features after trial-count deflation", "H0: DSR below threshold. Every trial reported"; S33-18 (validated 0, surviving 0; invalid 24 of 40; probe 3 of 9); `src/stats.py` `selection_gate(..., absent=...)` ("e.g. M5 without approved agent features"); Eliya's decision (5 Nov 2026): "no candidate survived, so M5 does not exist", "No re-run." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (decision of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md` only; the selection step (`07_evaluate.py`, Mattia's) passes `absent=("M5",)` |
+| Amendment | No: the pre-registration anticipates a missing M5 |
+
 ## 2026-11-05 · Session 3.4: OOS run script, freeze tooling and OOS evaluation
 
 "Instruction" quotes the session 3.4 prompt (5 Nov 2026) and its addition of the same day. Everything in this session
