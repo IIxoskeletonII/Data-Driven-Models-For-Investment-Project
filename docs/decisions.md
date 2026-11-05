@@ -1449,6 +1449,178 @@ S33-10 is reserved for the base rung (S33-5), recorded once the In-Sample backte
 | Files affected | `src/agents/graph.py`, `src/agents/prompts.py`, `src/agents/llm.py`, `src/agents/vault_server.py`, `04_agent_lab.py`, `tests/test_vault_server.py`, `tests/test_planted_signal.py`, `agent_lab/` |
 | Amendment | No |
 
+## 2026-11-05 · Session 3.4: OOS run script, freeze tooling and OOS evaluation
+
+"Instruction" quotes the session 3.4 prompt (5 Nov 2026) and its addition of the same day. Everything in this session
+is built and tested on the synthetic market of contract 18 (sessions to 2020-12-31) only: no part of it was run on real
+data, no Out-of-Sample value was computed or seen, and no `FROZEN.lock` was created in the repository. "Approved by"
+lists the approvals given so far; Eliya approves through the review of the 3.4 pull request.
+
+### S34-1 · Ownership of `08_run_oos.py` moves to Mattia
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | `08_run_oos.py` is Eliya's file (S2-7). Who builds it before Gate 3, while Eliya carries the agent lab, M5 and the gate? |
+| Options considered | (a) Eliya after the agent lab; (b) Mattia for this phase, calling only Eliya's public functions and never editing his files (chosen) |
+| Decision | (b). Mattia owns `08_run_oos.py` and its test file `tests/test_run_oos_script.py` from this phase. It imports Eliya's public functions (`03_build_features.py`: `load_inputs`, `load_opens`, `build_tables`, `build_labels`, `build_forward_returns`, `write_tables`; `05_train_walkforward.py`: `spec_for`; `src.vault`: `Vault`, `Vault.unlock`, `spec_hash`, `logged_spec_hashes`; `src.labels`: `walk_forward_folds`, `label_end_by_week`; `src.models`: `LadderData`, `walkforward_rung`, `ensemble_scores`, `grid`, `walkforward_settings`) and edits none of his files. Hooks that are missing are listed in the pull request (S34-5) instead of being added to his code |
+| Rationale | Gate 3 needs the freeze tooling and the run script tested before `FROZEN.lock` is signed; Eliya's remaining work before Gate 3 is on the critical path |
+| Evidence | Instruction §1: "Decision S34-1: ownership of 08_run_oos.py moves from Eliya to Mattia for this phase. Reason: Eliya carries the agent lab, M5 and the gate before Gate 3. Approved by Eliya through this PR's review. 08 only calls Eliya's public functions and never edits his files. If a hook is missing, list it in the PR rather than editing his code."; S2-7 (ownership table) |
+| Proposed by | Eliya Allam and Mattia Cervelli (session 3.4 instruction) |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py` |
+| Amendment | No: ownership, not specification |
+
+### S34-2 · Cross-machine reproduction of the In-Sample walk-forward
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | The 17 walk-forward outputs of S32-11 were rerun on Mattia's machine and compared with Eliya's. Eight `scores_sha256` differ. Is the walk-forward reproduced, and how is reproduction judged from now on? |
+| Options considered | (a) require byte-identical score files (`scores_sha256`); (b) judge by numeric tolerance and identity of the ±1 signals (chosen) |
+| Decision | (b). Reproduction is judged by numeric tolerance and signal identity, not by file hashes. On Mattia's machine (Windows 11, Python 3.12.14, lightgbm 4.7.0, scikit-learn 1.9.1, numpy 2.5.4, pandas 3.1.0) all 17 outputs reproduce Eliya's: 9 are byte-identical (`scores_sha256` equal): M0, M0_L13, M0_L26, M0_L52, M0_star, M3, M3_d2, M3_d3, ENS. The 8 ridge runs (M1, M1_a0.1, M1_a1, M1_a10, M2, M2_a0.1, M2_a1, M2_a10) differ only at floating-point level, max \|difference\| 3.47e-17, with identical weekly ranks and identical ±1 signals in all 624 weeks, so their backtests and metrics are identical. The cause is a different summation order in the linear-algebra library on another CPU. All 17 `spec_hash` values matched the trial log, so no trial row was added. The same rule applies to the reproduction check of `08_run_oos.py` (S34-6). It does not apply to the SHA-256 values of `FROZEN.lock` (S34-3): they test that the files on the machine that runs the OOS are those frozen, not that two machines agree |
+| Rationale | Floating-point summation order is not part of the method; ranks and signals are what the strategy trades |
+| Evidence | Operating manual §6: "Numeric comparisons use tolerances, never file hashes."; addition to the session 3.4 instruction (5 Nov 2026): "9 are byte-identical (scores_sha256 equal): M0, M0_L13, M0_L26, M0_L52, M0_star, M3, M3_d2, M3_d3, ENS. The 8 ridge runs (M1, M1_a0.1, M1_a1, M1_a10, M2, M2_a0.1, M2_a1, M2_a10) differ only at floating-point level: max \|difference\| 3.47e-17, with identical weekly ranks and identical ±1 signals in all 624 weeks"; S32-11 ("The other 16 `scores_sha256` are compared with Eliya's table in the review of this pull request") |
+| Proposed by | Mattia Cervelli |
+| Approved by | Eliya Allam and Mattia Cervelli (review of this pull request) |
+| Files affected | `docs/decisions.md`; `08_run_oos.py` (reproduction check, S34-6) |
+| Amendment | No |
+
+### S34-3 · `08_run_oos.py --freeze`: content of `FROZEN.lock`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What does `--freeze` record, from which inputs, and what may change in the repository between the freeze and the run? |
+| Options considered | Gate output: (a) the JSON of `src.stats.selection_gate` at `outputs/metrics/selection_gate.json` (chosen); (b) a name typed on the command line. Post-freeze changes: (c) none; (d) only `FROZEN.lock` and `docs/decisions.md` (the signatures, chosen); (e) any documentation |
+| Decision | `--freeze` refuses (nothing written) when `git status --porcelain` is not empty (untracked files count; git-ignored ones do not), when `FROZEN.lock` already exists, when `outputs/oos_access_log.json` has an entry, when the gate file is missing or malformed, or when any artefact below is missing, built with another config (`check_used`) or stale (its `summary.json` `spec_hash` differs from `spec_hash(spec_for(name), cfg)`, or is not in the trial log). It writes `FROZEN.lock` (JSON, sorted keys, LF): `format` 1, `created_utc`, `code_commit` (HEAD), `config_sha256` (`config.yaml`), `trial_log_sha256` and `trial_count` (`docs/trial_log.csv`), `in_sample_end`, `data_end`, `gate_file`, `selected`, `models` (S34-6), `frozen_values` (the grid value chosen at the last In-Sample refit of M1, M2, M3 and M0\*, from the last row of each `selection.csv`, with its `test_year` and `refit`; Amendment 6 C2), `allowed_after_freeze` = [`FROZEN.lock`, `docs/decisions.md`] and `artefacts`: path → SHA-256 of `data/processed/{features, market_states, labels, momentum_variants, sizing_betas, forward_returns}.csv`, `features_config.yaml`, the gate file, and `outputs/walkforward/<name>/{scores.csv, used.yaml, summary.json, selection.csv}` of every model in `models`. The gate file holds at least `selected` (a name of `models.candidate_order` or `M0_star`) and `candidates` (each with `name` and `status` `evaluated` or `absent`), as `selection_gate` returns them; it is written by the gate step, which does not exist yet (missing hook, S34-5). The five signatures go into `docs/decisions.md` by hand at Gate 3; `FROZEN.lock` and that entry are then committed. Text files are hashed with CRLF read as LF, so a checkout's line endings cannot change a hash; data files are hashed byte for byte. The artefacts must be on the machine that runs the OOS; if the freeze and the run are on different machines, the frozen files are copied, not rebuilt (S34-2) |
+| Rationale | §10 step 2 lists what the lock records; (d) leaves room only for the signatures, so the code, config, trial log and artefacts of the run are exactly those frozen |
+| Evidence | §10 vault protocol step 2: "Freeze: `FROZEN.lock` records the config hash, code commit, trial-log hash and model artefacts; all five members sign it in `docs/decisions.md`."; Amendment 6 C2; S31-14: "The chosen values are recorded in `FROZEN.lock` with the other artefacts."; S32-10 (staleness by `spec_hash`); Instruction §2: "writes FROZEN.lock with the config hash, code commit, trial-log hash, the selected model (from the selection gate's output) and the SHA-256 of every model artefact and walk-forward output it depends on (prereg §10 step 2). It refuses to run with a dirty tree. The five signatures go into docs/decisions.md by hand at Gate 3."; `.gitattributes` ("Text files are stored with LF") |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py` |
+| Amendment | No |
+
+### S34-4 · The single run and `outputs/oos_access_log.json`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What does the run check before it touches Out-of-Sample data, when is the access entry written, and how can CI see the log, given that `outputs/` is git-ignored? |
+| Options considered | Entry: (a) after a successful run; (b) after every check passes and before the vault is unlocked (chosen). CI: (c) a `.gitignore` exception (shared file); (d) the human adds the log with `git add -f` after the run; a test reads the working-tree file and every version in the available git history (chosen) |
+| Decision | The run refuses, with nothing written, unless `FROZEN.lock` exists and parses; the working tree is clean; `code_commit` is an ancestor of HEAD and `git diff --name-only code_commit HEAD` lists only paths of `allowed_after_freeze`; `config.yaml`, `docs/trial_log.csv` and every artefact hash as recorded; and `outputs/oos_access_log.json` is missing or an empty list. It then writes the log as a JSON list with exactly one entry (`utc`, `code_commit`, `head_commit`, `lock_sha256`, `selected`, `data_end`, `script` `08_run_oos.py`) before `Vault.unlock()`, so every access to Out-of-Sample data is logged even if a later step fails. A second run is refused. After Gate 4 the log is committed with `git add -f outputs/oos_access_log.json`; `tests/test_oos_access_log.py` (run by CI) fails if the file in the working tree, or any version of it in the git history available to the job, holds more than one entry or is malformed. Open point for both humans (not resolved here): §10 step 4 ("A bug found afterwards is fixed in a new commit and rerun, and both runs are shown") requires a second run, which step 3 and this test refuse; how a rerun is logged must be decided by an amendment before any rerun |
+| Rationale | (b) records the access itself, which is what the vault protocol protects; (d) needs no change to a shared file |
+| Evidence | §10 vault protocol step 3: "One command, `run_oos.py`, checks the lock, runs once, and appends a timestamped entry to `oos_access_log.json`. CI fails if the log ever has more than one entry."; step 4: "A bug found afterwards is fixed in a new commit and rerun, and both runs are shown with the reason. No retuning, ever."; contract 15: "This access log is separate from `oos_access_log.json`, the single-entry log written only by `08_run_oos.py` (§10), which CI checks."; Instruction §3: "refuses unless FROZEN.lock exists and its hashes match the current tree; refuses if outputs/oos_access_log.json already has an entry; it appends exactly one timestamped entry … Add a CI test that fails if oos_access_log.json ever holds more than one entry."; `.gitignore` `outputs/*` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py`, `tests/test_oos_access_log.py` |
+| Amendment | No (the step 3 / step 4 tension is left open for an amendment) |
+
+### S34-5 · Full-range tables through 03's unlock path; missing hooks
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How does the run rebuild the tables to the data end without overwriting the frozen In-Sample tables, and which of Eliya's functions lack a hook it needs? |
+| Options considered | Output folder: (a) overwrite `data/processed/` (would change hashed artefacts); (b) `data/processed/oos/` (git-ignored, chosen) |
+| Decision | (b). After the access entry, the run calls 03's `load_inputs` and `load_opens` with `end` = `data.end`, `build_tables`, `build_labels(…, data.end)` and `build_forward_returns(…, data.end)`, and writes them with `write_tables(…, allow_oos=True)` and the lock path, the unlock path of S22-5. Missing hooks, listed in the pull request and worked around without editing Eliya's files: (1) `build_forward_returns` uses one date for the truncation and the period boundary, so at `data.end` every period reads `IS`; the run re-assigns `period` from `realised_on` against `split.in_sample_end` (contract 7) and checks it with `validate_forward_returns`. (2) The vault refuses any `forward_returns` table with a return realised after `split.in_sample_end`, even when unlocked (`_validate_frame`); the run does not need it (the grid values are frozen, so no inner Sharpe is computed; the engine's forward returns come from the raw prices, as in 06, S23-8). (3) The vault has no public `momentum_variants(as_of)`; the run calls it if it exists, otherwise the vault's own sealed and logged reader `_rows_until("momentum_variants", …)`. (4) No script writes the gate file of S34-3 yet. Model inputs (features, market states, labels, sizing betas, momentum variants) are read through `Vault(…, data_dir=data/processed/oos)` after `unlock()` |
+| Rationale | The frozen In-Sample tables stay byte-identical, so the lock still verifies after the run; every model input still goes through the vault |
+| Evidence | S22-5: "Its writer raises `OOSAccessError` for any later row unless `FROZEN.lock` exists and `allow_oos=True` is passed, which only `08_run_oos.py` does (Gate 4)"; contract 7; S31-1; operating manual §3.3 "All model and research data access goes through `src/vault.py`."; Instruction §3: "rebuilds the full-range tables through 03's unlock path"; S34-1 ("If a hook is missing, list it in the PR rather than editing his code") |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review (the four hooks) |
+| Files affected | `08_run_oos.py` |
+| Amendment | No |
+
+### S34-6 · Out-of-Sample refits: folds, models and frozen values
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | Which refits score the Out-of-Sample weeks, which models are run, and which scores do the two December 2019 weeks (signal weeks 2019-12-20 and 2019-12-27, realised Out-of-Sample) get? |
+| Options considered | Folds: (a) `src.labels.walk_forward_folds` with `split.in_sample_end` = `data.end` and `split.test_years` = [last In-Sample test year, year of `data.end`] (chosen); (b) a new fold builder in 08. December weeks: (c) scored by the 2019 Q4 refit, whose window extends to the next quarterly refit (chosen); (d) an extra refit at 2019-12-20; (e) left unscored (the book would carry its last targets) |
+| Decision | (a) and (c). The run keeps the folds of (a) whose `test_end` is after the last In-Sample scored week (2019-12-13): the 2019 Q4 refit, now scoring 2019-10-04 to 2019-12-27, then one refit per calendar quarter to the last week with a realised label (2026-10-02 on the real calendar, §05). Every fit asserts the purge (`walkforward_rung`). Models (`FROZEN.lock` `models`): the selected model, every candidate the gate evaluated, M0 (the hurdle) and M0\* (the fallback), in `models.candidate_order`, then M0, M0_star; ENS adds its members. Values (Amendment 6 C2): M1, M2, M3 at their frozen value (`walkforward_rung(rung, …, value=v)`, parameters refitted each quarter); M0\* as M0 on `MOM{L}_1` with its frozen L (S31-6); M0 on `models.M0.feature`; ENS = `ensemble_scores` of the members' Out-of-Sample scores. The scores of the In-Sample weeks are the frozen `scores.csv`; the refits supply only the weeks after 2019-12-13. Reproduction check (S34-2): the 2019 Q4 refit's In-Sample weeks are compared with the frozen scores, and `run.json` reports the max \|difference\| and whether the ±1 signals are identical; a difference is reported, not a reason to stop (the In-Sample book uses the frozen scores either way) |
+| Rationale | (a) applies Eliya's own fold rule unchanged, as contract 13 requires ("with the same rule"); (c) is that rule: a refit scores the weeks up to the next quarterly refit, and the 2019 Q4 window was cut only because the In-Sample period ended. (e) would hold stale positions for two weeks for no reason in the method |
+| Evidence | §07 "The same refits continue during OOS on newly realised labels; tuning does not."; §07 step 6 "Every candidate, eligible or not, appears in the OOS scorecard."; Amendment 6 C2; contract 13: "OOS refits (§07, "the same refits continue during OOS") are produced by `08_run_oos.py` after the freeze with the same rule, never before."; contract 7: "the last In-Sample signal week is the one ending 2019-12-13"; S31-14 ("ENS ranks the members so refitted"); Instruction §3: "continues the quarterly refits into OOS with each rung's last In-Sample grid value frozen (Amendment 6 C2), for the selected model AND every candidate" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py` |
+| Amendment | No: applies §07, §10, contract 13 and Amendment 6 C2 |
+
+### S34-7 · The continuous book and the run's outputs
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How is each model backtested across 2019-12-27, and what is written? |
+| Options considered | As below (chosen) |
+| Decision | One book per model from its first scored week to the last week with every forward return realised (Amendment 2 C5): the frozen In-Sample scores followed by the Out-of-Sample scores, `size_book` with the sizing betas of the unlocked vault, and `run` in the three cost scenarios of S23-7. Prices and DGS3MO are read from the raw files cut at `data.end` (`06_backtest.py: read_market`, `read_risk_free`; the In-Sample paths of 06 keep `refuse_oos_returns`); `period` follows `realised_on` (contract 7). Check: the baseline net returns of the In-Sample weeks equal those of the frozen `outputs/backtests/<name>/weekly.csv` when it exists (max \|difference\| reported in `run.json`). Outputs under `outputs/oos/` (git-ignored): per model `scores.csv` (Out-of-Sample weeks only), `weekly.csv` (the columns of S23-10 and S32-2 over both periods), `metrics.csv` (`period_metrics` per scenario, rf and period), `summary.json`, `used.yaml`; and `run.json` (lock hash, folds, frozen values, the two reproduction checks, the rebuilt tables' rows and SHA-256) |
+| Rationale | The book a live strategy would have held; the In-Sample equality check shows the boundary does not restart the book |
+| Evidence | Amendment 2 C5: "The backtest is one continuous book from the first scored week to the data end. The OOS period does not restart from cash: its first trade is costed from the drifted In-Sample positions."; S21-13; S23-7, S23-8, S23-10, S32-2; Instruction §3: "backtests one continuous book across 2019-12-27 (Amendment 2 C5)" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `08_run_oos.py`, `06_backtest.py` (`read_market`, optional `root` and `end` arguments that keep the old behaviour), `tests/test_run_oos_script.py`, `tests/test_backtest_script.py` |
+| Amendment | No |
+
+### S34-8 · `07_evaluate.py --period OOS`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What does the Out-of-Sample evaluation read and write, and when may it run? |
+| Options considered | As below (chosen) |
+| Decision | `--period IS` (the default) is the evaluation of S32-7, unchanged. `--period OOS` refuses unless `FROZEN.lock` exists and `outputs/oos_access_log.json` holds exactly one entry whose `lock_sha256` is that of the lock, and checks every `outputs/oos/<model>/used.yaml`. It writes `outputs/metrics/oos_models.csv` (one row per model and period, baseline costs, the metrics of S32-7 per period, the rank IC per period), `oos_benchmarks.csv` (T-bill, SPY, equal weight per period on the reference model's weeks), `oos_bonus.csv` (S34-9 for every model; the claim is made only for the selected model), `oos_secondary.csv` (S34-10), `oos_inference.csv` (S34-11), `oos_used.yaml`, and the plots `oos_<model>_{equity, drawdown, exposure, bridge}` and `oos_all_models_equity`, each period rebased to 100 on a shared dated log axis (S32-6). Every Out-of-Sample statistic of 07 is built and tested on the synthetic market only in this session |
+| Rationale | Evaluation is possible only after the single run; the IS mode stays the Gate 3 input and is not touched |
+| Evidence | §11: "computed separately for In-Sample and OOS"; "Every series starts at 100 in each period, on a shared dated axis, log scale."; S32-7; Instruction §4: "07_evaluate.py --period OOS (built and tested on synthetic): metrics per period, with IS and OOS equity curves each rebased to 100" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No |
+
+### S34-9 · Conventions of the market-neutral bonus tests (§11)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | §11 fixes the thresholds of the four market-neutral tests but not the estimators. Which are used? |
+| Options considered | Beta interval: (a) Newey–West (Bartlett) HAC standard error of the OLS slope with the lag rule of S31-9 (chosen); (b) OLS standard error. Down-market interval: (c) a stationary block bootstrap of the whole paired series, the mean taken over the resampled down weeks (chosen); (d) an i.i.d. bootstrap of the down weeks only. Months: (e) calendar months of `realised_on`, compounded (chosen); (f) blocks of four weeks |
+| Decision | On the Out-of-Sample weeks of each book, baseline costs, against SPY's forward return on the same weeks (never traded): (1) β = OLS slope of the weekly net return on SPY's (with intercept; `cov/var` as `src.metrics.market`), HAC variance Σ_j k_j Γ_j of the moment x̃_t u_t, Bartlett weights 1 − j/(L+1), L = `src.stats.newey_west_lags(T)`, normal interval at `inference.confidence` (0.95); passes if \|β\| < `metrics.market_neutral.beta_abs_max` (0.10) and the interval contains 0. (2) ρ = Pearson correlation of the same weekly series; passes if \|ρ\| < `corr_abs_max` (0.20). (3) Down weeks: SPY forward return < 0; mean weekly net return over them; percentile interval (`inference.confidence`) from `selection.bootstrap_resamples` stationary-bootstrap resamples (`src.stats.stationary_bootstrap_indices`, mean block `selection.bootstrap_block` = 4 weeks, seed `seed`) of the paired series; passes if the mean > 0 (the interval is reported). Down months: weeks grouped by the calendar month of `realised_on`, returns compounded, SPY < 0; the same bootstrap on the monthly series with a mean block of 1 month (≈ 4 weeks); passes if the mean > 0. (4) Consistency: Out-of-Sample mean weekly net return (passes if > 0), the share of the T − 51 rolling 52-week windows whose compounded return is positive, and the compounded return of each calendar year of `realised_on` (2019 holds only the week realised on 2019-12-30, reported as such). The bonus is met only if all four pass; it is claimed for the selected model only |
+| Rationale | (a), (c) and (e) keep the time dependence of weekly returns and use the conventions already fixed for §11 (S31-8, S31-9) |
+| Evidence | §11 bonus: "OOS beta of the full book (including IVV) to SPY: \|β\| < 0.10, with a 95% HAC interval containing 0"; "OOS correlation with SPY: \|ρ\| < 0.20"; "Mean weekly return in SPY-down weeks > 0, with a bootstrap interval; the same for down months"; "OOS mean weekly return > 0, plus the share of rolling 52-week windows with a positive return and the return in each calendar year of the OOS, all reported"; `config.yaml` `metrics.market_neutral: { beta_abs_max: 0.10, corr_abs_max: 0.20 }`; S31-8, S31-9 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review (contract change, `docs/interfaces.md` contracts 16 and 17) |
+| Files affected | `src/metrics.py` (`hac_beta`, `monthly_returns`, `rolling_positive_share`, `calendar_year_returns`), `07_evaluate.py`, `tests/test_metrics.py`, `tests/test_evaluate_script.py`, `docs/interfaces.md` (contracts 16 and 17: the four new public names) |
+| Amendment | No: estimators for pre-registered thresholds |
+
+### S34-10 · Secondary bonus: Sharpe and drawdown against SPY
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How is the alternative bonus ("higher Sharpe and lower max drawdown than SPY, with a significance test") computed? |
+| Options considered | As below (chosen) |
+| Decision | Out-of-Sample weeks of each book, baseline costs: the book's headline Sharpe (weekly T-bill, §09) and max drawdown against SPY's on the same weeks (SPY held, no cost); significance by `src.stats.sharpe_difference_test(book, SPY)` (Ledoit–Wolf, S31-9), whose per-week Sharpe is μ/σ of the raw returns. Reported: both Sharpes, both drawdowns, the test's difference, z and p-value, and `meets` = higher Sharpe and smaller drawdown. Reported as a secondary result; at most one bonus is claimed |
+| Rationale | One procedure, fixed in §11's inference table |
+| Evidence | §11: "The alternative bonus (higher Sharpe and lower max drawdown than SPY, with a significance test) is reported as a secondary result. Only one bonus point exists, and we claim at most one."; §11 inference table: "Sharpe difference vs SPY \| Ledoit–Wolf (2008) HAC test \| Secondary bonus significance" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No |
+
+### S34-11 · DSR and PBO in the Out-of-Sample report
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | On which returns are the Deflated Sharpe Ratio and PBO computed in the final report? |
+| Options considered | DSR: (a) on the selected model's In-Sample walk-forward returns (chosen, headline), with the Out-of-Sample value as information; (b) Out-of-Sample only. PBO: In-Sample only (pre-registered) |
+| Decision | The trial matrix is the In-Sample baseline net returns of `outputs/backtests/<name>/weekly.csv`, one column per distinct `spec_hash` of the trial log (a backtest whose `spec_hash` is not in the log is refused; `M0_L26` and `M0` share a column), on their common weeks. N = the number of rows of `docs/trial_log.csv` (S31-7). DSR = `src.stats.deflated_sharpe_ratio(selected In-Sample net, N, trial_returns=matrix)`; the same with the selected model's Out-of-Sample net returns is reported as information. PBO = `src.stats.pbo_cscv(matrix, inference.pbo_blocks)`. Reported with N, the number of columns and weeks |
+| Rationale | DSR answers whether the In-Sample winner is more than the luckiest of N, which is a question about the selection; PBO is defined on the In-Sample matrix |
+| Evidence | §10: "Auxiliary: PBO by CSCV. Run on the In-Sample weekly return matrix of every candidate configuration"; "Deflated Sharpe Ratio with N = every human and agent trial in the ledger"; §11 inference table; S31-7; S31-9; S32-10 (the backtest `summary.json` holds `spec_hash`) |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).

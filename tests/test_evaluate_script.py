@@ -152,3 +152,138 @@ def test_evaluate_needs_a_backtest(script, tmp_path, monkeypatch):
     monkeypatch.setattr(script, "ROOT", tmp_path)
     with pytest.raises(SystemExit, match="no outputs/backtests"):
         script.evaluate(load_config())
+
+
+# ---------------------------------------------------------------- --period OOS (decisions S34-8 to S34-11)
+#
+# A light synthetic project (M0 and M0* only; every candidate absent, M0* selected) is built, frozen and run once by
+# 08_run_oos.py under a temporary folder, with the builder of tests/test_run_oos_script.py.
+
+_OOS: dict = {}
+
+
+def _oos_helpers():
+    spec = importlib.util.spec_from_file_location("oos_project_helpers", ROOT / "tests" / "test_run_oos_script.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def oos_layout(script, synthetic_market, tmp_path_factory, monkeypatch):
+    if not _OOS:
+        helpers = _oos_helpers()
+        root = tmp_path_factory.mktemp("oos_evaluate") / "project"
+        root.mkdir()
+        order = load_config()["models"]["candidate_order"]
+        gate = {"selected": "M0_star", "candidates": [{"name": name, "status": "absent"} for name in order]}
+        cfg = helpers.build_project(root, synthetic_market, walkforwards=("M0", "M0_star"), gate_content=gate)
+        run_script = helpers.load("oos_evaluate_08", "08_run_oos.py")
+        run_script.freeze(root)
+        helpers.commit(root, "docs: lock")
+        run_script.run_oos(root)
+        _OOS.update(root=root, cfg=cfg, helpers=helpers)
+    monkeypatch.setattr(script, "ROOT", _OOS["root"])
+    monkeypatch.setattr(script.bt, "ROOT", _OOS["root"])
+    return _OOS
+
+
+def test_oos_evaluation_writes_every_table_and_plot(script, oos_layout):
+    root, cfg = oos_layout["root"], oos_layout["cfg"]
+    tables = script.evaluate_oos(cfg)
+    metrics_dir = root / "outputs" / "metrics"
+    for name in ("oos_models.csv", "oos_benchmarks.csv", "oos_bonus.csv", "oos_secondary.csv", "oos_inference.csv",
+                 "oos_used.yaml"):
+        assert (metrics_dir / name).exists(), name
+    models = tables["models"].set_index(["model", "period"])
+    assert set(models.index) == {(m, p) for m in ("M0", "M0_star") for p in ("IS", "OOS")}
+    summary = json.loads((root / "outputs" / "oos" / "M0_star" / "summary.json").read_text(encoding="utf-8"))
+    for period in ("IS", "OOS"):
+        row = models.loc[("M0_star", period)]
+        assert row["net_sharpe_rf_tbill"] == pytest.approx(summary["scenarios"]["10bps_2pct"][period]["net_sharpe_rf_tbill"],
+                                                           rel=1e-12)
+        assert np.isfinite(row["rank_ic_mean"]) and row["selected"]
+        assert row["final_equity"] > 0
+    assert not models.loc[("M0", "OOS"), "selected"]
+    plots_dir = root / "outputs" / "plots"
+    for model in ("M0", "M0_star"):
+        for chart in ("equity", "drawdown", "exposure", "bridge"):
+            assert (plots_dir / f"oos_{model}_{chart}.png").exists() and (plots_dir / f"oos_{model}_{chart}.html").exists()
+    assert (plots_dir / "oos_all_models_equity.png").exists()
+    benchmarks = tables["benchmarks"]
+    assert set(benchmarks.index) == {(s, p) for s in ("T-bill", "SPY", "Equal weight") for p in ("IS", "OOS")}
+
+
+def test_oos_bonus_tests_follow_s34_9(script, oos_layout):
+    root, cfg = oos_layout["root"], oos_layout["cfg"]
+    bonus = script.evaluate_oos(cfg)["bonus"]
+    weekly = script.read_weekly(root / "outputs" / "oos" / "M0" / "weekly.csv")
+    oos = weekly.loc[weekly["period"] == "OOS"]
+    market = script.bt.read_market(pd.Timestamp(cfg["data"]["end"]), IS_END, root=root)[2]
+    spy = market.loc[oos.index, "SPY"]
+    r = oos["net"]
+    row = bonus.loc["M0"]
+    assert row["beta"] == pytest.approx(r.cov(spy) / spy.var(), rel=1e-10)
+    assert row["correlation"] == pytest.approx(r.corr(spy), rel=1e-10)
+    assert row["beta_lower"] < row["beta"] < row["beta_upper"]
+    assert row["down_week_mean"] == pytest.approx(r[spy < 0].mean(), rel=1e-12)
+    assert row["down_week_count"] == (spy < 0).sum()
+    assert row["mean_weekly"] == pytest.approx(r.mean(), rel=1e-12)
+    assert len(r) == 51 and np.isnan(row["rolling_52w_positive_share"])  # 51 synthetic OOS weeks: no 52-week window
+    assert row["return_2020"] == pytest.approx((1 + r[oos["realised_on"].dt.year == 2020]).prod() - 1, rel=1e-12)
+    assert row["return_2019"] == pytest.approx(r[oos["realised_on"].dt.year == 2019].add(1).prod() - 1, rel=1e-12)
+    expected = all(bool(row[k]) for k in ("passes_beta", "passes_correlation", "passes_down_week", "passes_down_month",
+                                          "passes_mean_weekly"))
+    assert bool(row["all_pass"]) == expected
+    assert not bonus.loc["M0", "claimed"]  # M0 is not the selected model: no claim, whatever it shows
+    assert bool(bonus.loc["M0_star", "claimed"]) == bool(bonus.loc["M0_star", "all_pass"])
+
+
+def test_oos_secondary_and_inference(script, oos_layout):
+    root, cfg = oos_layout["root"], oos_layout["cfg"]
+    tables = script.evaluate_oos(cfg)
+    secondary = tables["secondary"].loc["M0_star"]
+    assert 0.0 <= secondary["lw_p_value"] <= 1.0
+    assert bool(secondary["meets"]) == bool(secondary["sharpe_rf_tbill"] > secondary["spy_sharpe_rf_tbill"]
+                                            and secondary["max_drawdown"] > secondary["spy_max_drawdown"])
+    inference = tables["inference"].loc["M0_star"]
+    assert inference["n_trials"] == len(pd.read_csv(root / "docs" / "trial_log.csv"))
+    assert inference["matrix_columns"] == 2  # M0 and M0_star: two spec_hashes of the trial log
+    for key in ("dsr_in_sample", "dsr_out_of_sample", "pbo"):
+        assert 0.0 <= inference[key] <= 1.0
+
+
+def test_oos_evaluation_refuses_before_the_run(script, tmp_path, monkeypatch):
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="needs FROZEN.lock"):
+        script.evaluate_oos(load_config())
+    (tmp_path / "FROZEN.lock").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="holds 0 entries"):
+        script.evaluate_oos(load_config())
+    log = tmp_path / "outputs" / "oos_access_log.json"
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps([{"utc": "a", "lock_sha256": "x"}, {"utc": "b", "lock_sha256": "x"}]), encoding="utf-8")
+    with pytest.raises(SystemExit, match="holds 2 entries"):
+        script.evaluate_oos(load_config())
+    log.write_text(json.dumps([{"utc": "a", "lock_sha256": "not the lock"}]), encoding="utf-8")
+    with pytest.raises(SystemExit, match="not written for the current FROZEN.lock"):
+        script.evaluate_oos(load_config())
+
+
+def test_oos_evaluation_refuses_outputs_built_with_another_config(script, oos_layout):
+    other = copy.deepcopy(oos_layout["cfg"])
+    other["costs"]["bps_baseline"] = 5
+    with pytest.raises(ValueError, match="different config.yaml"):
+        script.evaluate_oos(other)
+
+
+def test_down_market_mean_hand_case(script):
+    mondays = pd.date_range("2020-01-06", periods=6, freq="7D")
+    index = pd.MultiIndex.from_arrays([mondays, mondays + pd.Timedelta(days=4)], names=["date_open", "date_close"])
+    r = pd.Series([0.01, 0.05, 0.01, -0.02, 0.01, 0.03], index=index)
+    m = pd.Series([-0.01, 0.02, -0.03, 0.01, -0.02, 0.0], index=index)
+    out = script.down_market_mean(r, m, n_resamples=200, block=2, seed=1, confidence=0.95)
+    assert out["mean"] == pytest.approx(0.01) and out["n_down"] == 3
+    assert out["lower"] == pytest.approx(0.01) and out["upper"] == pytest.approx(0.01)  # r is 0.01 in every down week
+    none = script.down_market_mean(r, m.abs() + 0.001, n_resamples=10, block=2, seed=1, confidence=0.95)
+    assert np.isnan(none["mean"]) and none["n_down"] == 0

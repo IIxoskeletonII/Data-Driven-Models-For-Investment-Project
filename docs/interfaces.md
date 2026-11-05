@@ -381,6 +381,10 @@ entries S2-8 to S2-14 in `docs/decisions.md`. The table keeps the original quest
   the rate of week t is the last observation dated on or before the session before the last session of week t
   (Amendment 1, contract 1), accruing rate/100 · 7/365 over the holding week; `sessions` is the equity calendar
   (contract 0). `period_average_rf(rf_weekly, period)` gives the annual average per period.
+  Market-neutral bonus helpers (§11, S34-9): `hac_beta(r, m, lags, confidence=0.95)` returns `beta`, `se`, `lower`,
+  `upper`, `lags`, `n_weeks` (OLS slope with intercept, Newey–West Bartlett HAC error, normal interval);
+  `monthly_returns(r, realised_on)` (compounded by calendar month of realisation, index `month`),
+  `rolling_positive_share(r, window=52)` and `calendar_year_returns(r, realised_on)` (index `year`).
 - `src/stats.py` (Eliya) implements §11 inference on weekly series: `paired_block_bootstrap`, `rank_ic`,
   `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, and `selection_gate`, the §07 rule applied to In-Sample
   walk-forward results (Sharpe uplift ≥ `selection.sharpe_uplift`, drawdown tolerance `selection.mdd_tolerance`, bootstrap
@@ -402,7 +406,7 @@ may refine in the phase pull request, which the other author reviews.
 | `src/sizing.py` | `signals_from_scores`, `target_weights` | 2.1, Mattia |
 | `src/backtest.py` | `forward_returns`, `run`, `BacktestResult` (re-export) | 2.1, Mattia |
 | `src/ledger.py` | `run_ledger` | 2.1, Mattia |
-| `src/metrics.py` | `performance`, `return_stats`, `behaviour`, `market`, `tbill_weekly_returns`, `period_average_rf` | 2.1, Mattia |
+| `src/metrics.py` | `performance`, `return_stats`, `behaviour`, `market`, `tbill_weekly_returns`, `period_average_rf`; `hac_beta`, `monthly_returns`, `rolling_positive_share`, `calendar_year_returns` (3.4, S34-9) | 2.1, Mattia |
 | `src/features.py` | `lag_one_session`, `asset_features`, `momentum_variants`, `market_states`, `sizing_betas`; helpers `weekly_index`, `last_sessions`, `raw_asset_features`, `cross_sectional_zscore`; `features_settings` (2.3a) | 2.2, Eliya |
 | `src/labels.py` | `make_labels`, `walk_forward_folds`; helpers `label_end_by_week`, `assert_purged` | 2.2, Eliya |
 | `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a); `Vault.forward_returns`, `Vault.last_selection`, `split_forward_returns` (3.1); `Vault.daily_closes`, `Vault.tbill_weekly` (3.3, S33-4) | 2.2, Eliya |
