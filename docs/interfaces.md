@@ -142,7 +142,11 @@ File (S31-1): `03_build_features.py: build_forward_returns(daily_open, daily_clo
 at the In-Sample end, the 11 tradables, `realised_on` and `period`. Every `realised_on` is ≤ 2019-12-27 or `NaT` (the last
 two weeks), so the table as a whole passes `validate_forward_returns`; its writer refuses a later `realised_on` while the
 vault is sealed. `build_labels` derives the labels from the same table. `split_forward_returns(table)` (in the script and
-in `src/vault.py`) returns `(fwd, realised_on, period)`.
+in `src/vault.py`) returns `(fwd, realised_on, period)`. Hook for the Out-of-Sample run (S37-2):
+`build_forward_returns(daily_open, daily_close, is_end, truncate_at=None, lock_path=None)` truncates the inputs at
+`truncate_at` (default `is_end`, the behaviour above) and keeps `is_end` as the period boundary ("IS" if
+`realised_on ≤ is_end`, else "OOS"); a `truncate_at` after `is_end` raises `OOSAccessError` unless `lock_path` is an
+existing `FROZEN.lock`, and one before `is_end` raises `ValueError`.
 
 ## 8. Scores (§07, §09)
 
@@ -303,6 +307,7 @@ class ScoreModel(Protocol):          # src/contracts.py
 | `market_states(as_of)` | market states (contract 4), rows with `date_close ≤ as_of` |
 | `labels(as_of)` | labels (contract 6), rows with `label_end ≤ as_of` |
 | `sizing_betas(as_of)` | sizing betas (contract 10), rows with `date_close ≤ as_of` (S23-4) |
+| `momentum_variants(as_of)` | M0\* momentum variants (contract 3: `MOM13_1`, `MOM26_1`, `MOM52_1`), rows with `date_close ≤ as_of`; sealed and logged like the other tables (S37-3) |
 | `forward_returns(as_of)` | `(fwd, realised_on, period)` of contract 7 on the rows with `realised_on ≤ as_of`: returns already realised at `as_of` (S31-1); the full table is validated on first read, a slice does not satisfy the "last two rows NaN" rule |
 | `daily_closes(as_of)` | adjusted daily closes (contract 1) of the 9 sectors and SPY on the sessions ≤ `as_of`, from `data_dir/daily_close.csv` cut at `is_end` right after reading: the input of the agent feature DSL (S33-4) |
 | `tbill_weekly(as_of)` | weekly T-bill returns (`src.metrics.tbill_weekly_returns`, DGS3MO lagged one session, decimal) on the weeks of the forward returns realised by `as_of`, from `raw_dir/fred/DGS3MO.csv` cut at `is_end` right after reading (S33-4) |
@@ -355,6 +360,21 @@ class ScoreModel(Protocol):          # src/contracts.py
   (`name`, counts, first and last week, column sums, min, max, fixed spot values, `scores_sha256`; no timestamp); tuned
   rungs with a grid also write `selection.csv` (one row per refit: the outer and inner fold dates, `inner_val_weeks`, one
   `sharpe_<value>` column per grid value, `chosen`).
+- Selection step (S37-4 to S37-7), In-Sample only: `05_train_walkforward.py --agent-returns` re-scores, through the
+  sealed vault, every agent trial row whose notes record the stage `walk_forward`, checks that its headline Sharpe and
+  max drawdown reproduce the row within 1e-9 and that the trial log is unchanged, and writes
+  `outputs/agent_lab/walkforward/agent_c<NN>/weekly.csv` (weekly index, `realised_on`, `period`, `net`, `rf`) and
+  `summary.json` (`trial_id`, `candidate`, `spec_hash`, `net_sharpe_rf_tbill`, `max_drawdown`, `weeks`, `first_week`,
+  `last_week`). `05_train_walkforward.py --select` reads the baseline In-Sample backtests of M0, M1, M2, M3 and ENS
+  (`outputs/backtests/<name>/`, refused when stale as in S32-10), calls `src.stats.selection_gate(results, m0, cfg,
+  rf=<rf column of M0's weekly.csv>, absent=("M5",))` and writes `outputs/metrics/selection_gate.json`: the gate's
+  `selected` and `candidates`, plus `absent`, `m0`, `thresholds`, `seed`, `weeks`, `first_week`, `last_week`,
+  `first_realised_on`, `last_realised_on`, `rf_source`, `rf_tbill_annual`, `inputs` (`spec_hash`, `weekly_sha256` per
+  model), `fallback`, `statement`, `rule` (sorted keys, LF, no timestamp; read by `08_run_oos.py --freeze`, S34-3). It
+  fills `is_sharpe` (`net_sharpe_rf_tbill`) and `is_mdd` (`max_drawdown`) of every human trial row from the backtest
+  `summary.json` of the same `spec_hash`, and writes `outputs/metrics/selection_bias.json`: `selected`, `dsr`, `pbo`,
+  `matrix` (weeks and one entry per column: `name`, `kind`, `rung`, `spec_hash`, `trial_ids`, `aliases`, `source`) and
+  `excluded` (trial rows without weekly returns). The three files are written only after every check passed.
 - Agents reach the vault only through the MCP server `ddmi-vault` (`src/agents/vault_server.py`, protocol section 08)
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
   show sectors as anonymised codes A1 … A9 and return summary metrics, never price series.

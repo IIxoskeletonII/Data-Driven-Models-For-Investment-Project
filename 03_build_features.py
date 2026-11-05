@@ -94,20 +94,33 @@ def load_opens(data_dir: Path, end: pd.Timestamp) -> pd.DataFrame:
     return daily_open
 
 
-def build_forward_returns(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end) -> pd.DataFrame:
-    """Forward returns of contract 7 on the truncated weekly index, as one table (S31-1).
+def build_forward_returns(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end, truncate_at=None,
+                          lock_path: Path | None = None) -> pd.DataFrame:
+    """Forward returns of contract 7 on the truncated weekly index, as one table (S31-1, S37-2).
 
-    Both inputs are truncated to dates <= is_end first; weekly opens come from src.data.weekly_panel and
-    fwd[t] = O(t+2) / O(t+1) − 1 from src.backtest.forward_returns (Mattia's, unchanged). A return of week t is realised
-    at the open of week t+2 (realised_on); the weeks ending 2019-12-20 and 2019-12-27 have none (NaN, NaT). Raises
-    OOSAccessError if any realised_on is after is_end. Returns the weekly index with the 11 tradables (float64, simple
-    returns), realised_on and period ("IS" or missing); its three parts pass validate_forward_returns.
+    Both inputs are truncated to dates <= truncate_at first (default is_end, the In-Sample end); weekly opens come from
+    src.data.weekly_panel and fwd[t] = O(t+2) / O(t+1) − 1 from src.backtest.forward_returns (Mattia's, unchanged). A
+    return of week t is realised at the open of week t+2 (realised_on); the last two weeks before the truncation have
+    none (NaN, NaT). period is "IS" if realised_on <= is_end, "OOS" if later, missing where realised_on is NaT.
+
+    A truncate_at after is_end (08_run_oos.py at data.end, Gate 4) needs lock_path to be an existing FROZEN.lock, else
+    OOSAccessError; without it, any realised_on after is_end raises OOSAccessError. A truncate_at before is_end raises
+    ValueError. Returns the weekly index with the 11 tradables (float64, simple returns), realised_on and period; its
+    three parts pass validate_forward_returns.
     """
     is_end = pd.Timestamp(is_end)
-    daily_open, daily_close = _up_to(daily_open, is_end), _up_to(daily_close, is_end)
+    truncate_at = is_end if truncate_at is None else pd.Timestamp(truncate_at)
+    if truncate_at < is_end:
+        raise ValueError(f"build_forward_returns: truncate_at {truncate_at.date()} is before the In-Sample end "
+                         f"{is_end.date()}")
+    unlocked = lock_path is not None and Path(lock_path).exists()
+    if truncate_at > is_end and not unlocked:
+        raise OOSAccessError(f"build_forward_returns: truncating at {truncate_at.date()}, after the In-Sample end "
+                             f"{is_end.date()}, needs an existing FROZEN.lock (S37-2)")
+    daily_open, daily_close = _up_to(daily_open, truncate_at), _up_to(daily_close, truncate_at)
     weekly_open, _ = weekly_panel(daily_open, daily_close)
     fwd, realised_on, period = forward_returns(weekly_open, is_end=is_end)
-    if (realised_on.dropna() > is_end).any():
+    if not unlocked and (realised_on.dropna() > is_end).any():
         raise OOSAccessError(f"build_forward_returns: a forward return is realised after {is_end.strftime(DATE_FORMAT)}")
     table = fwd.copy()
     table[REALISED_ON] = realised_on
