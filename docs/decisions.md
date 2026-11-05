@@ -1778,6 +1778,118 @@ approvals given so far; Eliya approves through the review of the 3.5 pull reques
 | Files affected | `make_submission.py`, `tests/test_make_submission.py` |
 | Amendment | No |
 
+## 2026-11-05 · Session 3.7: selection gate, selection-bias diagnostics and the pre-freeze hooks
+
+Format of the operating manual's evidence standard. "Instruction" quotes the session 3.7 task list Eliya set (5 Nov
+2026). Everything here is In-Sample: the vault stays sealed, no `FROZEN.lock` exists, and no Out-of-Sample value is
+computed or seen. "Approved by" is completed by Mattia's approving review of the pull request from branch
+`feat/3.7-gate`. Amendment 8 is not on `main` when this session starts (the last amendment is Amendment 7).
+
+### S37-1 · Correction to S33-19: where the selection step runs
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | S33-19 ("Files affected") says the selection step that passes `absent=("M5",)` is in `07_evaluate.py`. Is that right? |
+| Options considered | (a) leave S33-19 as written; (b) record the correction in a new entry, since entries are never edited in place (chosen) |
+| Decision | (b). S33-19 is wrong on this point: `07_evaluate.py` does not call `src.stats.selection_gate`, and before this session no module ran it (the only calls were in `tests/test_stats.py`). The selection step is `05_train_walkforward.py --select`, added in this session (S37-4), and that is where `absent=("M5",)` is applied. Everything else in S33-19 stands (M5 absent, ENS = M1–M3, the H5 result) |
+| Rationale | The decision log must say where the binding rule is applied, because `08_run_oos.py` reads its output (S34-3) |
+| Evidence | S33-19, Files affected: "the selection step (`07_evaluate.py`, Mattia's) passes `absent=("M5",)`"; `grep -rn "selection_gate(" --include=*.py` on `main` `df5bf6e`: the definition in `src/stats.py` and 12 calls in `tests/test_stats.py`, none elsewhere; S32-7: "The §07 selection gate is not applied here (Phase 3.1, `src.stats.selection_gate`)"; Instruction: "S33-19 says the selection step is in 07_evaluate.py; it is not. No module ran selection_gate before this session. 05_train_walkforward.py --select (this session) is where absent=("M5",) is applied." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
+### S37-2 · `build_forward_returns` takes a truncation date separate from the In-Sample end (S34-5 hook 1)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | `03_build_features.py: build_forward_returns(daily_open, daily_close, is_end)` uses one date both to truncate the opens and as the period boundary, so 08's call at `data.end` labels every week `IS` (S34-5, hook 1). How is the truncation separated? |
+| Options considered | (a) a keyword `truncate_at` (default: `is_end`), with `is_end` kept as the period boundary; a truncation after `is_end` needs an existing `FROZEN.lock` passed as `lock_path`, as `write_tables(..., allow_oos=True)` does (chosen); (b) the same keyword without a lock check; (c) a second function for the Out-of-Sample run |
+| Decision | (a). Signature `build_forward_returns(daily_open, daily_close, is_end, truncate_at=None, lock_path=None)`. Both inputs are cut at `truncate_at` (`is_end` when `None`), and `period` is "IS" if `realised_on ≤ is_end`, "OOS" if after, missing where `realised_on` is `NaT`, by `src.backtest.forward_returns(weekly_open, is_end=is_end)` (Mattia's, unchanged). If `truncate_at` is after `is_end`, the function raises `OOSAccessError` unless `lock_path` is given and exists; without that, a `realised_on` after `is_end` still raises `OOSAccessError`, as before. With `truncate_at=None` the output is identical to the current function's (default behaviour unchanged; `build_labels` and `main` keep calling it with three arguments). A `truncate_at` before `is_end` is refused (`ValueError`) |
+| Rationale | (a) gives 08 the period labels of contract 7 straight from the builder, and keeps the seal: the builder itself cannot compute an Out-of-Sample return before the freeze. (b) would let any caller compute Out-of-Sample returns before Gate 3 |
+| Evidence | S34-5 (hook 1): "`build_forward_returns` uses one date for the truncation and the period boundary, so at `data.end` every period reads `IS`; the run re-assigns `period` from `realised_on` against `split.in_sample_end`"; contract 7 (`period`); S22-5 ("Its writer raises `OOSAccessError` for any later row unless `FROZEN.lock` exists and `allow_oos=True` is passed"); operating manual §3.3; Instruction §1(a): "build_forward_returns takes an optional truncation date separate from the In-Sample end, with the default behaviour unchanged" |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review; contract 7) |
+| Files affected | `03_build_features.py`, its tests, `docs/interfaces.md` (contract 7) |
+| Amendment | No |
+
+### S37-3 · Public `Vault.momentum_variants(as_of)` (S34-5 hook 3)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | 08 reads the M0\* momentum variants through the vault's private `_rows_until` because there is no public reader (S34-5, hook 3). What does the public reader do? |
+| Options considered | (a) `momentum_variants(as_of)` with the same seal, slice and log as `features`, `market_states` and `sizing_betas` (chosen); (b) leave the private call in 08 |
+| Decision | (a). `Vault.momentum_variants(as_of)` returns the rows of `momentum_variants.csv` (contract 3: `MOM13_1`, `MOM26_1`, `MOM52_1`, index `(date_close, ticker)`) with `date_close ≤ as_of`, known after Friday close `as_of`. An `as_of` after `is_end` raises `OOSAccessError` unless `FROZEN.lock` exists and `unlock()` was called; every call is logged `ok` or `refused` under the method name `momentum_variants`, exactly like the other table readers (it is `_rows_until("momentum_variants", "momentum_variants", as_of)`). 08's `vault_momentum` already prefers a public `momentum_variants` when it exists, so 08 needs no change |
+| Rationale | One public, tested path per table; 08 should not depend on a private method of another owner's file |
+| Evidence | S34-5 (hook 3): "The vault has no public `momentum_variants(as_of)`; the run calls it if it exists, otherwise the vault's own sealed and logged reader `_rows_until("momentum_variants", …)`"; `08_run_oos.py: vault_momentum` (`getattr(vault, "momentum_variants", None)`); contract 15; Instruction §1(c): "a public Vault.momentum_variants(as_of), sealed and logged like the other readers" |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review; contract 15) |
+| Files affected | `src/vault.py`, its tests, `docs/interfaces.md` (contract 15) |
+| Amendment | No |
+
+### S37-4 · The §07 gate: `05_train_walkforward.py --select` and `outputs/metrics/selection_gate.json`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | Which inputs does the selection step read, how does it refuse stale ones, which rf does it pass, and what does it write for `08_run_oos.py --freeze` (S34-3, S34-5 hook 4)? |
+| Options considered | Inputs: (a) the In-Sample baseline weekly net returns of `outputs/backtests/<name>/weekly.csv` for M0, M1, M2, M3 and ENS (chosen); (b) re-run the engine in 05. rf: (c) the `rf` column of M0's `weekly.csv`, the weekly T-bill return 06 wrote (chosen); (d) recompute it from DGS3MO in 05 |
+| Decision | (a) and (c). `--select` is a new option of `05_train_walkforward.py`, exclusive with `--model` and `--fixed`. For each of M0, M1, M2, M3 and ENS it stops (`SystemExit`, nothing written) when: `outputs/backtests/<name>/used.yaml` fails `check_used` against `06_backtest.py: backtest_used(cfg, name)` (06 loaded by path, read only); `outputs/walkforward/<name>/summary.json` or `outputs/backtests/<name>/summary.json` has a `spec_hash` other than `spec_hash(spec_for(name, cfg), cfg)` (the S32-10 rule of 06); that hash is not a row of `docs/trial_log.csv`; the backtest summary's `period` is not `IS` or its `baseline` is not the configured baseline scenario; any row of `weekly.csv` is not In-Sample (`period` other than `IS`, or a `date_close` or `realised_on` after `split.in_sample_end`); `net` or `rf` is missing or not finite; a candidate's weekly index differs from M0's; or the `rf` columns of the five files differ by more than 1e-12. It then calls `src.stats.selection_gate({M1, M2, M3, ENS}, M0, cfg, rf=rf, absent=("M5",))` with rf the weekly T-bill (Amendment 6 C1, S31-13) and writes `outputs/metrics/selection_gate.json` (JSON, sorted keys, LF, no timestamp): the gate's `selected` and `candidates` unchanged (every row: Sharpe, zero-cost Sharpe, MDD, P(uplift > 0) at blocks 4 and 8, the uplift interval, the three test verdicts, `passes`), plus `absent`, `m0` (headline and zero-cost Sharpe, MDD), `thresholds` (the `selection` section), `seed`, `weeks`, `first_week`, `last_week`, `first_realised_on`, `last_realised_on`, `rf_source`, `rf_tbill_annual` (M0's summary), `inputs` (per model: `spec_hash` and SHA-256 of `weekly.csv`), `fallback` (true when M0\* is selected) and `statement`. When no candidate passes, `statement` reads "No candidate passed the §07 gate, so M0* is traded: the ML models failed to beat the baseline (pre-registration §07 step 5)." `--select` also fills the trial log (S37-5) and writes the diagnostics (S37-7); every check of the three steps runs before any of the three files is written |
+| Rationale | The gate must use the backtests the slides report, and refuse them exactly when 06 would; reading rf from M0's file keeps one T-bill series (06's) for every Sharpe |
+| Evidence | §07 steps 1 to 5; Amendment 6 C1; S31-8, S31-13; S32-10; S23-10 (`weekly.csv` holds `rf`, the weekly T-bill); S33-19 and S37-1 (M5 absent); S34-3 ("The gate file holds at least `selected` … and `candidates` (each with `name` and `status` …), as `selection_gate` returns them"); Instruction §2: "05_train_walkforward.py --select reads the In-Sample weekly net returns of M0, M1, M2, M3 and ENS from outputs/backtests/<name>/weekly.csv. It refuses stale outputs, checking spec_hash against the trial log as 06 does. It takes the weekly T-bill rf, calls src.stats.selection_gate(results, m0, cfg, rf=..., absent=("M5",)) (Amendment 6 C1 headline Sharpe), and writes outputs/metrics/selection_gate.json, the file 08 reads, with every candidate's row and the selected model." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review; contract 15) |
+| Files affected | `05_train_walkforward.py`, its tests, `docs/interfaces.md` (contract 15) |
+| Amendment | No: applies §07 and Amendment 6 C1 |
+
+### S37-5 · `is_sharpe` and `is_mdd` of the human trial rows
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | S23-6 (3) left `is_sharpe` and `is_mdd` empty for the selection step to fill from the outputs of 06. Which values, in which format, and what if a cell is already filled? |
+| Options considered | Value: (a) the baseline headline Sharpe `net_sharpe_rf_tbill` and `max_drawdown` of `outputs/backtests/<name>/summary.json` (chosen; the agent rows hold the same two figures, S33-9); (b) the zero-cost Sharpe. Filled cell: (c) overwrite; (d) keep it if it equals the value, stop if it differs (chosen) |
+| Decision | (a) and (d). In `--select`, each human row is matched to the backtest folders whose `summary.json` holds its `spec_hash`, among the 17 names of S31-10, each checked as in S37-4 (`used.yaml`, current spec hash, In-Sample only). Every human row must match at least one folder; `M0` and `M0_L26` share trial 1 and must give equal values. The values are written as Python's shortest float text (`repr`), the format of the agent rows. An empty cell is filled; a filled cell equal to the value is kept; a filled cell that differs stops the run (the trial log or the backtest is stale). Agent rows keep their recorded metrics. The file is rewritten with the `csv` writer of `src.vault.append_trial` (LF), so every other cell and every agent row stay byte-identical |
+| Rationale | One Sharpe convention in the trial log, the gate's (Amendment 6 C1); refusing a silent overwrite keeps the log append-only in spirit |
+| Evidence | S23-6 (3): "`is_sharpe` and `is_mdd` stay empty until Phase 3.1, where the selection step fills them from the outputs of `06_backtest.py`"; S23-9 ("baseline `net_sharpe_rf_tbill` and `max_drawdown`, S23-10"); S33-9; S31-6 (`M0_L26` is trial 1); Instruction §3: "Fill is_sharpe and is_mdd for every human trial row of docs/trial_log.csv from the 06 outputs (S23-6). Agent rows keep their recorded metrics." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `05_train_walkforward.py`, its tests, `docs/trial_log.csv` |
+| Amendment | No |
+
+### S37-6 · Weekly In-Sample returns of the agent candidates that reached the walk-forward (`--agent-returns`)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | PBO (§10) runs on the weekly In-Sample returns of every candidate configuration, agent candidates included, but the lab run kept only summary metrics of the 12 candidates that reached the walk-forward (S33-18). How are their weekly returns obtained? |
+| Options considered | (a) re-score each one through the sealed vault from the spec in its trial row and book it with the lab's own engine path, checking the result against the row's recorded figures (chosen); (b) leave the agent candidates out of the PBO matrix; (c) re-run the lab (refused: S33-19, no re-run) |
+| Decision | (a). `05_train_walkforward.py --agent-returns` takes every agent row of `docs/trial_log.csv` whose `notes` record the stage `walk_forward`, rebuilds its spec from `params_json`, and stops unless `spec_hash(spec, cfg)` equals the row's `spec_hash` (otherwise the config changed and the row is stale). It scores the spec with `Vault.run_walkforward` on the sealed vault of `src.agents.vault_server.real_server` (base rung from `agent_lab/run/summary.json`, M2, S33-10) and books it with that server's `book` (§09 sizing and Mattia's engine at baseline costs, the vault's forward returns and T-bill), the computation that produced the row. A logged spec adds no trial row (S23-2); the run checks that `docs/trial_log.csv` is byte-identical afterwards and stops otherwise. Reproduction: the headline Sharpe and the max drawdown must equal the row's `is_sharpe` and `is_mdd` within 1e-9 (S34-2: tolerances, not hashes), else the run stops and reports both. Outputs (git-ignored): `outputs/agent_lab/walkforward/agent_c<candidate, 2 digits>/weekly.csv` (weekly index, `realised_on`, `period`, `net`, `rf`; every week In-Sample) and `summary.json` (`trial_id`, `candidate`, `spec_hash`, `net_sharpe_rf_tbill`, `max_drawdown`, `weeks`, `first_week`, `last_week`). No `used.yaml` is written (S35-3 checks only the settings files it knows); `--select` checks each folder's staleness through the spec hash instead (summary hash = row hash = `spec_hash(params_json, cfg)`). Feasibility, 5 Nov 2026, before this entry: trial 17 re-scored in 9.5 s, Sharpe and MDD differences 0.0, trial log unchanged |
+| Rationale | (b) would drop 12 of the configurations the selection process could have picked from, and §10 names agent candidates in the matrix; re-scoring a logged spec on In-Sample data is a reproduction, not a new trial |
+| Evidence | §10: "PBO by CSCV. Run on the In-Sample weekly return matrix of every candidate configuration (rungs × grid values × agent candidates)"; S31-7 ("agent candidates"); S33-9, S33-16, S33-18 (12 candidates reached the walk-forward); S23-2; S34-2; Instruction §4: "PBO by CSCV with inference.pbo_blocks (16) over every configuration that has weekly In-Sample returns (rungs, fixed grid values, agent candidates that reached the walk-forward); list what is included." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `05_train_walkforward.py`, its tests |
+| Amendment | No |
+
+### S37-7 · Selection-bias diagnostics: DSR and PBO in `outputs/metrics/selection_bias.json`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | On which matrix and with which N are the Deflated Sharpe Ratio and PBO of the In-Sample selection computed, and how does this relate to S34-11? |
+| Options considered | Matrix: (a) one column per distinct `spec_hash` with weekly In-Sample returns: the 17 backtest folders (`M0_L26` and `M0` one column) and the agent folders of S37-6 (chosen); (b) the backtest folders only, as S34-11 does for the Out-of-Sample report |
+| Decision | (a). In `--select`, after the gate: every backtest folder is checked as in S37-4 and every agent folder as in S37-6; a walk-forward agent row without its folder stops the run (run `--agent-returns` first). The matrix holds the baseline weekly net returns on the weeks common to all columns. PBO = `src.stats.pbo_cscv(matrix, inference.pbo_blocks)` (16 blocks, C(16, 8) = 12,870 splits, S31-9). DSR = `src.stats.deflated_sharpe_ratio(selected In-Sample net, N, trial_returns=matrix)`, N = the number of rows of `docs/trial_log.csv` (human and agent, S31-7), the selected model being the gate's (its `outputs/backtests/<name>/weekly.csv`); Sharpes per week, mean/std of the net returns (S31-9, S31-12). `selection_bias.json` (sorted keys, LF, no timestamp) holds: `selected`; `dsr` (value, N, human and agent counts, the selected model's weekly and annualised Sharpe, weeks, the trial-Sharpe variance, SR₀ weekly); `pbo` (value, blocks, splits, block length, weeks dropped, median logit); `matrix` (weeks, first and last week, and every column with its name, kind, rung, `spec_hash`, trial ids, source folder); `excluded` (every trial row without weekly returns, with its trial id, kind and stage). Relation to S34-11: `07_evaluate.py --period OOS` builds its In-Sample matrix from `outputs/backtests/` only, so it would hold 16 columns, not 28, and its In-Sample DSR and PBO would differ from these; it is Mattia's file, so this is an open point for him (read the agent folders or `selection_bias.json`), not changed here |
+| Rationale | The DSR asks whether the winner beats the luckiest of every configuration tried; leaving the agent trials out of the variance and of PBO would understate the search |
+| Evidence | §10 validation hierarchy items 2 and 3; §11 inference table ("Selection bias \| Deflated Sharpe Ratio, N = all human and agent trials", "Selection-process overfitting \| PBO by CSCV, 16 blocks"); S31-7, S31-9, S31-12; S34-11; Instruction §4: "the Deflated Sharpe Ratio of the selected model, with N = every trial-log row (human and agent); PBO by CSCV with inference.pbo_blocks (16) over every configuration that has weekly In-Sample returns (rungs, fixed grid values, agent candidates that reached the walk-forward); list what is included." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `05_train_walkforward.py`, its tests |
+| Amendment | No: applies §10 and §11 |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
