@@ -1,0 +1,18 @@
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "cd523edd3d453736", "result": "ok", "tool": "get_features"}
+{"argument_hash": "8e64868b0614b430", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "cca33676d41d2610", "reason": "rejected at redundancy", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "b52023e0e20a700a", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "4b703488b6d8bd78", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "5f69af7639057757", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "d942939a50012b11", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "da1bcbf2fef1c150", "reason": "passed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "37bc45622a03a8ec", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "260b780d409248db", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "94cd76e0cff2d428", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "2890c892d6f36ba6", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}

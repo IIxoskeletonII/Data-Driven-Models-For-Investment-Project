@@ -625,3 +625,26 @@ def test_run_walkforward_unknown_feature_is_logged_as_refused(env):
     with pytest.raises(ValueError):
         vault.run_walkforward({"rung": "M0", "feature": "MOM7_3"}, trial_path=paths["trials"])
     assert [line["result"] for line in log_lines(paths["log"])] == ["refused"]
+
+
+# ---------------------------------------------------------------- S33-2: the two spec gaps of the session 3.1 audit
+
+
+@pytest.mark.parametrize("key", ["as_of", "end"])
+@pytest.mark.parametrize("day", ["2010-06-04", "2019-12-27"])
+def test_run_walkforward_refuses_an_in_sample_spec_date(env, key, day):
+    """A spec date inside the In-Sample period is refused (ValueError), logged and adds no trial: it was ignored before."""
+    vault, paths = env
+    with pytest.raises(ValueError, match="may not carry"):
+        vault.run_walkforward({"rung": "M0", key: day}, trial_path=paths["trials"])
+    assert log_lines(paths["log"])[-1]["result"] == "refused"
+    assert not paths["trials"].exists() or trial_rows(paths["trials"]) == []
+
+
+@pytest.mark.parametrize("feature", ["BETA52", "REV1", "MOM52_4", "MOM7_1", "MOM104_1"])
+def test_run_walkforward_m0_refuses_a_column_outside_the_preregistered_set(env, feature):
+    vault, paths = env
+    with pytest.raises(ValueError, match="pre-registered M0 column"):
+        vault.run_walkforward({"rung": "M0", "feature": feature}, trial_path=paths["trials"])
+    assert log_lines(paths["log"])[-1]["result"] == "refused"
+    assert not paths["trials"].exists() or trial_rows(paths["trials"]) == []
