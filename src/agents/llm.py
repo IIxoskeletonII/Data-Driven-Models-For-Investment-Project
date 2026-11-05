@@ -62,11 +62,22 @@ def worst_case_cost(request: dict) -> float:
 
 
 def parse_json(text: str) -> dict | None:
-    """The JSON object of a response, or None when it is blank or not a JSON object."""
+    """The JSON object of a response, or None when it is blank or not a JSON object. A complete object followed only by
+    surplus closing brackets or whitespace (a miscounted deep nesting) is accepted as that object (S33-13)."""
+    if not isinstance(text, str):
+        return None
     try:
         value = json.loads(text)
-    except (TypeError, ValueError):
-        return None
+    except ValueError:
+        start = text.find("{")
+        if start < 0:
+            return None
+        try:
+            value, end = json.JSONDecoder().raw_decode(text, start)
+        except ValueError:
+            return None
+        if text[:start].strip() or text[end:].strip().strip("}]").strip():
+            return None
     return value if isinstance(value, dict) else None
 
 

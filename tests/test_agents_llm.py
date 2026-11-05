@@ -123,3 +123,34 @@ def test_the_real_client_needs_the_key_only_for_live_calls(monkeypatch):
 def test_unknown_mode_is_refused(tmp_path):
     with pytest.raises(ValueError):
         llm.LLM(llm.LLMCache(tmp_path), mode="dry")
+
+
+# ---------------------------------------------------------------- S33-13: the parser takes only the first complete object
+
+
+def test_parse_json_takes_the_first_complete_object_and_refuses_other_text():
+    assert llm.parse_json('{"spec": {"name": "a", "expr": {}}}}}') == {"spec": {"name": "a", "expr": {}}}
+    assert llm.parse_json('{"a": 1}\n } ] ') == {"a": 1}
+    for text in ('{"a": 1} and more', 'note: {"a": 1}', '{"a": 1}{"b": 2}', '{"a": ', "", "   ", "[1]", None):
+        assert llm.parse_json(text) is None
+
+
+def test_the_dsl_schema_stays_strict_after_the_lenient_parse():
+    """A spec rescued from surplus braces still goes through the strict DSL validation (S33-3)."""
+    from src.agents import dsl
+
+    close = {"input": "close"}
+    rescued = [
+        '{"spec": {"name": "u", "expr": {"op": "cs_z", "x": {"op": "rank_all", "x": {"input": "close"}}}}}}}',  # unknown op
+        '{"spec": {"name": "k", "expr": {"op": "cs_z", "x": {"input": "close"}}, "extra": 1}}}',  # extra spec key
+        '{"spec": {"name": "n", "expr": {"op": "cs_z", "x": {"op": "lag", "n": 2, "k": 3, "x": {"input": "close"}}}}}}',
+        '{"spec": {"name": "m", "expr": {"op": "lag", "n": 1, "x": {"input": "close"}}}}}',  # root rule
+    ]
+    for text in rescued:
+        parsed = llm.parse_json(text)
+        assert parsed is not None
+        with pytest.raises(dsl.DSLError):
+            dsl.parse(parsed["spec"])
+    assert llm.parse_json('{"spec": {"name": "t", "expr": {"op": "cs_z", "x": ') is None  # truncated
+    valid = '{"spec": {"name": "ok", "expr": {"op": "cs_z", "x": ' + json.dumps(close) + '}}}}}'
+    assert dsl.parse(llm.parse_json(valid)["spec"]).name == "ok"
