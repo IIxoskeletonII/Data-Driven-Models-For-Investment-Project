@@ -238,3 +238,67 @@ def test_period_metrics_split_one_book(returns):
     assert got["OOS"]["final_equity"] == pytest.approx(100 * (1 + oos).prod(), abs=1e-9)
     # turnover restarts at the first week of each period (skeleton)
     assert got["OOS"]["turnover_per_year"] == pytest.approx(got["IS"]["turnover_per_year"] * 200 / 100, abs=TOL)
+
+
+# --- market-neutral bonus helpers (decision S34-9) ----------------------------------------------------------------------
+
+
+def test_hac_beta_with_zero_lags_is_whites_robust_error():
+    rng = np.random.default_rng(3)
+    m = pd.Series(rng.normal(0, 0.02, 80), index=weeks(80))
+    r = 0.3 * m + pd.Series(rng.normal(0, 0.01, 80), index=m.index)
+    out = metrics.hac_beta(r, m, lags=0, confidence=0.95)
+    x, y = m.to_numpy(), r.to_numpy()
+    xc = x - x.mean()
+    beta = (xc @ (y - y.mean())) / (xc @ xc)
+    u = (y - y.mean()) - beta * xc
+    white = math.sqrt(np.sum(xc ** 2 * u ** 2)) / (xc @ xc)
+    assert out["beta"] == pytest.approx(beta, rel=TOL)
+    assert out["beta"] == pytest.approx(metrics.market(r, m, 0.0)["beta"], rel=1e-10)
+    assert out["se"] == pytest.approx(white, rel=1e-12)
+    assert out["upper"] - out["beta"] == pytest.approx(1.959963984540054 * white, rel=1e-9)
+
+
+def test_hac_beta_bartlett_weights_hand_case():
+    m = pd.Series([0.01, -0.02, 0.03, -0.01, 0.02], index=weeks(5))
+    r = pd.Series([0.0, 0.01, -0.01, 0.02, 0.0], index=m.index)
+    x, y = m.to_numpy(), r.to_numpy()
+    xc = x - x.mean()
+    beta = (xc @ (y - y.mean())) / (xc @ xc)
+    z = xc * ((y - y.mean()) - beta * xc)
+    t = len(z)
+    s = z @ z / t + 2 * (1 - 1 / 3) * (z[1:] @ z[:-1]) / t + 2 * (1 - 2 / 3) * (z[2:] @ z[:-2]) / t
+    expected = math.sqrt(s * t) / (xc @ xc)
+    assert metrics.hac_beta(r, m, lags=2)["se"] == pytest.approx(expected, rel=1e-12)
+
+
+def test_hac_beta_refuses_bad_inputs():
+    m = pd.Series([0.01, 0.01, 0.01], index=weeks(3))
+    with pytest.raises(ValueError, match="zero variance"):
+        metrics.hac_beta(m, m, lags=0)
+    with pytest.raises(ValueError, match="missing"):
+        metrics.hac_beta(pd.Series([0.1, np.nan, 0.2], index=m.index), m + [0, 0.01, 0.02], lags=0)
+
+
+def test_monthly_returns_compound_by_month_of_realisation():
+    index = weeks(4, "2020-01-20")
+    r = pd.Series([0.1, -0.5, 0.2, 0.1], index=index)
+    realised = pd.Series(pd.to_datetime(["2020-01-27", "2020-01-31", "2020-02-03", "2020-02-10"]), index=index)
+    out = metrics.monthly_returns(r, realised)
+    assert list(out.index) == [pd.Timestamp("2020-01-31"), pd.Timestamp("2020-02-29")]
+    assert out.tolist() == pytest.approx([1.1 * 0.5 - 1, 1.2 * 1.1 - 1], rel=TOL)
+
+
+def test_rolling_positive_share_hand_case():
+    r = pd.Series([0.1, -0.2, 0.05, 0.3], index=weeks(4))
+    # windows of 2: (1.1·0.8 − 1) < 0, (0.8·1.05 − 1) < 0, (1.05·1.3 − 1) > 0
+    assert metrics.rolling_positive_share(r, 2) == pytest.approx(1 / 3)
+    assert np.isnan(metrics.rolling_positive_share(r, 5))
+
+
+def test_calendar_year_returns_by_year_of_realisation():
+    index = weeks(3, "2019-12-16")
+    r = pd.Series([0.1, 0.2, -0.1], index=index)
+    realised = pd.Series(pd.to_datetime(["2019-12-30", "2020-01-06", "2020-01-13"]), index=index)
+    out = metrics.calendar_year_returns(r, realised)
+    assert out.to_dict() == pytest.approx({2019: 0.1, 2020: 1.2 * 0.9 - 1})
