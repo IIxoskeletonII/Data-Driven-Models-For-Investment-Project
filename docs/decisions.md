@@ -1449,6 +1449,51 @@ S33-10 is reserved for the base rung (S33-5), recorded once the In-Sample backte
 | Files affected | `src/agents/graph.py`, `src/agents/prompts.py`, `src/agents/llm.py`, `src/agents/vault_server.py`, `04_agent_lab.py`, `tests/test_vault_server.py`, `tests/test_planted_signal.py`, `agent_lab/` |
 | Amendment | No |
 
+### S33-10 · The base rung of the agent lab and M5 is M2
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | Which rung do agent features extend (Amendment 7 C1)? |
+| Options considered | M1, M2, M3 by In-Sample headline net Sharpe (the rule of Amendment 7 C1; no other option) |
+| Decision | M2. In-Sample headline net Sharpe (weekly T-bill, 10 bps / 2%, 624 weeks 2008-01-04 to 2019-12-13): M1 −1.2856, M2 −0.9865, M3 −1.4169; M2 is the highest. The lab's server rebuilds M2's book from the vault and gets the same headline Sharpe as `06_backtest.py` (−0.986488 against −0.986488, difference 0.0), with the trial log unchanged (M2's spec hash is already logged) |
+| Rationale | Amendment 7 C1 fixes the rule; this entry records its outcome and the local reproduction |
+| Evidence | S32-11 (Mattia, 3 Nov 2026): "M1 −1.286 / −1.183, M2 −0.986 / −0.887, M3 −1.417 / −1.311 … Among M1–M3 the highest headline net Sharpe is M2's"; local `06_backtest.py --all` on main `e88f940` (5 Nov 2026), `outputs/backtests/M2/summary.json` `net_sharpe_rf_tbill` −0.986487564971885 (M1 −1.285581, M3 −1.416857; M0, ENS and M0\* also equal S32-11); `src.agents.vault_server.real_server("M2").base()["net_sharpe"]` −0.986487564971885 |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `04_agent_lab.py`, `agent_lab/run/` |
+| Amendment | No (Amendment 7 C1 applied) |
+
+### S33-16 · The real In-Sample run: trial-log snapshot, limits, cache and resume
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How does the real In-Sample run see the trial history so that a replay reproduces it, and what are its limits? |
+| Options considered | (a) Hypothesis reads the live `docs/trial_log.csv` (rejected: a replay sees the run's own rows and later rows, so its prompts differ, S33-15 audit); (b) a snapshot at the start plus this run's own trials (chosen, Eliya's instruction) |
+| Decision | `04_agent_lab.py --insample` copies `docs/trial_log.csv` at its start to `agent_lab/run/trial_log_snapshot.csv`. `get_trial_history` then returns the snapshot's rows plus the rows of the trial log whose spec hash this run's server wrote or evaluated, in trial-log order; it never shows a row written by anyone else after the snapshot. Every proposal of the run (accepted, rejected or invalid) is a row of `docs/trial_log.csv` (S33-9: spec hash, metrics, cost). A replay (`--insample --replay --out <folder outside agent_lab/>`) copies the committed snapshot to `<folder>/trial_log.csv` and writes there, never to `docs/trial_log.csv`, so its history and prompts equal the live run's. Limits: 40 LLM candidates (`agent_lab.max_candidates`), no injected specs, base rung M2 (S33-10); the budget is USD 5 minus the spend already in `agent_lab/cache/` (the planted runs, USD 0.032617), so the lab's total stays under the hard stop; the meter keeps the peak prices of S33-1. Every LLM call is cached in `agent_lab/run/cache/insample.jsonl`. The run writes `agent_lab/run/candidates.jsonl`, `summary.json`, `vault_server_log.jsonl` and the snapshot. If a call fails (network or API error), the same command is run again: identical requests are answered from the cache at zero cost and the run continues live; each resumption is recorded. No prompt, threshold or setting changes during the run |
+| Rationale | The snapshot fixes what Hypothesis can see at every round, so a replay rebuilds identical requests; writing every proposal to the real trial log keeps the deflated Sharpe's trial count complete (manual §3.5); counting the planted spend keeps the whole lab under USD 5 |
+| Evidence | Eliya's instruction (5 Nov 2026): "the run snapshots docs/trial_log.csv at its start into agent_lab/run/; Hypothesis reads only that snapshot plus this run's own trials, so a replay sees the same history", "at most 40 candidates, under the $5 hard stop, with the meter at peak prices", "every LLM call is cached under agent_lab/run/cache/", "if a call fails, resume from the cache as you did in attempt 4, and record it", "no prompt, threshold or setting changes during the run"; audit of 5 Nov 2026 (S2); S33-1; S33-7; S33-9; S33-15 |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction and spend approval of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `src/agents/vault_server.py`, `04_agent_lab.py`, tests, `agent_lab/run/`, `docs/trial_log.csv` |
+| Amendment | No |
+
+### S33-17 · The recognition probe
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | How is the residual risk measured that the model recognises the sectors behind the anonymised codes A1 … A9? |
+| Options considered | (a) one call per code: the model sees that code's anonymised summary from `get_features` and names the ETF (chosen); (b) one call with all nine codes (rejected: the answers would be a joint assignment, not nine independent guesses) |
+| Decision | After the run, 9 calls of the lab's model, one per code, each with the code's six features at the In-Sample end (value, 104-week mean and standard deviation, exactly as `get_features("2019-12-27")` gives them) and the list of the 9 sector ETFs with their sector names; the model answers `{"ticker": one of the 9, "reason": str}`. A hit is the code's true ticker; an unparseable or unlisted answer is a miss. The hit rate (hits / 9, against 1/9 by chance) is reported as a measured residual of the anonymisation, with each code's answer; it changes nothing in the run. The calls are cached in `agent_lab/run/cache/probe.jsonl`, under the same meter and budget; the mapping itself is used only to score the answers and is written only as hit or miss per code |
+| Rationale | Independent calls measure what a single proposal's context could reveal; the result shows how much the anonymisation protects against the model's memory of sector behaviour |
+| Evidence | Session 3.3 instructions §6 ("Recognition probe"); Eliya's instruction (5 Nov 2026): "run the recognition probe (one call per code A1…A9; report the hit rate as a measured residual)"; S33-5 (anonymisation) |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `04_agent_lab.py`, `src/agents/prompts.py`, `agent_lab/run/` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
