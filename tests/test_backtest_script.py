@@ -643,3 +643,29 @@ def test_diagnostics_refuse_stale_scores(script, model_inputs, flag):
         script.main(flag)
     assert not (model_inputs["out"].parents[1] / "diagnostics").exists()
     assert not model_inputs["log"].exists()
+
+
+def test_read_market_reaches_a_later_end_with_periods_by_realisation(script, synthetic_market, tmp_path):
+    """read_market (decision S34-7): the raw files cut at `end`, period IS iff realised_on <= is_end; the In-Sample path
+    (in_sample_market) still refuses any later return."""
+    yahoo = tmp_path / "data" / "raw" / "yahoo"
+    yahoo.mkdir(parents=True)
+    for ticker, frame in synthetic_market.raw.items():
+        frame.rename_axis("Date").to_csv(yahoo / f"{ticker}.csv")
+    is_end = pd.Timestamp("2019-12-27")
+    raw, sessions, fwd, realised_on, period = script.read_market(pd.Timestamp("2020-06-26"), is_end, root=tmp_path)
+    assert sessions.max() <= pd.Timestamp("2020-06-26") and all(f.index.max() <= pd.Timestamp("2020-06-26") for f in raw.values())
+    known = realised_on.notna()
+    assert (period[known] == np.where(realised_on[known] <= is_end, "IS", "OOS")).all()
+    assert realised_on[period == "OOS"].min() == pd.Timestamp("2019-12-30")
+    _, _, fwd_is, _, _ = script.read_market(is_end, is_end, root=tmp_path)
+    common = fwd_is.dropna().index
+    pd.testing.assert_frame_equal(fwd.loc[common], fwd_is.loc[common])  # no later price changes an In-Sample return
+
+
+def test_read_risk_free_takes_an_end_and_a_root(script, synthetic_market, tmp_path):
+    fred = tmp_path / "data" / "raw" / "fred"
+    fred.mkdir(parents=True)
+    synthetic_market.fred[["DGS3MO"]].rename_axis("Date").to_csv(fred / "DGS3MO.csv")
+    series = script.read_risk_free(load_config(), pd.Timestamp("2020-03-31"), root=tmp_path)
+    assert series.index.max() <= pd.Timestamp("2020-03-31") and series.index.max() > pd.Timestamp("2019-12-27")

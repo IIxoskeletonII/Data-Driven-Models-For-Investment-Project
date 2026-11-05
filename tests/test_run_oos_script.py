@@ -1,0 +1,446 @@
+"""08_run_oos.py (decisions S34-1 to S34-7): --freeze, the lock checks, the single-entry OOS access log, the full-range
+rebuild through 03's unlock path, the quarterly Out-of-Sample refits at the frozen grid values and the continuous book.
+
+Everything runs on the shared synthetic market (sessions 2011-01-03 to 2020-12-31) laid out as a small project in a
+temporary git repository: config.yaml (a copy of the real one with a warm-up ending in 2012, test years 2017-2019, a
+26-week inner validation window and data.end 2020-12-18), the raw files, the daily prices, the In-Sample tables of 03,
+the walk-forwards of 05 and the In-Sample backtests of 06. No path of the repository itself is written and no
+FROZEN.lock is created in it.
+"""
+
+import copy
+import importlib.util
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import yaml
+
+from src import features
+from src.config import data_settings, load_config, save_used
+from src.data import write_csv
+from src.models import ensemble_scores, walkforward_rung
+
+ROOT = Path(__file__).resolve().parents[1]
+IS_END = pd.Timestamp("2019-12-27")
+DATA_END = "2020-12-18"
+SPOTS = (("2017-01-06", "XLB"), ("2017-06-09", "XLK"), ("2018-02-09", "XLE"), ("2018-10-12", "XLF"),
+         ("2019-12-13", "XLY"))
+WALKFORWARDS = ("M0", "M0_star", "M1", "M2", "M3", "ENS")
+GATE = {"selected": "M2", "candidates": [{"name": "M1", "status": "evaluated"}, {"name": "M2", "status": "evaluated"},
+                                          {"name": "M3", "status": "evaluated"}, {"name": "M5", "status": "absent"},
+                                          {"name": "ENS", "status": "evaluated"}]}
+
+
+def load(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, ROOT / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def script():
+    return load("run_oos_script", "08_run_oos.py")
+
+
+def synthetic_cfg() -> dict:
+    cfg = copy.deepcopy(load_config())
+    cfg["split"]["warmup_end"] = "2012-12-31"
+    cfg["split"]["initial_train_years"] = [2013, 2013]
+    cfg["split"]["test_years"] = [2017, 2019]
+    cfg["tuning"]["inner_validation_weeks"] = 26
+    cfg["data"]["end"] = DATA_END
+    return cfg
+
+
+def git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout
+
+
+def commit(root: Path, message: str) -> None:
+    git(root, "add", "-A")
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+        "commit", "-q", "--no-verify", "-m", message)
+
+
+def build_project(root: Path, market, walkforwards=WALKFORWARDS, gate_content=None) -> dict:
+    """The synthetic project: raw files (full range, like the archived snapshot), daily prices, the In-Sample tables of
+    03, the walk-forwards of 05, the In-Sample backtests of 06, the gate file; everything but data/ and outputs/
+    committed."""
+    cfg = synthetic_cfg()
+    (root / "docs").mkdir(parents=True)
+    with open(root / "config.yaml", "w", encoding="utf-8", newline="\n") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    cfg = load_config(root / "config.yaml")
+    (root / "docs" / "decisions.md").write_text("# Decision log\n", encoding="utf-8", newline="\n")
+    (root / ".gitignore").write_text("data/\noutputs/\n", encoding="utf-8", newline="\n")
+
+    raw, fred_dir = root / "data" / "raw" / "yahoo", root / "data" / "raw" / "fred"
+    raw.mkdir(parents=True)
+    fred_dir.mkdir(parents=True)
+    for ticker, frame in market.raw.items():
+        frame.rename_axis("Date").to_csv(raw / f"{ticker}.csv")
+    market.vix.rename("Close").to_frame().rename_axis("Date").to_csv(raw / "VIX.csv")
+    for name in cfg["data"]["fred"]:
+        market.fred[[name]].rename_axis("Date").to_csv(fred_dir / f"{name}.csv")
+    processed = root / "data" / "processed"
+    write_csv(market.daily_close.rename_axis("date"), processed / "daily_close.csv")
+    write_csv(market.daily_open.rename_axis("date"), processed / "daily_open.csv")
+    save_used(data_settings(cfg), processed / "config.yaml")
+
+    s03 = load("oos_test_03", "03_build_features.py")
+    close, opens = market.daily_close, market.daily_open
+    close, opens = close[close.index <= IS_END], opens[opens.index <= IS_END]
+    vix, fred = market.vix[market.vix.index <= IS_END], market.fred[market.fred.index <= IS_END]
+    tables = s03.build_tables(close, vix, fred, cfg)
+    tables["labels"] = s03.build_labels(opens, close, IS_END)
+    tables["forward_returns"] = s03.build_forward_returns(opens, close, IS_END)
+    s03.write_tables(tables, processed, IS_END, root / "FROZEN.lock")
+    save_used(features.features_settings(cfg), processed / "features_config.yaml")
+
+    s05 = load("oos_test_05", "05_train_walkforward.py")
+    for name in walkforwards:
+        s05.run(name, cfg, data_dir=processed, out_dir=root / "outputs" / "walkforward" / name,
+                trial_path=root / "docs" / "trial_log.csv", log_path=root / "outputs" / "vault_access_log.jsonl",
+                lock_path=root / "FROZEN.lock", spots=SPOTS)
+    s06 = load("oos_test_06", "06_backtest.py")
+    s06.ROOT = root  # this module instance only
+    inputs = s06.in_sample_inputs(cfg)
+    for name in walkforwards:
+        s06.backtest_model(cfg, name, inputs)
+    gate = root / "outputs" / "metrics" / "selection_gate.json"
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    gate.write_text(json.dumps(GATE if gate_content is None else gate_content), encoding="utf-8")
+
+    git(root, "init", "-q")
+    commit(root, "chore: synthetic project")
+    return cfg
+
+
+_PROJECT: dict = {}
+_RAN: dict = {}
+
+
+@pytest.fixture
+def project(synthetic_market, tmp_path_factory) -> dict:
+    """The synthetic project, built once per module, not frozen (read-only: tests copy it before changing anything)."""
+    if not _PROJECT:
+        root = tmp_path_factory.mktemp("oos_project") / "project"
+        root.mkdir()
+        _PROJECT.update(root=root, cfg=build_project(root, synthetic_market))
+    return _PROJECT
+
+
+def copy_project(project: dict, tmp_path: Path) -> Path:
+    target = tmp_path / "project"
+    shutil.copytree(project["root"], target)
+    return target
+
+
+@pytest.fixture
+def ran(script, project, tmp_path_factory) -> dict:
+    """A copy of the project frozen, signed (lock and decisions committed) and run once (read-only, built once)."""
+    if not _RAN:
+        root = tmp_path_factory.mktemp("oos_ran") / "project"
+        shutil.copytree(project["root"], root)
+        lock = script.freeze(root)
+        with open(root / "docs" / "decisions.md", "a", encoding="utf-8", newline="\n") as f:
+            f.write("\nGate 3 signatures (synthetic test)\n")
+        commit(root, "docs: sign the freeze")
+        report = script.run_oos(root)
+        _RAN.update(root=root, cfg=project["cfg"], lock=lock, report=report)
+    return _RAN
+
+
+def read_weekly(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path, index_col=[0, 1], parse_dates=[0, 1, "realised_on"] if "weekly" in path.name else [0, 1])
+
+
+def closes(frame) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex(frame.index.get_level_values("date_close"))
+
+
+# ---------------------------------------------------------------- unit helpers
+
+
+def test_oos_log_check_accepts_zero_or_one_entry_and_refuses_two(script):
+    assert script.check_oos_log_text("[]") == 0
+    assert script.check_oos_log_text('[{"utc": "2026-11-07T10:00:00+00:00"}]') == 1
+    with pytest.raises(ValueError, match="2 entries"):
+        script.check_oos_log_text('[{"utc": "a"}, {"utc": "b"}]')
+
+
+@pytest.mark.parametrize("text", ["{}", "not json", '[{"time": "x"}]', '["x"]'])
+def test_oos_log_check_refuses_a_malformed_log(script, text):
+    with pytest.raises(ValueError):
+        script.check_oos_log_text(text)
+
+
+def test_text_sha256_reads_crlf_as_lf(script, tmp_path):
+    (tmp_path / "a").write_bytes(b"x: 1\r\ny: 2\r\n")
+    (tmp_path / "b").write_bytes(b"x: 1\ny: 2\n")
+    assert script.text_sha256(tmp_path / "a") == script.text_sha256(tmp_path / "b")
+
+
+def test_run_models_are_the_evaluated_candidates_then_m0_and_m0_star(script):
+    cfg = load_config()
+    assert script.run_models(GATE, cfg) == ["M1", "M2", "M3", "ENS", "M0", "M0_star"]
+    only_m1 = {"selected": "M0_star", "candidates": [{"name": n, "status": "evaluated" if n == "M1" else "absent"}
+                                                      for n in cfg["models"]["candidate_order"]]}
+    assert script.run_models(only_m1, cfg) == ["M1", "M0", "M0_star"]
+    ens = {"selected": "ENS", "candidates": [{"name": n, "status": "evaluated" if n == "ENS" else "absent"}
+                                             for n in cfg["models"]["candidate_order"]]}
+    assert script.run_models(ens, cfg) == ["M1", "M2", "M3", "ENS", "M0", "M0_star"]  # ENS needs its members
+
+
+def test_read_gate_refuses_a_selected_model_that_was_not_evaluated(script, tmp_path):
+    gate = tmp_path / "outputs" / "metrics" / "selection_gate.json"
+    gate.parent.mkdir(parents=True)
+    gate.write_text(json.dumps({**GATE, "selected": "M5"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="neither an evaluated candidate"):
+        script.read_gate(tmp_path, load_config())
+    gate.write_text(json.dumps({"selected": "M1", "candidates": GATE["candidates"][:2]}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="differ from models.candidate_order"):
+        script.read_gate(tmp_path, load_config())
+
+
+def test_read_gate_needs_the_gate_file(script, tmp_path):
+    with pytest.raises(SystemExit, match="selection_gate.json not found"):
+        script.read_gate(tmp_path, load_config())
+
+
+# ---------------------------------------------------------------- --freeze
+
+
+def test_freeze_records_hashes_selection_and_frozen_values(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    lock = script.freeze(root)
+    assert json.loads((root / "FROZEN.lock").read_text(encoding="utf-8")) == lock
+    assert lock["code_commit"] == git(root, "rev-parse", "HEAD").strip()
+    assert lock["config_sha256"] == script.text_sha256(root / "config.yaml")
+    assert lock["trial_log_sha256"] == script.text_sha256(root / "docs" / "trial_log.csv")
+    assert lock["trial_count"] == len(pd.read_csv(root / "docs" / "trial_log.csv"))
+    assert lock["selected"] == "M2"
+    assert lock["models"] == ["M1", "M2", "M3", "ENS", "M0", "M0_star"]
+    assert lock["allowed_after_freeze"] == ["FROZEN.lock", "docs/decisions.md"]
+    for rung in ("M1", "M2", "M3", "M0_star"):  # Amendment 6 C2: the value chosen at the last In-Sample refit
+        selection = pd.read_csv(root / "outputs" / "walkforward" / rung / "selection.csv")
+        last = selection.sort_values(["test_year", "refit"]).iloc[-1]
+        frozen = lock["frozen_values"][rung]
+        assert float(frozen["value"]) == float(last["chosen"]) and (frozen["test_year"], frozen["refit"]) == (2019, 4)
+    assert isinstance(lock["frozen_values"]["M1"]["value"], (int, float)) and not isinstance(
+        lock["frozen_values"]["M3"]["value"], float)  # M3 depth stays an int
+    expected = {f"data/processed/{t}.csv" for t in script.TABLES} | {"data/processed/features_config.yaml",
+                                                                      "outputs/metrics/selection_gate.json"}
+    for name in lock["models"]:
+        expected |= {f"outputs/walkforward/{name}/{f}" for f in ("scores.csv", "used.yaml", "summary.json")}
+    for rung in ("M1", "M2", "M3", "M0_star"):
+        expected.add(f"outputs/walkforward/{rung}/selection.csv")
+    assert set(lock["artefacts"]) == expected
+    assert lock["artefacts"]["outputs/walkforward/M3/scores.csv"] == script.file_sha256(
+        root / "outputs" / "walkforward" / "M3" / "scores.csv")
+
+
+def test_freeze_refuses_a_dirty_tree(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    (root / "notes.txt").write_text("untracked", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not clean"):
+        script.freeze(root)
+    assert not (root / "FROZEN.lock").exists()
+
+
+def test_freeze_refuses_an_existing_lock_and_stale_scores(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    script.freeze(root)
+    commit(root, "docs: lock")
+    with pytest.raises(SystemExit, match="already exists"):
+        script.freeze(root)
+    other = copy_project(project, tmp_path / "other")
+    summary = other / "outputs" / "walkforward" / "M1" / "summary.json"
+    content = json.loads(summary.read_text(encoding="utf-8"))
+    summary.write_text(json.dumps({**content, "spec_hash": "0" * 64}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="stale"):
+        script.freeze(other)
+    assert not (other / "FROZEN.lock").exists()
+
+
+# ---------------------------------------------------------------- the checks of the run
+
+
+def frozen_copy(script, project, tmp_path) -> Path:
+    root = copy_project(project, tmp_path)
+    script.freeze(root)
+    commit(root, "docs: lock")
+    return root
+
+
+def nothing_accessed(root: Path) -> bool:
+    return not (root / "outputs" / "oos_access_log.json").exists() and not (root / "outputs" / "oos").exists() \
+        and not (root / "data" / "processed" / "oos").exists()
+
+
+def test_run_refuses_without_the_lock(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    with pytest.raises(SystemExit, match="does not exist"):
+        script.run_oos(root)
+    assert nothing_accessed(root)
+
+
+def test_run_refuses_a_changed_artefact(script, project, tmp_path):
+    root = frozen_copy(script, project, tmp_path)
+    path = root / "outputs" / "walkforward" / "M2" / "scores.csv"
+    path.write_bytes(path.read_bytes() + b"\n")
+    with pytest.raises(SystemExit, match="hashes differ.*M2/scores.csv"):
+        script.run_oos(root)
+    assert nothing_accessed(root)
+
+
+def test_run_refuses_a_code_change_after_the_freeze(script, project, tmp_path):
+    root = frozen_copy(script, project, tmp_path)
+    (root / "extra.py").write_text("x = 1\n", encoding="utf-8")
+    commit(root, "feat: a change after the freeze")
+    with pytest.raises(SystemExit, match="files changed since the freeze.*extra.py"):
+        script.run_oos(root)
+    assert nothing_accessed(root)
+
+
+def test_run_refuses_a_dirty_tree(script, project, tmp_path):
+    root = frozen_copy(script, project, tmp_path)
+    with open(root / "docs" / "trial_log.csv", "a", encoding="utf-8", newline="\n") as f:
+        f.write("99,x,x,human,M1,abc,{},,,extra\n")
+    with pytest.raises(SystemExit, match="not clean"):
+        script.run_oos(root)
+    assert nothing_accessed(root)
+
+
+def test_run_refuses_when_the_access_log_has_an_entry(script, project, tmp_path):
+    root = frozen_copy(script, project, tmp_path)
+    log = root / "outputs" / "oos_access_log.json"
+    log.write_text('[{"utc": "2026-11-07T10:00:00+00:00"}]', encoding="utf-8")
+    with pytest.raises(SystemExit, match="already has an entry"):
+        script.run_oos(root)
+    assert not (root / "outputs" / "oos").exists()
+
+
+# ---------------------------------------------------------------- the run
+
+
+def test_the_run_writes_exactly_one_access_entry_and_refuses_a_second_run(script, ran):
+    root = ran["root"]
+    entries = json.loads((root / "outputs" / "oos_access_log.json").read_text(encoding="utf-8"))
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["lock_sha256"] == script.file_sha256(root / "FROZEN.lock")
+    assert entry["code_commit"] == ran["lock"]["code_commit"] and entry["selected"] == "M2"
+    with pytest.raises(SystemExit, match="exactly once"):
+        script.run_oos(root)
+    assert len(json.loads((root / "outputs" / "oos_access_log.json").read_text(encoding="utf-8"))) == 1
+
+
+def test_the_vault_is_unlocked_once_and_the_frozen_tables_are_untouched(script, ran):
+    root = ran["root"]
+    lines = [json.loads(line) for line in (root / "outputs" / "vault_access_log.jsonl").read_text().splitlines()]
+    unlocks = [line for line in lines if line["method"] == "unlock"]
+    assert [u["result"] for u in unlocks] == ["ok"]
+    late = [line for line in lines if line.get("as_of", "") > "2019-12-27"]
+    assert late and all(line["result"] == "ok" for line in late)
+    for path, digest in ran["lock"]["artefacts"].items():  # the run wrote its tables to data/processed/oos/
+        assert script.file_sha256(root / path) == digest
+
+
+def test_the_full_range_tables_reach_the_data_end_with_periods_by_realisation(script, ran):
+    oos_dir = ran["root"] / "data" / "processed" / "oos"
+    table = pd.read_csv(oos_dir / "forward_returns.csv", index_col=[0, 1], parse_dates=[0, 1, "realised_on"])
+    realised = table["realised_on"].dropna()
+    assert realised.max() <= pd.Timestamp(DATA_END) and realised.max() > IS_END
+    period = table.loc[realised.index, "period"]
+    assert (period == np.where(realised <= IS_END, "IS", "OOS")).all()
+    assert realised[period == "OOS"].min() == pd.Timestamp("2019-12-30")
+    labels = pd.read_csv(oos_dir / "labels.csv", parse_dates=["date_close", "label_end"])
+    assert labels["label_end"].max() <= pd.Timestamp(DATA_END) and labels["label_end"].max() > IS_END
+    frozen = pd.read_csv(ran["root"] / "data" / "processed" / "features.csv", index_col=[0, 1], parse_dates=[0])
+    full = pd.read_csv(oos_dir / "features.csv", index_col=[0, 1], parse_dates=[0])
+    assert np.allclose(full.loc[frozen.index].to_numpy(), frozen.to_numpy(), atol=1e-12, rtol=0, equal_nan=True)
+
+
+def test_the_refits_start_with_2019_q4_and_continue_quarterly_purged(script, ran):
+    folds = ran["report"]["folds"]
+    assert folds[0]["test_start"] == "2019-10-04" and folds[0]["test_end"] == "2019-12-27"
+    assert [(f["test_year"], f["refit"]) for f in folds] == [(2019, 4), (2020, 1), (2020, 2), (2020, 3), (2020, 4)]
+    for f in folds:
+        test_start, purge_end = pd.Timestamp(f["test_start"]), pd.Timestamp(f["purge_end"])
+        assert purge_end == test_start - pd.Timedelta(days=7)
+        assert pd.Timestamp(f["train_end"]) + pd.Timedelta(days=10) <= purge_end
+    assert folds[-1]["test_end"] == "2020-12-04"  # the last week whose label is realised by data.end
+    assert ran["report"]["last_in_sample_scored_week"] == "2019-12-13"
+
+
+def test_the_2019_q4_refit_reproduces_the_frozen_scores(script, ran):
+    for name, check in ran["report"]["reproduction_2019q4"].items():
+        assert check["weeks"] == 11, name  # 2019-10-04 .. 2019-12-13
+        assert check["within_tolerance"] and check["signals_identical"], name
+
+
+def test_oos_scores_use_the_frozen_values(script, ran):
+    root, cfg, lock = ran["root"], ran["cfg"], ran["lock"]
+    oos = {name: pd.read_csv(root / "outputs" / "oos" / name / "scores.csv", index_col=[0, 1], parse_dates=[0, 1])
+           for name in lock["models"]}
+    for name, scores in oos.items():
+        assert closes(scores).min() == pd.Timestamp("2019-12-20"), name
+        assert closes(scores).max() == pd.Timestamp("2020-12-04"), name
+    assert np.allclose(oos["ENS"].to_numpy(), ensemble_scores([oos[m] for m in ("M1", "M2", "M3")]).to_numpy())
+    # M0* runs as M0 on MOM{L}_1 with its frozen lookback: the z-scored momentum column of the rebuilt tables
+    lookback = int(lock["frozen_values"]["M0_star"]["value"])
+    momentum = pd.read_csv(root / "data" / "processed" / "oos" / "momentum_variants.csv", index_col=[0, 1], parse_dates=[0])
+    column = momentum[f"MOM{lookback}_1"].unstack("ticker")
+    expected = column.loc[closes(oos["M0_star"]), list(oos["M0_star"].columns)]
+    assert np.allclose(oos["M0_star"].to_numpy(), expected.to_numpy())
+    # an M1 refit at another grid value gives other scores: the frozen value is the one used
+    vault_data = script.ladder_data(_open_vault(script, root, cfg), pd.Timestamp(DATA_END))
+    folds = script.oos_folds(vault_data, cfg, pd.Timestamp("2019-12-13"))
+    value = lock["frozen_values"]["M1"]["value"]
+    refit = walkforward_rung("M1", vault_data, folds, cfg, value=value)[0]
+    assert np.allclose(refit.loc[oos["M1"].index].to_numpy(), oos["M1"].to_numpy(), atol=1e-12, rtol=0)
+
+
+def _open_vault(script, root, cfg):
+    vault = script.Vault(IS_END, lock_path=root / "FROZEN.lock", log_path=root / "outputs" / "test_vault_log.jsonl",
+                         data_dir=root / "data" / "processed" / "oos", cfg=cfg)
+    vault.unlock()
+    return vault
+
+
+def test_one_continuous_book_across_the_boundary(script, ran):
+    root = ran["root"]
+    for name in ran["lock"]["models"]:
+        weekly = read_weekly(root / "outputs" / "oos" / name / "weekly.csv")
+        assert set(weekly["period"]) == {"IS", "OOS"}
+        assert (weekly["period"] == np.where(weekly["realised_on"] <= IS_END, "IS", "OOS")).all()
+        assert closes(weekly)[0] == pd.Timestamp("2017-01-06") and weekly["turnover"].iloc[0] == pytest.approx(1.0)
+        first_oos = weekly.loc[weekly["period"] == "OOS"].iloc[0]
+        assert first_oos["realised_on"] == pd.Timestamp("2019-12-30")
+        assert first_oos["turnover"] < 1.0  # costed from the drifted In-Sample book (Amendment 2 C5), not from cash
+        check = ran["report"]["in_sample_backtest_check"][name]
+        assert check["weeks"] == int((weekly["period"] == "IS").sum()) and check["max_abs_diff_net"] <= 1e-12
+        summary = json.loads((root / "outputs" / "oos" / name / "summary.json").read_text(encoding="utf-8"))
+        assert set(summary["scenarios"]["10bps_2pct"]) == {"IS", "OOS"}
+        metrics = pd.read_csv(root / "outputs" / "oos" / name / "metrics.csv")
+        assert set(metrics["period"]) == {"IS", "OOS"} and len(metrics) == 3 * 2 * 2
+
+
+def test_the_run_does_not_touch_the_repository(script, ran):
+    assert not (ROOT / "FROZEN.lock").exists()
+    assert not (ROOT / "outputs" / "oos_access_log.json").exists()
+
+
+def test_run_refuses_a_lock_that_is_not_json(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    (root / "FROZEN.lock").write_text("signed by hand", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not valid JSON"):
+        script.run_oos(root)
+    assert nothing_accessed(root)

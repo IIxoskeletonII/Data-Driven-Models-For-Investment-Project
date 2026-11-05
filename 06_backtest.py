@@ -73,6 +73,11 @@ def cost_scenarios(cfg: dict) -> list[tuple[str, float, float, bool]]:
     return [(f"{b:g}bps_{100 * r:g}pct", float(b), float(r), (b, r) == baseline) for b, r in pairs]
 
 
+def ledger_used(cfg: dict) -> dict:
+    """used.yaml of outputs/ledger/ (checked by make_submission.py, decision S35-3)."""
+    return used_settings(cfg) | {"ledger": cfg["ledger"]}
+
+
 def ledger_settings(cfg: dict) -> dict:
     """The ledger section of config.yaml, checked: In-Sample years only (every week realised before split.in_sample_end),
     a positive number of books per year, tolerances in (0, 1e-6] (the pre-registered §09 tolerance is the loosest allowed).
@@ -147,13 +152,15 @@ def run_synthetic(cfg: dict) -> None:
     print(pd.DataFrame(metrics).loc[["sharpe_rf", "annualized_return", "max_drawdown", "beta"]].to_string())
 
 
-def read_raw_in_sample(tickers: list[str], is_end: pd.Timestamp) -> dict[str, pd.DataFrame]:
-    """Yahoo raw files of the tickers, cut at the In-Sample end before anything else is done with them."""
+def read_raw_in_sample(tickers: list[str], is_end: pd.Timestamp, *, root: Path | None = None) -> dict[str, pd.DataFrame]:
+    """Yahoo raw files of the tickers, cut at `is_end` (the In-Sample end; the data end only for 08_run_oos.py, S34-7)
+    before anything else is done with them. root: the project folder (ROOT when None)."""
+    root = ROOT if root is None else Path(root)
     raw = {}
     for ticker in tickers:
-        path = ROOT / "data" / "raw" / "yahoo" / f"{file_stem(ticker)}.csv"
+        path = root / "data" / "raw" / "yahoo" / f"{file_stem(ticker)}.csv"
         if not path.exists():
-            raise FileNotFoundError(f"{path.relative_to(ROOT)} not found: run 01_download_data.py first")
+            raise FileNotFoundError(f"{path} not found: run 01_download_data.py first")
         frame = pd.read_csv(path, index_col=0, parse_dates=True)
         raw[ticker] = frame.loc[frame.index <= is_end]
     return raw
@@ -172,19 +179,29 @@ def refuse_oos_returns(realised_on: pd.Series, is_end: pd.Timestamp) -> None:
                          f"(first {late.min().date()}); Out-of-Sample returns are computed only by 08_run_oos.py")
 
 
-def in_sample_market(is_end: pd.Timestamp) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex, pd.DataFrame, pd.Series,
-                                                     pd.Series]:
-    """Raw Yahoo files of the tradables cut at the In-Sample end, the equity calendar (union of their sessions), and the
-    forward returns, realisation dates and periods of contract 7 on adjusted weekly opens. Stops (refuse_oos_returns)
-    before returning if any forward return is realised after is_end."""
+def read_market(end: pd.Timestamp, is_end: pd.Timestamp, *, root: Path | None = None) -> tuple[
+        dict[str, pd.DataFrame], pd.DatetimeIndex, pd.DataFrame, pd.Series, pd.Series]:
+    """Raw Yahoo files of the tradables cut at `end`, the equity calendar (union of their sessions), and the forward
+    returns, realisation dates and periods of contract 7 on adjusted weekly opens, with period "IS" iff realised_on <=
+    is_end. No guard: the In-Sample paths call in_sample_market; end > is_end only in 08_run_oos.py after the freeze
+    (decision S34-7)."""
     tradables = list(universe().tradables)
-    raw = read_raw_in_sample(tradables, is_end)
+    raw = read_raw_in_sample(tradables, end) if root is None else read_raw_in_sample(tradables, end, root=root)
     adjusted = {t: adjust_ohlc(raw[t]) for t in tradables}
     sessions = pd.DatetimeIndex(sorted(set().union(*(f.index for f in raw.values()))), name="date")
     daily_open = pd.DataFrame({t: adjusted[t]["Open"] for t in tradables}).reindex(sessions)
     daily_close = pd.DataFrame({t: adjusted[t]["Close"] for t in tradables}).reindex(sessions)
     weekly_open, _ = weekly_panel(daily_open, daily_close)
     fwd, realised_on, period = forward_returns(weekly_open, is_end=is_end)
+    return raw, sessions, fwd, realised_on, period
+
+
+def in_sample_market(is_end: pd.Timestamp) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex, pd.DataFrame, pd.Series,
+                                                     pd.Series]:
+    """Raw Yahoo files of the tradables cut at the In-Sample end, the equity calendar (union of their sessions), and the
+    forward returns, realisation dates and periods of contract 7 on adjusted weekly opens. Stops (refuse_oos_returns)
+    before returning if any forward return is realised after is_end."""
+    raw, sessions, fwd, realised_on, period = read_market(is_end, is_end)
     refuse_oos_returns(realised_on, is_end)
     return raw, sessions, fwd, realised_on, period
 
@@ -249,7 +266,7 @@ def run_ledger_check(cfg: dict, years: list[int] | None = None) -> None:
     out = ROOT / "outputs" / "ledger"
     write_csv(summary, out / "reconciliation.csv", float_format="%.6g")
     write_csv(by_ticker, out / "level_b_reinvestment_term_by_ticker.csv", float_format="%.6g")
-    save_used(used_settings(cfg) | {"ledger": cfg["ledger"]}, out / "used.yaml")
+    save_used(ledger_used(cfg), out / "used.yaml")
     print(summary.T.to_string(float_format=lambda x: f"{x:.3e}"))
     print()
     print("Level B: max |w * reinvestment term| by ticker and year")
@@ -360,13 +377,15 @@ def read_betas(vault, is_end: pd.Timestamp) -> pd.DataFrame:
     return betas
 
 
-def read_risk_free(cfg: dict, is_end: pd.Timestamp) -> pd.Series:
+def read_risk_free(cfg: dict, is_end: pd.Timestamp, *, root: Path | None = None) -> pd.Series:
     """Daily FRED yield of metrics.risk_free_series (DGS3MO, percent per year) from data/raw/fred, cut at is_end right
-    after reading (decision S23-8). Unlagged; tbill_weekly_returns applies the one-session lag (Amendment 1)."""
+    after reading (decision S23-8; the data end only in 08_run_oos.py, S34-7). Unlagged; tbill_weekly_returns applies
+    the one-session lag (Amendment 1). root: the project folder (ROOT when None)."""
+    root = ROOT if root is None else Path(root)
     name = cfg["metrics"]["risk_free_series"]
-    path = ROOT / cfg["data"]["data_dir"] / "raw" / "fred" / f"{name}.csv"
+    path = root / cfg["data"]["data_dir"] / "raw" / "fred" / f"{name}.csv"
     if not path.exists():
-        raise FileNotFoundError(f"{path.relative_to(ROOT).as_posix()} not found: run 01_download_data.py first")
+        raise FileNotFoundError(f"{path} not found: run 01_download_data.py first")
     frame = pd.read_csv(path, index_col=0, parse_dates=True)
     series = frame.loc[frame.index <= is_end, name].astype(np.float64)
     series.index = pd.DatetimeIndex(series.index, name="date")

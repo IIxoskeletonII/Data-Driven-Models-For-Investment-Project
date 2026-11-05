@@ -17,6 +17,7 @@ import functools
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 from src.config import load_config
 
@@ -243,3 +244,75 @@ def period_metrics(net: pd.Series, period: pd.Series, signals: pd.DataFrame, wei
         metrics |= market(r, m, rf)
         out[name] = metrics
     return out
+
+
+# -- market-neutral bonus tests of §11 (decision S34-9) -----------------------------------------------------------------
+
+
+def hac_beta(r: pd.Series, m: pd.Series, lags: int, confidence: float = 0.95) -> dict[str, float]:
+    """OLS beta of weekly returns r on the benchmark's weekly returns m (with intercept) and its Newey–West HAC interval
+    (§11 bonus test 1, decision S34-9).
+
+    beta = cov(r, m) / var(m) (as `market`). HAC variance of the slope: S / (T · s_x²), with x̃ = m − m̄, u the OLS
+    residuals, z_t = x̃_t u_t, S = Γ_0 + 2 Σ_{j=1..lags} (1 − j/(lags + 1)) Γ_j, Γ_j = Σ_t z_t z_{t−j} / T and
+    s_x² = Σ x̃² / T; lags = 0 gives White's heteroskedasticity-robust error. The interval is beta ± z_q · se with the
+    normal quantile at `confidence`. Returns beta, se, lower, upper, lags, n_weeks.
+    """
+    m = m.reindex(r.index)
+    x, y = m.to_numpy(dtype=np.float64), r.to_numpy(dtype=np.float64)
+    if not (np.isfinite(x).all() and np.isfinite(y).all()):
+        raise ValueError("hac_beta: missing values in the returns or the benchmark")
+    t = len(y)
+    if t < 3:
+        raise ValueError("hac_beta: at least three weeks are needed")
+    if not 0 < confidence < 1:
+        raise ValueError(f"hac_beta: confidence must be in (0, 1), got {confidence}")
+    lags = int(lags)
+    if lags < 0:
+        raise ValueError("hac_beta: lags must be >= 0")
+    xc = x - x.mean()
+    sxx = float(xc @ xc)
+    if sxx == 0:
+        raise ValueError("hac_beta: the benchmark has zero variance")
+    beta = float(xc @ (y - y.mean()) / sxx)
+    u = (y - y.mean()) - beta * xc
+    z = xc * u
+    s = float(z @ z) / t
+    for j in range(1, min(lags, t - 1) + 1):
+        s += 2.0 * (1.0 - j / (lags + 1.0)) * float(z[j:] @ z[:-j]) / t
+    se = float(np.sqrt(max(s, 0.0) * t) / sxx)
+    q = float(norm.ppf(0.5 + confidence / 2.0))
+    return {"beta": beta, "se": se, "lower": beta - q * se, "upper": beta + q * se, "lags": float(lags),
+            "n_weeks": float(t)}
+
+
+def monthly_returns(r: pd.Series, realised_on: pd.Series) -> pd.Series:
+    """Compounded monthly returns of weekly returns, each week in the calendar month of its realisation date (decision
+    S34-9): Π(1 + r) − 1 over the weeks realised in the month. Index: month-end timestamps, named `month`."""
+    dates = pd.DatetimeIndex(pd.to_datetime(realised_on.reindex(r.index)))
+    if dates.isna().any():
+        raise ValueError("monthly_returns: a week has no realisation date")
+    months = dates.to_period("M")
+    grouped = (1.0 + pd.Series(r.to_numpy(dtype=np.float64), index=months)).groupby(level=0).prod() - 1.0
+    grouped.index = grouped.index.to_timestamp(how="end").normalize()
+    return grouped.rename_axis("month").astype(np.float64)
+
+
+def rolling_positive_share(r: pd.Series, window: int = 52) -> float:
+    """Share of the T − window + 1 rolling windows of `window` consecutive weeks whose compounded return is > 0 (§11
+    bonus test 4, decision S34-9); NaN when the series is shorter than the window."""
+    if len(r) < window:
+        return np.nan
+    log_growth = np.log1p(r.to_numpy(dtype=np.float64))
+    sums = np.convolve(log_growth, np.ones(window), mode="valid")
+    return float(np.mean(sums > 0))
+
+
+def calendar_year_returns(r: pd.Series, realised_on: pd.Series) -> pd.Series:
+    """Compounded return of each calendar year of the realisation dates (§11 bonus test 4, decision S34-9). Index: the
+    year (int), named `year`."""
+    dates = pd.DatetimeIndex(pd.to_datetime(realised_on.reindex(r.index)))
+    if dates.isna().any():
+        raise ValueError("calendar_year_returns: a week has no realisation date")
+    out = (1.0 + pd.Series(r.to_numpy(dtype=np.float64), index=dates.year)).groupby(level=0).prod() - 1.0
+    return out.rename_axis("year").astype(np.float64)
