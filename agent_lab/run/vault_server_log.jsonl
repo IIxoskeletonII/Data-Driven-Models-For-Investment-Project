@@ -1,0 +1,82 @@
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "cd523edd3d453736", "result": "ok", "tool": "get_features"}
+{"argument_hash": "af7d0a60d057a3d9", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "0ebf89b63af81363", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "dd59487ea19443af", "reason": "rejected at redundancy", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "6264602262891033", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "f966919f87ade5bd", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "43bab347bff909e0", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "a59b702c385d4b91", "reason": "rejected at redundancy", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "9c40262435f111db", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "225989a41cedc8af", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "08d0272f60e21b0e", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "3b722c615302f722", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "0411691e0a845865", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "eedf78893462a185", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "a034c9aee55fb73a", "reason": "DSLError: a feature spec holds exactly the keys ['name', 'expr'], got ['unparsed']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "e00c9c18b09623a0", "reason": "rejected at redundancy", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "f8bb0ee0400fad94", "reason": "DSLError: unknown operation 'abs'; allowed ['cs_rank', 'cs_z', 'diff', 'lag', 'log', 'mul_state', 'ratio', 'rolling']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "f5be0bc0bc4ffb66", "reason": "DSLError: a feature spec holds exactly the keys ['name', 'expr'], got ['unparsed']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "7a429fcb8b70b7d1", "reason": "DSLError: unknown operation 'close'; allowed ['cs_rank', 'cs_z', 'diff', 'lag', 'log', 'mul_state', 'ratio', 'rolling']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "c5cb3121f8d63373", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "d3617a333ce573cd", "reason": "DSLError: operation 'ratio' takes exactly the keys ['a', 'b', 'op'], got ['b', 'op']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "99c116e3b82f26d6", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "7b91f23119720e9b", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "7de2b9543b83b16e", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "8b5f3ce700160c73", "reason": "DSLError: a feature spec holds exactly the keys ['name', 'expr'], got ['unparsed']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "88bf9b21e88af797", "reason": "DSLError: operation 'cs_z' takes exactly the keys ['op', 'x'], got ['b', 'op', 'x']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "f91448bcd19e969e", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "54eeb652d36d3066", "reason": "DSLError: lag: n must be an integer in [1, 104] weeks, got 0", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "9c86ce2eecfc3915", "reason": "DSLError: operation 'cs_z' takes exactly the keys ['op', 'x'], got ['b', 'op', 'x']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "50a4a81d76718f71", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "3578d6129c4db3d8", "reason": "rejected at redundancy", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "fe7c7dc1cb4ced03", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "f17a79798c09484a", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "8fca9064b8fc958e", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "a0e0dc474a48ac8e", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "fbdbc71793b4e992", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "88b242a705158920", "reason": "DSLError: mul_state may appear only at the root (Amendment 7 C2)", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "4cd765893ce54ff0", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "febc4b55be663fb8", "reason": "DSLError: a feature spec holds exactly the keys ['name', 'expr'], got ['unparsed']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "e16128299af8bc7e", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "ea9825ba37c2faf9", "reason": "DSLError: unknown operation 'abs'; allowed ['cs_rank', 'cs_z', 'diff', 'lag', 'log', 'mul_state', 'ratio', 'rolling']", "result": "refused", "tool": "run_walkforward"}
+{"argument_hash": "cd523edd3d453736", "result": "ok", "tool": "get_features"}

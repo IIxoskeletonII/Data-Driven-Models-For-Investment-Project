@@ -109,7 +109,7 @@ class VaultServer:
     """
 
     def __init__(self, cfg: dict, vault: Vault, base_rung: str, base_spec: Mapping, *, trial_path: Path,
-                 server_log: Path) -> None:
+                 server_log: Path, history_snapshot: Path | None = None) -> None:
         if str(cfg["split"]["in_sample_end"]) != IN_SAMPLE_END:
             raise OOSAccessError(f"{SERVER_NAME}: split.in_sample_end {cfg['split']['in_sample_end']} differs from the "
                                  f"hard-coded In-Sample end {IN_SAMPLE_END} (§08)")
@@ -122,6 +122,8 @@ class VaultServer:
         self.end = vault.is_end
         self.codes = anonymise(cfg)
         self.survivors: list[tuple[str, pd.Series]] = []
+        self.history_snapshot = None if history_snapshot is None else Path(history_snapshot)
+        self.run_hashes: set[str] = set()  # spec hashes this server wrote or evaluated (S33-16)
         self._inputs: dict | None = None
         self._base: dict | None = None
 
@@ -208,18 +210,17 @@ class VaultServer:
     # -- get_trial_history -------------------------------------------------------------------------------------------------
 
     def get_trial_history(self) -> list[dict]:
-        """Every trial row (S33-5): human rows without params_json, agent rows with their DSL features and notes."""
-        rows = []
-        if self.trial_path.exists():
-            with open(self.trial_path, encoding="utf-8", newline="") as handle:
-                for row in csv.DictReader(handle):
-                    item = {"trial_id": row["trial_id"], "kind": row["kind"], "rung": row["rung"],
-                            "spec_hash": row["spec_hash"][:12], "is_sharpe": row["is_sharpe"], "is_mdd": row["is_mdd"]}
-                    if row["kind"] == "agent":
-                        params = json.loads(row["params_json"]) if row["params_json"] else {}
-                        item["agent_features"] = params.get("agent_features", params.get("invalid_dsl"))
-                        item["notes"] = row["notes"]
-                    rows.append(item)
+        """Every trial row (S33-5): human rows without params_json, agent rows with their DSL features and notes. With a
+        history snapshot (S33-16): the snapshot's rows, then the trial log's rows whose spec hash this server wrote or
+        evaluated, in trial-log order; rows written by anyone else after the snapshot are never shown."""
+        if self.history_snapshot is None:
+            rows = [_trial_item(row) for row in _read_trials(self.trial_path)]
+        else:
+            snapshot = _read_trials(self.history_snapshot)
+            seen = {row["trial_id"] for row in snapshot}
+            own = [row for row in _read_trials(self.trial_path)
+                   if row["trial_id"] not in seen and row["spec_hash"] in self.run_hashes]
+            rows = [_trial_item(row) for row in snapshot + own]
         self._log("get_trial_history", {}, "ok")
         return rows
 
@@ -332,10 +333,12 @@ class VaultServer:
             invalid = {"invalid_dsl": spec}
             self._row(invalid, {**notes, "stage": "invalid_spec"})
             self._log("run_walkforward", spec, "refused", f"{type(error).__name__}: {error}")
+            self.run_hashes.add(spec_hash(invalid, self.cfg))
             return {**result, "stage": "invalid_spec", "reason": str(error), "spec_hash": spec_hash(invalid, self.cfg)}
         feature_dict = {"name": feature.name, "expr": feature.expr}
         model_spec = self.candidate_spec(feature_dict)
         result["spec_hash"] = spec_hash(model_spec, self.cfg)
+        self.run_hashes.add(result["spec_hash"])
         try:
             ok, reason = self.leakage_check(feature)
             result["checks"]["leakage"] = reason
@@ -378,6 +381,23 @@ class VaultServer:
         """Record a candidate that survived the Validator, Skeptic and Risk, for later redundancy checks (S33-6 (4))."""
         feature = parse(spec)
         self.survivors.append((feature.name, self.asset_part(feature)))
+
+
+def _read_trials(path: Path) -> list[dict]:
+    if not Path(path).exists():
+        return []
+    with open(path, encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _trial_item(row: dict) -> dict:
+    item = {"trial_id": row["trial_id"], "kind": row["kind"], "rung": row["rung"], "spec_hash": row["spec_hash"][:12],
+            "is_sharpe": row["is_sharpe"], "is_mdd": row["is_mdd"]}
+    if row["kind"] == "agent":
+        params = json.loads(row["params_json"]) if row["params_json"] else {}
+        item["agent_features"] = params.get("agent_features", params.get("invalid_dsl"))
+        item["notes"] = row["notes"]
+    return item
 
 
 def _notes(values: dict) -> str:
@@ -452,16 +472,18 @@ def get_trial_history() -> list[dict]:
     return _default().get_trial_history()
 
 
-def real_server(base_rung: str, cfg: dict | None = None, *, run_dir: Path = ROOT / "agent_lab" / "insample") -> VaultServer:
-    """The server on the real In-Sample data (data/processed, data/raw/fred), the trial log docs/trial_log.csv."""
+def real_server(base_rung: str, cfg: dict | None = None, *, run_dir: Path = ROOT / "agent_lab" / "run",
+                trial_path: Path = ROOT / "docs" / "trial_log.csv", history_snapshot: Path | None = None) -> VaultServer:
+    """The server on the real In-Sample data (data/processed, data/raw/fred); trial rows go to `trial_path`
+    (docs/trial_log.csv in a live run, a copy of the snapshot in a replay, S33-16)."""
     cfg = load_config() if cfg is None else cfg
     vault = Vault(pd.Timestamp(IN_SAMPLE_END), lock_path=ROOT / "FROZEN.lock",
                   log_path=ROOT / "outputs" / "vault_access_log.jsonl",
                   data_dir=ROOT / cfg["data"]["data_dir"] / "processed", raw_dir=ROOT / cfg["data"]["data_dir"] / "raw",
                   cfg=cfg)
     base_spec = load_script("05_train_walkforward.py").model_spec(base_rung, cfg)
-    return VaultServer(cfg, vault, base_rung, base_spec, trial_path=ROOT / "docs" / "trial_log.csv",
-                       server_log=run_dir / "vault_server_log.jsonl")
+    return VaultServer(cfg, vault, base_rung, base_spec, trial_path=trial_path,
+                       server_log=Path(run_dir) / "vault_server_log.jsonl", history_snapshot=history_snapshot)
 
 
 def main(argv: list[str] | None = None) -> None:
