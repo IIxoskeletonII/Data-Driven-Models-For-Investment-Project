@@ -1905,6 +1905,21 @@ computed or seen. "Approved by" is completed by Mattia's approving review of the
 | Files affected | `05_train_walkforward.py`, `tests/test_select.py`; later `08_run_oos.py` (Mattia) |
 | Amendment | No |
 
+### S37-9 · Results of the §07 gate, the trial metrics and the selection-bias diagnostics
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What did `--agent-returns` and `--select` give on the real In-Sample outputs? |
+| Options considered | Report as computed (chosen); change anything because of them (excluded: manual §3.4, §3.8; §07 is binding) |
+| Decision | **Agent returns** (`--agent-returns`): the 12 agent candidates that reached the walk-forward (trials 17, 18, 20, 26, 38, 45, 47, 48, 49, 50, 53, 55; candidates 1, 2, 4, 10, 22, 29, 31, 32, 33, 34, 37, 39) were re-scored through the sealed vault in 2 min 15 s; every headline Sharpe and max drawdown equals its trial row (all 12 within 1e-9; trial 17 to 0.0 in the feasibility check), 624 weeks each, and `docs/trial_log.csv` was byte-identical before and after (SHA-256 `11fb3cd0…007a`). **Gate** (`--select`; 624 weeks, signal weeks 2008-01-04 to 2019-12-13, realised 2008-01-14 to 2019-12-23; baseline 10 bps / 2%; headline Sharpe with the weekly T-bill, average 0.60% a year; thresholds Sharpe ≥ M0 + 0.15, MDD ≥ M0 − 0.02, P ≥ 0.80; 5,000 resamples, block 4, seed 42). Hurdle M0: Sharpe −0.771, MDD −47.98%. M1: Sharpe −1.286 (fail), MDD −58.46% (fail), P(uplift > 0) 0.100 (fail; block 8: 0.095). M2: −0.986 (fail), −49.11% (pass), P 0.267 (fail; 0.268). M3: −1.417 (fail), −61.34% (fail), P 0.028 (fail; 0.024). M5: absent (S33-19). ENS: −1.192 (fail), −58.21% (fail), P 0.131 (fail; 0.137). Uplift 95% intervals: M1 −1.318 to 0.288, M2 −0.917 to 0.505, M3 −1.370 to 0.011, ENS −1.215 to 0.365. **Selected: M0\* (`M0_star`).** No candidate passed the §07 gate, so M0\* is traded: the ML models failed to beat the baseline (pre-registration §07 step 5); M2 passed only the drawdown test. `08_run_oos.py: read_gate` accepts the file; `run_models` gives M1, M2, M3, ENS, M0, M0_star. **Trial metrics:** 32 cells filled (16 human rows × `is_sharpe`, `is_mdd`), e.g. M0 −0.7714198666898625 / −0.47979956694425874, M0\* −0.633948093579576 / −0.4005343760888368; agent rows unchanged; trial log SHA-256 after `8313875d…936a`. **DSR** of M0\* In-Sample: 3.1e-5, with N = 56 (16 human, 40 agent), the trial Sharpes of 28 columns (weekly variance 0.001208), SR₀ 0.0806 a week (0.581 annualised) against M0\*'s −0.0722 a week (−0.521 annualised, zero rf), 624 weeks. **PBO**: 0.293 (16 blocks of 39 weeks, none dropped, 12,870 splits, median logit 0.799) over 28 configurations on 624 common weeks: M0 (trial 1, with `M0_L26`), M1, M2, M3, ENS, M0\*, the 10 other fixed grid values and the 12 agent candidates; excluded: 28 agent rows without weekly returns (24 `invalid_spec`, 4 `redundancy`). A second `--select` filled 0 cells and wrote byte-identical files (`selection_gate.json` `ac7d305b…c2ba`, `selection_bias.json` `6740f1e4…56a5`). Reading: H2 is not supported In-Sample (no candidate beats M0); the DSR says M0\*'s In-Sample Sharpe is far below what the best of 56 unskilled trials would show; PBO 0.29 says that in 29% of the CSCV splits the In-Sample winner fell to or below the median Out-of-Sample (a diagnostic only, it chooses nothing). No code, setting, threshold or score was changed because of these results |
+| Rationale | The record fixes the gate outcome before the freeze, so `FROZEN.lock` and the slides rest on one logged result |
+| Evidence | `outputs/metrics/selection_gate.json`, `outputs/metrics/selection_bias.json`, `outputs/agent_lab/walkforward/agent_c*/summary.json` (5 Nov 2026, code `afd7b4d`); `docs/trial_log.csv` (commit `7d1ce3b`); S32-11 (the same Sharpes and drawdowns of the six models); §07 step 5: "If none passes, M0\* is traded, so the trading system still contains an optimisation method. The report states plainly that the ML models failed to beat the baseline." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam; Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
