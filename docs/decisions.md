@@ -1509,6 +1509,21 @@ S33-10 is reserved for the base rung (S33-5), recorded once the In-Sample backte
 | Files affected | `docs/decisions.md`; `04_agent_lab.py` (summary spend and call fields; `review.md` prints uplift and P with 3 decimals) |
 | Amendment | No |
 
+### S33-19 · M5 is absent; the gate evaluates M1, M2, M3 and ENS; H5 result
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | What happens to M5 and ENS when no agent feature is approved? |
+| Options considered | (a) M5 is absent, ENS stays M1–M3 (chosen); (b) a re-run of the lab to look for a feature (rejected: every trial is already logged, and a re-run until something passes would be a search the deflated Sharpe has to pay for, with no pre-registered basis) |
+| Decision | M5 does not exist: no candidate of the In-Sample run survived (S33-18), so there is no agent feature to approve and the base rung plus approved agent features cannot be formed. The selection rule evaluates M1, M2, M3 and ENS in that order, with M5 marked absent (`src.stats.selection_gate(..., absent=("M5",))`). ENS stays the equal-weight rank average of M1–M3. **H5 result:** no agent-proposed feature survived the gate, so H0 (DSR below threshold) is not rejected; all 40 agent trials stay in `docs/trial_log.csv` and count in the trial number of the deflated Sharpe. Reported as limitations: the invalid-spec rate of the run (24 of 40 proposals, mostly `mul_state` below the root and unbalanced JSON) and the recognition-probe hit rate (3 of 9 against 1 of 9 by chance, S33-17). There is no re-run |
+| Rationale | The pre-registration names M5 conditionally ("+ M5 if it exists") and builds it from approved features only; with none, the ladder runs without it, and the agent trials still count against the result |
+| Evidence | Pre-registration §07 table: M5 "Best rung + approved agent features", "Research-lab output (H5)"; ENS "Equal-weight average of the cross-sectional rank scores of M1–M3 (+ M5 if it exists)"; §02 H5 "Agent-proposed features survive the same gate as human features after trial-count deflation", "H0: DSR below threshold. Every trial reported"; S33-18 (validated 0, surviving 0; invalid 24 of 40; probe 3 of 9); `src/stats.py` `selection_gate(..., absent=...)` ("e.g. M5 without approved agent features"); Eliya's decision (5 Nov 2026): "no candidate survived, so M5 does not exist", "No re-run." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (decision of 5 Nov 2026); Mattia Cervelli (pull request review) |
+| Files affected | `docs/decisions.md` only; the selection step (`07_evaluate.py`, Mattia's) passes `absent=("M5",)` |
+| Amendment | No: the pre-registration anticipates a missing M5 |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
