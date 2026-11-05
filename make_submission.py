@@ -10,7 +10,7 @@ even if they were tracked or placed inside one of the three data folders, and so
 The course instructions require the raw data, the processed data and the results in project/ (S35-1): raw vendor data
 stays out of the public repository only. The build stops, writing nothing, if a file is a .env file or holds a key-like
 string, if a tracked file has uncommitted changes, if README.md, pyproject.toml, uv.lock or config.yaml is missing, if
-the presentation is missing, or if any output was built with another config.yaml (S35-2, S35-3). It prints a manifest:
+the presentation is missing or not a PDF (S35-5), or if any output was built with another config.yaml (S35-2, S35-3). It prints a manifest:
 SHA-256 and size of every entry, the number of files, the total size and the zip's size and SHA-256 (S35-4).
 
 Usage:  uv run python make_submission.py [--presentation presentation.pdf] [--out group_7.zip] [--manifest PATH]
@@ -35,7 +35,8 @@ GROUP = 7
 ZIP_NAME = f"group_{GROUP}.zip"  # decision sheet item 19
 PROJECT = "project"
 REQUIRED = ("README.md", "pyproject.toml", "uv.lock", "config.yaml")  # course instructions p. 4 (S35-2)
-PRESENTATION_SUFFIXES = (".pdf", ".pptx")
+PRESENTATION_NAME = "presentation.pdf"  # a PDF only, at the zip root (S35-5)
+PDF_MAGIC = b"%PDF-"
 ZIP_TIME = (1980, 1, 1, 0, 0, 0)  # fixed entry time: the same files give the same zip bytes (S35-4)
 
 # Untracked folders that the zip must contain: licensed raw data, derived data, results (all git-ignored).
@@ -238,8 +239,12 @@ def check(root: Path, presentation: Path, out: Path, env: dict | None = None) ->
     problems += [f"{name} missing from project/" for name in REQUIRED if name not in files]
     if not presentation.is_file():
         problems.append(f"presentation not found: {presentation}")
-    elif presentation.suffix.lower() not in PRESENTATION_SUFFIXES:
-        problems.append(f"presentation must be .pdf or .pptx, got {presentation.name}")
+    elif presentation.suffix.lower() != ".pdf":
+        problems.append(f"presentation must be a PDF (presentation.pdf, S35-5), got {presentation.name}")
+    else:
+        with open(presentation, "rb") as handle:
+            if handle.read(len(PDF_MAGIC)) != PDF_MAGIC:
+                problems.append(f"presentation {presentation.name} is not a PDF file (no %PDF- header, S35-5)")
     try:
         inside = out.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
@@ -260,7 +265,7 @@ def write_zip(root: Path, files: list[str], presentation: Path, out: Path) -> li
     rows (entry, sha256, size)."""
     rows = []
     entries = [(f"{PROJECT}/{path}", Path(root) / path) for path in files]
-    entries.append((f"presentation{Path(presentation).suffix.lower()}", Path(presentation)))
+    entries.append((PRESENTATION_NAME, Path(presentation)))
     out.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(suffix=".zip", dir=out.parent)
     os.close(handle)
@@ -307,7 +312,7 @@ def build(root: Path = ROOT, presentation: Path | None = None, out: Path | None 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--presentation", type=Path, default=ROOT / "presentation.pdf",
-                        help="the slides, .pdf or .pptx (default: presentation.pdf in the project folder)")
+                        help="the slides as a PDF, stored as presentation.pdf (default: presentation.pdf in the project folder)")
     parser.add_argument("--out", type=Path, default=ROOT / ZIP_NAME, help=f"the zip to write (default: {ZIP_NAME})")
     parser.add_argument("--manifest", type=Path, default=None, help="also write the manifest to this file")
     args = parser.parse_args(argv)

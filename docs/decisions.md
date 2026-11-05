@@ -1688,6 +1688,21 @@ approvals given so far; Eliya approves through the review of the 3.5 pull reques
 | Files affected | `make_submission.py`, `tests/test_make_submission.py` |
 | Amendment | No |
 
+### S35-5 · The presentation is a PDF only; the course sets no size limit
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | (1) Which presentation formats does the build accept? S35-2 and S35-4 accepted `.pdf` or `.pptx`. (2) Do the course instructions set a size limit for the zip? |
+| Options considered | (1) (a) `.pdf` or `.pptx`, as the course allows (S35-2); (b) a PDF only, stored as `presentation.pdf` (chosen). (2) (c) enforce a limit; (d) none, since the instructions state none; the manifest keeps reporting the zip's size (chosen) |
+| Decision | (1b). The build refuses any presentation whose name does not end in `.pdf` (`.pptx` included, whatever the case of the suffix) and any `.pdf` whose content does not start with the PDF header `%PDF-`; the file given with `--presentation` is stored at the zip root as `presentation.pdf`, whatever its name. This supersedes the `.pptx` clauses of S35-2 (refusal 5) and S35-4. The course instructions accept `.pptx` too ("presentation.pdf (or .pptx)"), so a PDF only is the team's stricter choice within them, not a course requirement. (2d). Searched over the six pages of the instructions ("MB", "GB", "size", "limit", "upload", ".zip"): the only rules on the file are its name and that it is a single zip uploaded to my.luiss, with no size limit; the build therefore enforces none |
+| Rationale | One fixed format and name the graders can open without office software; a renamed slide deck is caught by its header, not only its suffix |
+| Evidence | Course instructions, Deliverables (p. 3): "You will submit a single file group_<group-number>.zip (e.g., group_4.zip) containing: project/: The code repository of your project; presentation.pdf (or .pptx): The slides used to present your project"; Submission Method (p. 6): "A dedicated submission section will be created on the my.luiss platform where you will upload your single .zip file."; instruction of 5 Nov 2026: "the presentation must be a PDF named presentation.pdf at the zip root … Refuse .pptx and any other format, with a test. Also confirm from the PDF's quoted pages whether there is a size limit for the zip; if there is one, the build refuses to exceed it." Tests `test_refuses_any_presentation_that_is_not_a_pdf`, `test_refuses_a_pdf_name_without_pdf_content`, `test_the_presentation_is_stored_as_presentation_pdf_whatever_its_name` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 5 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `tests/test_make_submission.py` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).

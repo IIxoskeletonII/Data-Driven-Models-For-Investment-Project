@@ -249,14 +249,26 @@ def test_refuses_a_missing_required_file(project, name):
 def test_refuses_a_missing_or_wrong_presentation(project, tmp_path):
     refused(project, "presentation not found", presentation=tmp_path / "none.pdf")
     (tmp_path / "slides.txt").write_text("x", encoding="utf-8")
-    refused(project, "must be .pdf or .pptx", presentation=tmp_path / "slides.txt")
+    refused(project, "must be a PDF", presentation=tmp_path / "slides.txt")
 
 
-def test_a_pptx_presentation_keeps_its_suffix(project, tmp_path):
-    (tmp_path / "slides.pptx").write_bytes(b"PK synthetic")
-    build(project, presentation=tmp_path / "slides.pptx")
+@pytest.mark.parametrize("name", ["slides.pptx", "slides.PPTX", "slides.key", "slides.odp"])
+def test_refuses_any_presentation_that_is_not_a_pdf(project, tmp_path, name):
+    (tmp_path / name).write_bytes(b"PK synthetic slides")
+    refused(project, "must be a PDF", presentation=tmp_path / name)
+
+
+def test_refuses_a_pdf_name_without_pdf_content(project, tmp_path):
+    (tmp_path / "slides.pdf").write_bytes(b"PK renamed pptx")
+    refused(project, "is not a PDF file", presentation=tmp_path / "slides.pdf")
+
+
+def test_the_presentation_is_stored_as_presentation_pdf_whatever_its_name(project, tmp_path):
+    (tmp_path / "Group 7 slides.PDF").write_bytes(b"%PDF-1.7 synthetic")
+    build(project, presentation=tmp_path / "Group 7 slides.PDF")
     with zipfile.ZipFile(project["out"]) as archive:
-        assert "presentation.pptx" in archive.namelist() and "presentation.pdf" not in archive.namelist()
+        top = [n for n in archive.namelist() if not n.startswith("project/")]
+        assert top == ["presentation.pdf"] and archive.read("presentation.pdf") == b"%PDF-1.7 synthetic"
 
 
 def test_refuses_a_stale_output(project):
