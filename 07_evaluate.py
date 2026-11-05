@@ -183,6 +183,16 @@ def _same_weeks(summary: dict, placebo: dict) -> bool:
     return all(summary[k] == placebo[k] for k in ("weeks", "first_week", "last_week"))
 
 
+def metrics_used(cfg: dict) -> dict:
+    """used.yaml of outputs/metrics/ (In-Sample evaluation; checked by make_submission.py, decision S35-3)."""
+    return bt.used_settings(cfg) | walkforward_settings(cfg) | {"placebo": cfg.get("placebo")}
+
+
+def oos_metrics_used(cfg: dict) -> dict:
+    """oos_used.yaml of outputs/metrics/ (--period OOS, S34-8; checked by make_submission.py, S35-3)."""
+    return bt.used_settings(cfg) | walkforward_settings(cfg) | {"oos": {"data_end": cfg["data"]["end"]}}
+
+
 def evaluate(cfg: dict) -> pd.DataFrame:
     is_end = pd.Timestamp(cfg["split"]["in_sample_end"])
     models = backtested_models()
@@ -225,7 +235,7 @@ def evaluate(cfg: dict) -> pd.DataFrame:
                 "placebo_gross_sharpe_median": summary["gross_sharpe_zero_cost"]["q50"],
                 "reference_percentile_gross": summary["reference_percentile_gross"]}
         write_csv(pd.DataFrame([flat]).set_index("reference"), out / "placebo.csv", float_format="%.6g")
-    save_used(bt.used_settings(cfg) | walkforward_settings(cfg) | {"placebo": cfg.get("placebo")}, out / "used.yaml")
+    save_used(metrics_used(cfg), out / "used.yaml")
 
     plot_dir = ROOT / "outputs" / "plots"
     for model, backtest in backtests.items():
@@ -460,8 +470,7 @@ def evaluate_oos(cfg: dict) -> dict[str, pd.DataFrame]:
     write_csv(bonus, out / "oos_bonus.csv", float_format="%.6g")
     write_csv(secondary, out / "oos_secondary.csv", float_format="%.6g")
     write_csv(inference, out / "oos_inference.csv", float_format="%.6g")
-    save_used(bt.used_settings(cfg) | walkforward_settings(cfg) | {"oos": {"data_end": cfg["data"]["end"]}},
-              out / "oos_used.yaml")
+    save_used(oos_metrics_used(cfg), out / "oos_used.yaml")
 
     plot_dir = ROOT / "outputs" / "plots"
     for model, book in books.items():
