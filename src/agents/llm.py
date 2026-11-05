@@ -147,15 +147,16 @@ class LLM:
                 "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"}}
 
     def call(self, role: str, messages: Sequence[dict]) -> dict:
-        """{"content": text, "parsed": JSON object or None, "cached": bool, "cost_usd": cost of this call (0 if
-        cached), "key": request key}."""
+        """{"content": text, "parsed": JSON object or None, "cached": bool, "cost_usd": what this call charges the
+        meter (0 if cached), "recorded_cost_usd": the cost of the live call that produced the answer (S33-15 (3)),
+        "key": request key}."""
         request = self.request(role, messages)
         key = request_key(request)
         entry = self.cache.get(key)
         if entry is not None:
             self.cached_calls += 1
             return {"content": entry["response"], "parsed": parse_json(entry["response"]), "cached": True,
-                    "cost_usd": 0.0, "key": key}
+                    "cost_usd": 0.0, "recorded_cost_usd": float(entry.get("cost_usd", 0.0)), "key": key}
         if self.mode == "replay":
             raise ReplayMiss(f"replay: no cached response for the {role} request {key[:12]}")
         if self.cache.total_cost() + worst_case_cost(request) > self.budget_usd:
@@ -172,7 +173,8 @@ class LLM:
         self.cache.add({"key": key, "request": request, "response": content, "usage": usage, "cost_usd": cost})
         self.live_calls += 1
         self.run_cost += cost
-        return {"content": content, "parsed": parse_json(content), "cached": False, "cost_usd": cost, "key": key}
+        return {"content": content, "parsed": parse_json(content), "cached": False, "cost_usd": cost,
+                "recorded_cost_usd": cost, "key": key}
 
 
 def _usage_dict(usage) -> dict:

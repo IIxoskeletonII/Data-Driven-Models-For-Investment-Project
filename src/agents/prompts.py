@@ -6,6 +6,7 @@ only, never a price series.
 """
 
 import json
+import math
 
 LAB_BRIEF = (
     "You are a quantitative researcher in a small research lab. The lab studies a weekly strategy that ranks 9 "
@@ -54,14 +55,44 @@ def history_lines(records: list[dict]) -> list[dict]:
     return lines
 
 
-def hypothesis_messages(features_summary: dict, history: list[dict]) -> list[dict]:
+def _number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, 2) if math.isfinite(number) else None
+
+
+def trial_summaries(trials: list[dict]) -> list[dict]:
+    """Every logged trial as Hypothesis sees it (S33-15 (4)): trial id, kind, rung, headline Sharpe and max drawdown
+    (2 decimals); agent rows add the feature's name and expression (or "invalid") and the stage reached."""
+    lines = []
+    for row in trials:
+        item = {"trial_id": row.get("trial_id"), "kind": row.get("kind"), "rung": row.get("rung"),
+                "is_sharpe": _number(row.get("is_sharpe")), "is_mdd": _number(row.get("is_mdd"))}
+        if row.get("kind") == "agent":
+            features = row.get("agent_features")
+            first = features[0] if isinstance(features, list) and features and isinstance(features[0], dict) else None
+            item["feature"] = {"name": first.get("name"), "expr": first.get("expr")} if first else "invalid"
+            try:
+                notes = json.loads(row.get("notes") or "{}")
+            except ValueError:
+                notes = {}
+            item["stage"] = notes.get("stage") if isinstance(notes, dict) else None
+        lines.append(item)
+    return lines
+
+
+def hypothesis_messages(features_summary: dict, history: list[dict], trials: list[dict] = ()) -> list[dict]:
     task = ("Propose one new feature idea. Use the summaries below only as context; do not repeat an earlier candidate "
             "or a close variant of one. Answer with the JSON object {\"mechanism\": str (why the feature should predict "
             "next week's relative return across sectors), \"rationale\": str (why it is not already captured by the six "
             "features), \"feature_idea\": str (how to compute it from weekly closes, the S&P 500 and the market states)}.")
     return [{"role": "system", "content": LAB_BRIEF},
             {"role": "user", "content": f"{DSL_GRAMMAR}\n\nFeature summaries at the end of the research sample "
-                                        f"(anonymised): {_json(features_summary)}\n\nEarlier candidates of this run: "
+                                        f"(anonymised): {_json(features_summary)}\n\nTrial history (every trial "
+                                        f"logged so far: the model ladder and earlier proposals): "
+                                        f"{_json(list(trials))}\n\nEarlier candidates of this run: "
                                         f"{_json(history)}\n\n{task}"}]
 
 
@@ -108,7 +139,8 @@ def risk_messages(spec: dict, checks: dict, metrics: dict) -> list[dict]:
             "\"concentration\" (the feature would concentrate the book in the same few sectors or one exposure), "
             "\"mechanism\" (the feature's construction is flawed or its signal is an artefact), or \"instability\" (the "
             "feature is likely to behave erratically or break across regimes). A veto that names no such concern, or "
-            "that rests on Sharpe ratios or costs, does not count. Answer with the JSON object {\"veto\": true|false, "
+            "that rests on Sharpe ratios or costs, does not count, so do not cite Sharpe ratios, costs or the tool's "
+            "figures in your notes. Answer with the JSON object {\"veto\": true|false, "
             "\"concern\": \"concentration\"|\"mechanism\"|\"instability\"|null, \"notes\": str}.")
     return [{"role": "system", "content": "You are a risk officer reviewing a proposed trading feature. Answer in JSON."},
             {"role": "user", "content": f"Spec: {_json(spec)}\nRisk review inputs: {_json(shown)}\n\n{task}"}]

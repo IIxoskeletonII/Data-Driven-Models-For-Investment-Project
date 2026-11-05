@@ -80,10 +80,11 @@ class Lab:
         current = {"candidate": number, "source": "llm", "cost_usd": 0.0, "review_cost_usd": 0.0}
         try:
             history = prompts.history_lines(state.get("records", []))
-            answer = self.llm.call("hypothesis", prompts.hypothesis_messages(self.features_summary(), history))
+            trials = prompts.trial_summaries(self.tool("get_trial_history", {})["trials"])  # S33-7, S33-15 (4)
+            answer = self.llm.call("hypothesis", prompts.hypothesis_messages(self.features_summary(), history, trials))
         except BudgetExceeded as error:
             return {"stopped": str(error)}
-        current["cost_usd"] += answer["cost_usd"]
+        current["cost_usd"] += answer["recorded_cost_usd"]
         current["hypothesis"] = answer["parsed"] if answer["parsed"] is not None else {"unparsed": answer["content"]}
         return {"current": current, "llm_done": state.get("llm_done", 0) + 1}
 
@@ -93,22 +94,30 @@ class Lab:
             answer = self.llm.call("coder", prompts.coder_messages(current["hypothesis"]))
         except BudgetExceeded as error:
             return {"stopped": str(error), "current": current}
-        current["cost_usd"] += answer["cost_usd"]
+        current["cost_usd"] += answer["recorded_cost_usd"]
         parsed = answer["parsed"] or {}
-        current["spec"] = parsed.get("spec", parsed if parsed else {"unparsed": answer["content"]})
+        spec = parsed.get("spec", parsed if parsed else None)
+        # S33-15 (1): anything but a JSON object is an invalid spec, recorded as such by the Validator
+        current["spec"] = spec if isinstance(spec, dict) else {"unparsed": answer["content"]}
         return {"current": current}
 
     def inject(self, state: LabState) -> LabState:
         queue = list(state["injected"])
         item = queue.pop(0)
-        current = {"candidate": self._number(state), "source": item["source"], "hypothesis": {"injected": item["source"]},
-                   "spec": item["spec"], "cost_usd": 0.0, "review_cost_usd": 0.0}
+        spec = item["spec"]
+        name = spec.get("name") if isinstance(spec, dict) else None
+        # S33-15: the LLMs see an injected spec like any proposal; its origin stays in `source`, which no prompt shows
+        current = {"candidate": self._number(state), "source": item["source"], "hypothesis": {"feature_idea": name},
+                   "spec": spec, "cost_usd": 0.0, "review_cost_usd": 0.0}
         return {"current": current, "injected": queue}
 
     def validator(self, state: LabState) -> LabState:
         current = dict(state["current"])
-        result = self.tool("run_walkforward", {"spec": current["spec"], "candidate": current["candidate"],
-                                               "cost_usd": round(current["cost_usd"], 8)})
+        try:
+            result = self.tool("run_walkforward", {"spec": current["spec"], "candidate": current["candidate"],
+                                                   "cost_usd": round(current["cost_usd"], 8)})
+        except Exception as error:  # noqa: BLE001 - S33-15 (1): a failed tool call rejects the proposal, never the run
+            result = {"stage": "tool_error", "passed": False, "reason": f"{type(error).__name__}: {error}"}
         current.update(stage=result["stage"], checks=result.get("checks", {}), metrics=result.get("metrics"),
                        risk_checks=result.get("risk_checks"), passed_validator=bool(result["passed"]),
                        validator_reason=result.get("reason"), spec_hash=result.get("spec_hash"))
@@ -126,7 +135,7 @@ class Lab:
         except BudgetExceeded as error:
             current["skeptic"] = {"veto": True, "reasons": "not reviewed: budget stop"}
             return {"current": current, "stopped": str(error)}
-        current["review_cost_usd"] += answer["cost_usd"]
+        current["review_cost_usd"] += answer["recorded_cost_usd"]
         current["skeptic"] = _verdict(answer["parsed"], "reasons", answer["content"])
         return {"current": current}
 
@@ -144,7 +153,7 @@ class Lab:
         except BudgetExceeded as error:
             current["risk"] = {"veto": True, "by": "budget", "notes": "not reviewed: budget stop"}
             return {"current": current, "stopped": str(error)}
-        current["review_cost_usd"] += answer["cost_usd"]
+        current["review_cost_usd"] += answer["recorded_cost_usd"]
         current["risk"] = risk_verdict(answer["parsed"], answer["content"])
         return {"current": current}
 
@@ -200,7 +209,8 @@ def _verdict(parsed: dict | None, field: str, content: str) -> dict:
     return {"veto": parsed["veto"], field: str(parsed.get(field, ""))}
 
 
-INVALID_VETO_WORDS = re.compile(r"\b(sharpe|costs?|borrow)\b", re.IGNORECASE)  # S33-14
+# S33-14, S33-15 (2): letters, not word characters, bound the words, so snake_case names such as net_sharpe match
+INVALID_VETO_WORDS = re.compile(r"(?<![a-z])(sharpe|costs?|borrow)(?![a-z])", re.IGNORECASE)
 
 
 def risk_verdict(parsed: dict | None, content: str) -> dict:

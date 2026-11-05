@@ -19,11 +19,12 @@ import importlib.util
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from src.agents.dsl import DSLError, evaluate, parse
+from src.agents.dsl import evaluate, parse
 from src.backtest import run as run_backtest
 from src.config import ROOT, load_config
 from src.contracts import universe
@@ -41,7 +42,6 @@ LEAKAGE_CUTOFFS = ("2006-06-30", "2012-06-29", "2017-06-30")  # S33-6 (2)
 LEAKAGE_SIGMA = 0.05
 REDUNDANCY_MAX = 0.9  # S33-6 (4)
 FEATURE_WINDOW_WEEKS = 104  # get_features: summaries over the 104 weeks ending at as_of
-ADVERSE = ("costs", "bps", -1, "borrow", -1)  # the adverse scenario: last entries of costs.bps and costs.borrow
 RISK_TURNOVER_RATIO_MAX = 1.5  # S33-14 (1): candidate turnover at most 1.5 times the base rung's
 RISK_RESIDUAL_BETA_MAX = 0.10  # S33-14 (2): mean absolute residual beta (D10)
 RISK_ADVERSE_UPLIFT_MIN = 0.0  # S33-14 (3): the adverse-cost Sharpe uplift over the base rung must stay above 0
@@ -78,8 +78,8 @@ def anonymise(cfg: dict) -> dict[str, str]:
     """Sector -> code A1 ... A9 (S33-5): sector i of universe(cfg).sectors gets A<j+1>, j its position in
     numpy.random.default_rng(seed).permutation(9)."""
     sectors = list(universe(cfg).sectors)
-    order = np.random.default_rng(int(cfg["seed"])).permutation(len(sectors))
-    return {sector: f"A{int(position) + 1}" for sector, position in zip(sectors, order, strict=True)}
+    order = list(np.random.default_rng(int(cfg["seed"])).permutation(len(sectors)))
+    return {sector: f"A{order.index(i) + 1}" for i, sector in enumerate(sectors)}  # j = position of i (S33-15)
 
 
 def _hash(value) -> str:
@@ -328,10 +328,10 @@ class VaultServer:
         result = {"candidate": candidate, "checks": {}, "metrics": None, "passed": False}
         try:
             feature = parse(spec)
-        except DSLError as error:
+        except Exception as error:  # noqa: BLE001 - DSLError or any failure on a malformed proposal (S33-15 (1))
             invalid = {"invalid_dsl": spec}
             self._row(invalid, {**notes, "stage": "invalid_spec"})
-            self._log("run_walkforward", spec, "refused", f"DSLError: {error}")
+            self._log("run_walkforward", spec, "refused", f"{type(error).__name__}: {error}")
             return {**result, "stage": "invalid_spec", "reason": str(error), "spec_hash": spec_hash(invalid, self.cfg)}
         feature_dict = {"name": feature.name, "expr": feature.expr}
         model_spec = self.candidate_spec(feature_dict)
@@ -362,9 +362,11 @@ class VaultServer:
                 return computed["net_sharpe"], computed["max_drawdown"], _notes(summary)
 
             self.vault.run_walkforward(model_spec, evaluate_scores, trial_path=self.trial_path)
-        except Exception as error:
-            self._log("run_walkforward", spec, "refused", f"{type(error).__name__}: {error}")
-            raise
+        except Exception as error:  # noqa: BLE001 - S33-15 (1): recorded as a refused trial, never a crash
+            reason = f"{type(error).__name__}: {error}"
+            self._row(model_spec, {**notes, "stage": "refused", "reason": reason[:300]})
+            self._log("run_walkforward", spec, "refused", reason)
+            return {**result, "stage": "refused", "reason": reason}
         result.update(stage="walk_forward", metrics={k: _round(v) for k, v in computed.items()},
                       risk_checks=risk_checks(computed), passed=bool(computed["passed_gate"]),
                       reason="passed the §07 gate against the base rung" if computed["passed_gate"] else
@@ -396,7 +398,7 @@ def build_mcp(core: VaultServer):
         return core.get_features(as_of)
 
     @server.tool(name="run_walkforward", description="Validate a DSL feature spec and run the In-Sample walk-forward.")
-    def tool_run_walkforward(spec: dict, candidate: int | None = None, cost_usd: float | None = None) -> dict:
+    def tool_run_walkforward(spec: Any, candidate: int | None = None, cost_usd: float | None = None) -> dict:
         return core.run_walkforward(spec, candidate=candidate, cost_usd=cost_usd)
 
     @server.tool(name="get_trial_history", description="Every trial so far, summary columns only.")

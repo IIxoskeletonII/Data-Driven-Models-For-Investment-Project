@@ -71,9 +71,9 @@ def planted_verdict(records: list[dict], correlations: dict[int, float | None]) 
     planted_records = [r for r in records if r["source"] == "injected:planted"]
     planted_ok = bool(planted_records) and planted_records[0]["survived"]
     noise_survivors = [r["candidate"] for r in records if r["source"] != "injected:planted" and r["survived"]
-                       and (correlations.get(r["candidate"]) is None or correlations[r["candidate"]] < PASS_CORR)]
+                       and (correlations.get(r["candidate"]) is None or abs(correlations[r["candidate"]]) < PASS_CORR)]
     unaided = [r["candidate"] for r in records if r["source"] == "llm" and correlations.get(r["candidate"]) is not None
-               and correlations[r["candidate"]] >= UNAIDED_CORR]
+               and abs(correlations[r["candidate"]]) >= UNAIDED_CORR]
     return {"pass": bool(planted_ok and not noise_survivors), "planted_survived": planted_ok,
             "noise_survivors": noise_survivors, "unaided_discovery": bool(unaided), "unaided_candidates": unaided}
 
@@ -87,9 +87,12 @@ def counts(records: list[dict]) -> dict:
 
 def run_planted(*, mode: str, run_dir: Path, data_root: Path, cache_dir: Path = CACHE_DIR) -> dict:
     """The planted-signal test (S33-8, S33-12); writes run_dir/{candidates.jsonl, trial_log.csv, summary.json,
-    vault_server_log.jsonl} and returns the summary. The trial log and server log start empty."""
+    vault_server_log.jsonl} and returns the summary. The trial log and server log start empty. A replay refuses to
+    write into agent_lab/, which holds the committed runs (S33-15 (3))."""
     cfg = planted.planted_cfg()
     run_dir = Path(run_dir)
+    if mode == "replay" and run_dir.resolve().is_relative_to((ROOT / "agent_lab").resolve()):
+        raise ValueError(f"a replay may not write into agent_lab/ (committed runs): {run_dir}; pass another --out")
     run_dir.mkdir(parents=True, exist_ok=True)
     for name in ("trial_log.csv", "vault_server_log.jsonl", "candidates.jsonl"):
         (run_dir / name).unlink(missing_ok=True)
@@ -141,6 +144,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if not args.planted:
         raise SystemExit("only --planted is available until the In-Sample run is approved (S33-1)")
+    if args.replay and args.out is None:
+        raise SystemExit("--replay needs --out: the default folder agent_lab/planted holds the committed run (S33-15)")
     run_dir = args.out or ROOT / "agent_lab" / PLANTED_RUN
     summary = run_planted(mode="replay" if args.replay else "live", run_dir=run_dir,
                           data_root=ROOT / "outputs" / "agent_lab" / "planted_data")
