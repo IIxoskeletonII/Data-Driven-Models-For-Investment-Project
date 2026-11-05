@@ -217,9 +217,14 @@ def run_insample(*, mode: str, run_dir: Path = RUN_DIR) -> dict:
     lab = Lab(core, model, run_dir, n_llm=int(cfg["agent_lab"]["max_candidates"]), cfg=cfg)
     outcome = lab.run()
     records = outcome["records"]
+    # spend and calls of this run's own cache file only (cache/insample.jsonl), so a replay reports the same figures
+    # after the probe has added cache/probe.jsonl
+    run_entries = ([json.loads(line) for line in model.cache.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                   if model.cache.path.exists() else [])
     summary = {"run": INSAMPLE_RUN, "base_rung": INSAMPLE_BASE_RUNG, "base_net_sharpe": round(float(core.base()["net_sharpe"]), 6),
                "counts": insample_counts(records), "stopped": outcome["stopped"], "budget_usd": round(lab_budget(cfg), 6),
-               "total_cache_spend_usd": round(model.cache.total_cost(), 6), "llm_calls_cached": len(model.cache.entries),
+               "total_cache_spend_usd": round(sum(float(e.get("cost_usd", 0.0)) for e in run_entries), 6),
+               "llm_calls_cached": len(run_entries),
                "candidates": [{"candidate": r["candidate"],
                                "name": r["spec"].get("name") if isinstance(r.get("spec"), dict) else None,
                                "stage": r["stage"], "passed_validator": r.get("passed_validator", False),
@@ -297,8 +302,8 @@ def write_review(run_dir: Path) -> Path:
                   f"- Spec hash: `{r.get('spec_hash')}`",
                   f"- Mechanism: {h.get('mechanism', 'n/a')}",
                   f"- Rationale: {h.get('rationale', 'n/a')}",
-                  (f"- Uplift vs {summary['base_rung']}: {_f(m.get('uplift'))} (net Sharpe {_f(m.get('net_sharpe'))} against "
-                  f"{_f(m.get('base_net_sharpe'))}); P(uplift > 0) {_f(m.get('p_uplift_positive'))}; max drawdown change "
+                  (f"- Uplift vs {summary['base_rung']}: {_f(m.get('uplift'), 3)} (net Sharpe {_f(m.get('net_sharpe'))} against "
+                  f"{_f(m.get('base_net_sharpe'))}); P(uplift > 0) {_f(m.get('p_uplift_positive'), 3)}; max drawdown change "
                   f"{_f(m.get('max_drawdown_change'))}"),
                   f"- Rank IC: mean {_f(m.get('rank_ic_mean'), 4)}, t {_f(m.get('rank_ic_t'))}",
                   (f"- Turnover: {_f(m.get('mean_turnover'))} a week (base {_f(m.get('base_mean_turnover'))}); mean "
@@ -310,8 +315,8 @@ def write_review(run_dir: Path) -> Path:
     for r in records:
         m = r.get("metrics") or {}
         name = r["spec"].get("name") if isinstance(r.get("spec"), dict) and "name" in r["spec"] else "(invalid)"
-        lines.append(f"| {r['candidate']} | {str(name).replace('|', '/')} | {r.get('stage')} | {_f(m.get('uplift'))} | "
-                     f"{_f(m.get('p_uplift_positive'))} | {r.get('skeptic', {}).get('veto', '')} | "
+        lines.append(f"| {r['candidate']} | {str(name).replace('|', '/')} | {r.get('stage')} | {_f(m.get('uplift'), 3)} | "
+                     f"{_f(m.get('p_uplift_positive'), 3)} | {r.get('skeptic', {}).get('veto', '')} | "
                      f"{r.get('risk', {}).get('veto', '')} | {r.get('survived')} |")
     probe_path = run_dir / "probe.json"
     lines += ["", "## Recognition probe (S33-17)", ""]
