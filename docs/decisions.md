@@ -1890,6 +1890,21 @@ computed or seen. "Approved by" is completed by Mattia's approving review of the
 | Files affected | `05_train_walkforward.py`, its tests |
 | Amendment | No: applies §10 and §11 |
 
+### S37-8 · Fixes from the session audit, and two open points for `08_run_oos.py`
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-05 |
+| Question | The independent audit of the session's code (before any code commit) found no blocker and three should-fix points and several nits. Which are fixed, and what is left open? |
+| Options considered | Fix in Eliya's files now (chosen for 2 to 6); change `08_run_oos.py` (refused: Mattia's file, S34-1) |
+| Decision | (1) **Open for Mattia, not fixed here:** S37-2's rationale ("the builder itself cannot compute an Out-of-Sample return before the freeze") holds only for `truncate_at`. The three-argument call with a late `is_end`, which 08's `rebuild_tables` still makes (`build_forward_returns(daily_open, daily_close, end)`), computes every return to `data.end` with no lock check in the builder and labels them `IS`. Nothing leaks today: 08 runs that call only after its lock and tree checks, and `write_tables(..., allow_oos=True)` needs the lock. Refusing a late `is_end` in the builder would break 08's current call at Gate 4, so 08 should move to `build_forward_returns(daily_open, daily_close, is_end, truncate_at=end, lock_path=<FROZEN.lock>)` and drop its period re-assignment. (2) `--select` and `--agent-returns` stop when `FROZEN.lock` exists (`refuse_after_freeze`): the gate file and the trial log are hashed by the lock (S34-3), so a rerun after the freeze would change a frozen artefact. (3) `select` writes the three texts to `<target>.tmp` files and then moves each onto its target with `os.replace`; a failed write leaves the old files in place and no temporary file. (4) `trial_rows` refuses a row with more or fewer fields than the header, so a rewrite cannot drop a field. (5) `_gate_frames` refuses a `models.candidate_order` whose non-absent names, after M0, differ from `GATE_MODELS` (M0, M1, M2, M3, ENS). (6) PBO is taken from the same CSCV logits as the median logit (one CSCV pass, same value as `pbo_cscv`). Not changed: `agent_returns` writes each candidate's folder as soon as it reproduces (a later failure leaves valid earlier folders); `selection_gate.json` carries a `rule` key (a one-line citation of §07, Amendment 6 C1, S33-19, S37-1) beyond the S37-4 list; the `--agent-returns` command line branch is run on real data, not in a unit test. Observation for the write-up: `M1_a0.1` and `M1_a1` have identical weekly net returns (their scores differ by at most 5.3e-6 but rank the sectors the same every week), so the PBO matrix holds two equal columns |
+| Rationale | The fixes protect frozen artefacts and the trial log; the 08 change belongs to its owner |
+| Evidence | Session audit (5 Nov 2026), should-fix 1 to 3 and nits 4 to 11; S34-1 ("If a hook is missing, list it in the PR rather than editing his code"); S34-3 (`trial_log_sha256`, the gate file among the artefacts); `08_run_oos.py: rebuild_tables` (`s03.build_forward_returns(daily_open, daily_close, end)`); tests added: `test_select_refuses_once_frozen_lock_exists`, `test_agent_returns_refuses_once_frozen_lock_exists`, `test_select_leaves_no_temporary_file`, `test_trial_rows_refuse_a_row_with_an_extra_field`, `test_gate_frames_refuse_a_candidate_order_other_than_the_decision` |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam; Mattia Cervelli (pull request review; point 1 is his to act on) |
+| Files affected | `05_train_walkforward.py`, `tests/test_select.py`; later `08_run_oos.py` (Mattia) |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
