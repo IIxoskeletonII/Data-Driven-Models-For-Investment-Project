@@ -1,5 +1,5 @@
-"""Single Out-of-Sample run of the frozen system (protocol section 10, vault protocol steps 2 and 3), Phase 3.4 (Mattia,
-decision S34-1).
+"""Single Out-of-Sample run of the frozen system (protocol section 10, vault protocol steps 2 to 4), Phase 3.4 (Mattia,
+decision S34-1), with the bug-fix rerun of Amendment 8 (decision S36-1).
 
   --freeze   writes FROZEN.lock: config hash, code commit, trial-log hash, the selected model (from the selection gate's
              output) and the SHA-256 of every model artefact and walk-forward output the run depends on (S34-3). Refuses
@@ -10,12 +10,18 @@ decision S34-1).
              (Vault.unlock); rebuilds the full-range tables through 03's unlock path into data/processed/oos/; continues
              the quarterly refits into the Out-of-Sample with each rung's last In-Sample grid value frozen (Amendment 6
              C2) for the selected model and every candidate (§07 step 6), M0 and M0*; backtests one continuous book per
-             model across 2019-12-27 (Amendment 2 C5).
+             model across 2019-12-27 (Amendment 2 C5). The first run after the freeze is the run of record.
+  --rerun ID a rerun to correct a bug found after the run of record (Amendment 8 C1, S36-1): refuses unless the run of
+             record is logged and docs/decisions.md holds the rerun decision ID (fields Bug, Fix commit, Fix files), the
+             fix commit comes after the freeze and changes exactly the Fix files, and nothing else changed since the
+             freeze; then every check of the run, one more log entry naming ID, and the same run written to
+             data/processed/oos_reruns/ID/ and outputs/oos_reruns/ID/, so the run of record's outputs stay untouched.
 
 Inputs:  FROZEN.lock, config.yaml, docs/trial_log.csv, outputs/metrics/selection_gate.json (src.stats.selection_gate),
          outputs/walkforward/<model>/, data/processed/ (the frozen In-Sample tables and daily prices), data/raw/
 Outputs: FROZEN.lock (--freeze); outputs/oos_access_log.json, data/processed/oos/*.csv, outputs/oos/run.json and
-         outputs/oos/<model>/{scores.csv, weekly.csv, metrics.csv, summary.json, used.yaml} (the run; git-ignored)
+         outputs/oos/<model>/{scores.csv, weekly.csv, metrics.csv, summary.json, used.yaml} (the run; git-ignored);
+         the same under data/processed/oos_reruns/ID/ and outputs/oos_reruns/ID/ (--rerun ID)
 
 Every function takes the project folder `root`, so the tests run the whole script on the synthetic market under a
 temporary folder; main() works on the repository and is run on real data exactly once, at Gate 4.
@@ -28,8 +34,10 @@ import functools
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -56,7 +64,11 @@ GATE_FILE = "outputs/metrics/selection_gate.json"
 VAULT_LOG = "outputs/vault_access_log.jsonl"
 TRIAL_LOG = "docs/trial_log.csv"
 CONFIG = "config.yaml"
-ALLOWED_AFTER_FREEZE = (LOCK_NAME, "docs/decisions.md")  # the signatures of Gate 3 (S34-3)
+DECISIONS = "docs/decisions.md"
+ALLOWED_AFTER_FREEZE = (LOCK_NAME, DECISIONS)  # the signatures of Gate 3 (S34-3)
+RERUN_KEY = "rerun_decision"  # the log field naming a rerun's decision (Amendment 8 C1, S36-1)
+RERUN_FIELDS = ("Bug", "Fix commit", "Fix files")  # the fields of a rerun decision (S36-1)
+DECISION_ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")  # also a folder name on Windows and macOS
 TABLES = ("features", "market_states", "labels", "momentum_variants", "sizing_betas", "forward_returns")
 WALKFORWARD_FILES = ("scores.csv", "used.yaml", "summary.json", "selection.csv")
 TUNED = ("M1", "M2", "M3", "M0_star")  # rungs whose grid value is frozen (Amendment 6 C2)
@@ -131,13 +143,15 @@ def processed_dir(root: Path, cfg: dict) -> Path:
     return Path(root) / cfg["data"]["data_dir"] / "processed"
 
 
-def oos_data_dir(root: Path, cfg: dict) -> Path:
-    """Folder of the full-range tables written by the run (S34-5): data/processed/oos/ (git-ignored)."""
-    return processed_dir(root, cfg) / "oos"
+def oos_data_dir(root: Path, cfg: dict, rerun: str | None = None) -> Path:
+    """Folder of the full-range tables written by the run (S34-5): data/processed/oos/ (git-ignored); a rerun's own
+    data/processed/oos_reruns/<ID>/ (S36-1)."""
+    return processed_dir(root, cfg) / "oos" if rerun is None else processed_dir(root, cfg) / "oos_reruns" / rerun
 
 
-def oos_out_dir(root: Path) -> Path:
-    return Path(root) / "outputs" / "oos"
+def oos_out_dir(root: Path, rerun: str | None = None) -> Path:
+    """outputs/oos/ for the run of record; outputs/oos_reruns/<ID>/ for the rerun of decision ID (S36-1)."""
+    return Path(root) / "outputs" / "oos" if rerun is None else Path(root) / "outputs" / "oos_reruns" / rerun
 
 
 # -- git ----------------------------------------------------------------------------------------------------------------
@@ -163,7 +177,76 @@ def refuse_dirty(root: Path, what: str) -> None:
         raise SystemExit(f"{what}: refused, the working tree is not clean ({shown}); commit or remove these first (S34-3)")
 
 
-# -- the single-entry OOS access log (§10 step 3, decision S34-4) -------------------------------------------------------
+# -- rerun decisions of docs/decisions.md (Amendment 8 C1, decision S36-1) ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class RerunDecision:
+    """A rerun decision: its ID, the bug, the fix commit (as written, or resolved to the full hash) and the Fix files."""
+
+    id: str
+    bug: str
+    fix_commit: str
+    files: tuple[str, ...]
+
+
+_HEADING = re.compile(r"#{1,6} ")
+_DECISION_HEADING = re.compile(r"### (\S+) · ")
+_CELL_BORDER = re.compile(r"(?<!\\)\|")  # `\|` inside a cell is a literal bar, not a border
+
+
+def decision_tables(text: str) -> dict[str, list[dict[str, str]]]:
+    """{ID: [{Field: Content} of each entry headed `### <ID> · <title>`]} of a decisions.md text."""
+    out: dict[str, list[dict[str, str]]] = {}
+    current = None
+    for line in text.splitlines():
+        if _HEADING.match(line):
+            match = _DECISION_HEADING.match(line)
+            current = {} if match else None
+            if match:
+                out.setdefault(match.group(1), []).append(current)
+            continue
+        if current is not None and line.startswith("|"):
+            cells = [cell.strip() for cell in _CELL_BORDER.split(line.strip())[1:-1]]
+            if len(cells) == 2 and cells[0] != "Field" and set(cells[0]) - {"-", " "}:
+                current.setdefault(cells[0], cells[1])
+    return out
+
+
+def parse_rerun_decision(decision_id: str, entries: list[dict[str, str]]) -> RerunDecision:
+    """The rerun decision ID from its entries in decision_tables (S36-1). ValueError naming what is missing: the entry,
+    a unique heading, a field of RERUN_FIELDS, exactly one commit hash in backticks in Fix commit, or a path in backticks
+    in Fix files."""
+    if not entries:
+        raise ValueError(f"decision {decision_id} not found in {DECISIONS}")
+    if len(entries) > 1:
+        raise ValueError(f"decision {decision_id} heads {len(entries)} entries of {DECISIONS}; it must head exactly one")
+    fields = entries[0]
+    missing = [field for field in RERUN_FIELDS if not fields.get(field, "").strip()]
+    if missing:
+        raise ValueError(f"decision {decision_id} is not a rerun decision: it lacks {missing} (the fields "
+                         f"{list(RERUN_FIELDS)}, Amendment 8 C1, S36-1)")
+    hashes = re.findall(r"`([0-9a-fA-F]{7,40})`", fields["Fix commit"])
+    if len(hashes) != 1:
+        raise ValueError(f"decision {decision_id}: 'Fix commit' must hold exactly one commit hash in backticks")
+    files = tuple(sorted({path.strip() for path in re.findall(r"`([^`]+)`", fields["Fix files"])}))
+    if not files or not all(files):
+        raise ValueError(f"decision {decision_id}: 'Fix files' must name the fix's files, each in backticks")
+    return RerunDecision(decision_id, fields["Bug"].strip(), hashes[0].lower(), files)
+
+
+def rerun_decisions(text: str) -> dict[str, RerunDecision]:
+    """Every rerun decision recorded in a decisions.md text: the entries that parse_rerun_decision accepts."""
+    out = {}
+    for decision_id, entries in decision_tables(text).items():
+        try:
+            out[decision_id] = parse_rerun_decision(decision_id, entries)
+        except ValueError:
+            continue
+    return out
+
+
+# -- the OOS access log: the run of record, then one entry per rerun (§10 step 3, S34-4, Amendment 8 C1, S36-1) --------
 
 
 def parse_oos_log(text: str, where: str = OOS_LOG) -> list[dict]:
@@ -183,13 +266,34 @@ def read_oos_log(path: Path) -> list[dict]:
     return [] if not path.exists() else parse_oos_log(path.read_text(encoding="utf-8"), str(path))
 
 
-def check_oos_log_text(text: str, where: str = OOS_LOG) -> int:
-    """Number of entries of a log text; ValueError if malformed or holding more than one entry (§10: 'CI fails if the
-    log ever has more than one entry')."""
-    entries = parse_oos_log(text, where)
-    if len(entries) > 1:
-        raise ValueError(f"{where}: {len(entries)} entries; the Out-of-Sample run happens exactly once (§10 step 3)")
+def check_oos_log_entries(entries: list[dict], decisions_text: str = "", where: str = OOS_LOG) -> int:
+    """Number of entries; ValueError unless the log follows Amendment 8 C1 against the rerun decisions recorded in
+    `decisions_text` (docs/decisions.md in the same state): at most 1 + K entries for K recorded rerun decisions; the
+    first entry (the run of record) names no decision; every later entry names a recorded rerun decision, each at most
+    once. With no rerun decision recorded, at most one entry (§10 step 3)."""
+    recorded = rerun_decisions(decisions_text)
+    if len(entries) > 1 + len(recorded):
+        raise ValueError(f"{where}: {len(entries)} entries; at most the run of record plus one per recorded rerun "
+                         f"decision ({len(recorded)} in {DECISIONS}) are allowed (§10 step 3, Amendment 8 C1)")
+    named = [entry.get(RERUN_KEY) for entry in entries]
+    if named and named[0] is not None:
+        raise ValueError(f"{where}: the first entry is the run of record and names no decision, but it names "
+                         f"{named[0]!r} (Amendment 8 C1)")
+    for number, name in enumerate(named[1:], start=2):
+        if name is None:
+            raise ValueError(f"{where}: entry {number} is a second run that names no rerun decision (Amendment 8 C1)")
+        if not isinstance(name, str) or name not in recorded:
+            raise ValueError(f"{where}: entry {number} names {name!r}, which is not a rerun decision recorded in "
+                             f"{DECISIONS} (fields {list(RERUN_FIELDS)}, S36-1)")
+    repeated = sorted({name for name in named[1:] if named[1:].count(name) > 1})
+    if repeated:
+        raise ValueError(f"{where}: decision(s) {repeated} named by more than one rerun entry; a decision allows one rerun")
     return len(entries)
+
+
+def check_oos_log_text(text: str, where: str = OOS_LOG, decisions_text: str = "") -> int:
+    """Number of entries of a log text; ValueError if malformed or breaking check_oos_log_entries (CI, S36-1)."""
+    return check_oos_log_entries(parse_oos_log(text, where), decisions_text, where)
 
 
 # -- the selection gate's output (decision S34-3) -----------------------------------------------------------------------
@@ -324,12 +428,65 @@ def freeze(root: Path = ROOT) -> dict:
     return lock
 
 
-# -- the run: checks before any Out-of-Sample access (decision S34-4) ----------------------------------------------------
+# -- the run: checks before any Out-of-Sample access (decisions S34-4, S36-1) --------------------------------------------
 
 
-def verify_lock(root: Path) -> tuple[dict, dict]:
-    """Stop unless FROZEN.lock exists and matches the current tree, and the OOS access log is empty. Returns (lock, cfg)."""
+def changed_files(root: Path, older: str, newer: str) -> set[str]:
+    """Repository paths that differ between two commits (`git diff --name-only`)."""
+    return {path for path in git(root, "diff", "--name-only", older, newer).stdout.splitlines() if path.strip()}
+
+
+def check_rerun(root: Path, lock: dict, entries: list[dict], decision_id: str) -> tuple[RerunDecision, set[str]]:
+    """The Amendment 8 C1 checks of --rerun ID (S36-1), before any Out-of-Sample access. Returns the decision, with its
+    fix commit resolved to the full hash, and the files that may have changed since the freeze beyond
+    allowed_after_freeze: its Fix files, those of the decisions of earlier rerun entries, and the access log."""
     root = Path(root)
+    refused = f"--rerun {decision_id}: refused"
+    if not entries:
+        raise SystemExit(f"{refused}, {OOS_LOG} holds no run of record; the first run is 08_run_oos.py without --rerun")
+    path = root / DECISIONS
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        check_oos_log_entries(entries, text)
+    except ValueError as error:
+        raise SystemExit(f"{refused}, {error}") from None
+    if entries[0].get("lock_sha256") != file_sha256(lock_path(root)):
+        raise SystemExit(f"{refused}, the run of record of {OOS_LOG} was not written for the current {LOCK_NAME}")
+    if any(entry.get(RERUN_KEY) == decision_id for entry in entries[1:]):
+        raise SystemExit(f"{refused}, {OOS_LOG} already holds the rerun of decision {decision_id}; a decision allows one "
+                         "rerun")
+    try:
+        decision = parse_rerun_decision(decision_id, decision_tables(text).get(decision_id, []))
+    except ValueError as error:
+        raise SystemExit(f"{refused}, {error}") from None
+    protected = sorted(set(decision.files) & {CONFIG, TRIAL_LOG, LOCK_NAME, *lock["artefacts"]})
+    if protected:
+        raise SystemExit(f"{refused}, 'Fix files' names {protected}: the fix changes no setting, threshold, grid, feature, "
+                         "model, cost or selected model (Amendment 8 C1)")
+    resolved = git(root, "rev-parse", "--verify", "--quiet", f"{decision.fix_commit}^{{commit}}", check=False)
+    if resolved.returncode != 0:
+        raise SystemExit(f"{refused}, the fix commit {decision.fix_commit} is not a commit of this repository")
+    fix, frozen = resolved.stdout.strip(), lock["code_commit"]
+    if fix == frozen or git(root, "merge-base", "--is-ancestor", frozen, fix, check=False).returncode != 0:
+        raise SystemExit(f"{refused}, the fix commit {fix[:12]} does not come after the frozen commit {frozen[:12]}")
+    if git(root, "merge-base", "--is-ancestor", fix, "HEAD", check=False).returncode != 0:
+        raise SystemExit(f"{refused}, the fix commit {fix[:12]} is not an ancestor of HEAD")
+    fixed = changed_files(root, f"{fix}^1", fix) - {DECISIONS}
+    if fixed != set(decision.files):
+        raise SystemExit(f"{refused}, the fix commit {fix[:12]} changes {sorted(fixed)}, but 'Fix files' names "
+                         f"{list(decision.files)}")
+    recorded = rerun_decisions(text)
+    earlier = {name for entry in entries[1:] for name in recorded[entry[RERUN_KEY]].files}
+    return replace(decision, fix_commit=fix), set(decision.files) | earlier | {OOS_LOG}
+
+
+def verify_lock(root: Path, rerun: str | None = None) -> tuple[dict, dict, RerunDecision | None]:
+    """Stop unless FROZEN.lock exists and matches the current tree, and the OOS access log is empty (the run of record)
+    or, with rerun = a decision ID, check_rerun passes. Returns (lock, cfg, the rerun decision or None)."""
+    root = Path(root)
+    if rerun is not None and not DECISION_ID.fullmatch(rerun):
+        raise SystemExit(f"--rerun: refused, {rerun!r} is not a decision ID (letters, digits, '.', '_' and '-', starting and "
+                         "ending with a letter or digit)")
     if not lock_path(root).exists():
         raise SystemExit(f"refused: {LOCK_NAME} does not exist; run 08_run_oos.py --freeze and sign it at Gate 3 first")
     try:
@@ -338,17 +495,22 @@ def verify_lock(root: Path) -> tuple[dict, dict]:
         raise SystemExit(f"refused: {LOCK_NAME} is not valid JSON ({error})") from None
     if not isinstance(lock, dict) or lock.get("format") != LOCK_FORMAT:
         raise SystemExit(f"refused: {LOCK_NAME} is not a format-{LOCK_FORMAT} lock written by --freeze")
-    if read_oos_log(root / OOS_LOG):
-        raise SystemExit(f"refused: {OOS_LOG} already has an entry; the Out-of-Sample run happens exactly once (§10)")
-    refuse_dirty(root, "the run")
+    entries = read_oos_log(root / OOS_LOG)
+    decision, fix_allowed = None, set()
+    if rerun is None and entries:
+        raise SystemExit(f"refused: {OOS_LOG} already has an entry; the Out-of-Sample run happens exactly once (§10); a "
+                         "rerun to correct a recorded bug is 08_run_oos.py --rerun DECISION_ID (Amendment 8 C1)")
+    if rerun is not None:
+        decision, fix_allowed = check_rerun(root, lock, entries, rerun)
+    refuse_dirty(root, "the run" if rerun is None else f"--rerun {rerun}")
     commit = lock["code_commit"]
     if git(root, "merge-base", "--is-ancestor", commit, "HEAD", check=False).returncode != 0:
         raise SystemExit(f"refused: the frozen commit {commit[:12]} is not an ancestor of HEAD")
-    changed = [p for p in git(root, "diff", "--name-only", commit, "HEAD").stdout.splitlines() if p.strip()]
-    allowed = set(lock.get("allowed_after_freeze", ()))
-    if set(changed) - allowed:
-        raise SystemExit(f"refused: files changed since the freeze: {sorted(set(changed) - allowed)} (only {sorted(allowed)} "
-                         "may change, S34-3)")
+    changed = changed_files(root, commit, "HEAD")
+    allowed = set(lock.get("allowed_after_freeze", ())) | fix_allowed
+    if changed - allowed:
+        raise SystemExit(f"refused: files changed since the freeze: {sorted(changed - allowed)} (only {sorted(allowed)} "
+                         "may change, S34-3, S36-1)")
     mismatched = []
     if text_sha256(root / CONFIG) != lock["config_sha256"]:
         mismatched.append(CONFIG)
@@ -360,7 +522,7 @@ def verify_lock(root: Path) -> tuple[dict, dict]:
     if mismatched:
         raise SystemExit(f"refused: hashes differ from {LOCK_NAME} for {mismatched}")
     cfg = load_config(root / CONFIG)
-    return lock, cfg
+    return lock, cfg, decision
 
 
 def read_frozen_scores(root: Path, name: str, is_end: pd.Timestamp) -> pd.DataFrame:
@@ -384,23 +546,30 @@ def input_files(root: Path, cfg: dict) -> list[Path]:
     return files
 
 
-def append_entry(root: Path, lock: dict) -> dict:
-    """Write outputs/oos_access_log.json with its single entry, before the vault is unlocked (S34-4)."""
+def append_entry(root: Path, lock: dict, decision: RerunDecision | None = None) -> dict:
+    """Append the run's entry to outputs/oos_access_log.json before the vault is unlocked: the single entry of the run
+    of record (S34-4), or one entry naming the rerun decision and its fix commit (Amendment 8 C1, S36-1)."""
     entry = {"utc": _utc_now(), "script": "08_run_oos.py", "code_commit": lock["code_commit"],
              "head_commit": head_commit(root), "lock_sha256": file_sha256(lock_path(root)), "selected": lock["selected"],
              "data_end": lock["data_end"]}
     path = Path(root) / OOS_LOG
-    if read_oos_log(path):
+    entries = read_oos_log(path)
+    if decision is None and entries:
         raise SystemExit(f"refused: {OOS_LOG} already has an entry")
-    _write_json([entry], path)
+    if decision is not None:
+        if not entries or any(e.get(RERUN_KEY) == decision.id for e in entries):
+            raise SystemExit(f"refused: {OOS_LOG} has no run of record or already holds the rerun of {decision.id}")
+        entry |= {RERUN_KEY: decision.id, "fix_commit": decision.fix_commit}
+    _write_json(entries + [entry], path)
     return entry
 
 
 # -- the run: tables, refits and the continuous book (decisions S34-5 to S34-7) -----------------------------------------
 
 
-def rebuild_tables(root: Path, cfg: dict) -> dict:
-    """The full-range tables through 03's unlock path (S34-5), written to data/processed/oos/: the six tables of
+def rebuild_tables(root: Path, cfg: dict, out_dir: Path | None = None) -> dict:
+    """The full-range tables through 03's unlock path (S34-5), written to out_dir (default data/processed/oos/; a
+    rerun's data/processed/oos_reruns/<ID>/, S36-1): the six tables of
     03_build_features.py built from the inputs cut at data.end; the forward returns' period re-assigned from realised_on
     against split.in_sample_end (contract 7). Returns 03's {file: rows, dates, columns, bytes, sha256}."""
     s03 = features_script()
@@ -417,7 +586,8 @@ def rebuild_tables(root: Path, cfg: dict) -> dict:
     forward["period"] = period
     validate_forward_returns(*s03.split_forward_returns(forward), is_end=is_end)
     tables["forward_returns"] = forward
-    return s03.write_tables(tables, oos_data_dir(root, cfg), is_end, lock_path(root), allow_oos=True)
+    out_dir = oos_data_dir(root, cfg) if out_dir is None else Path(out_dir)
+    return s03.write_tables(tables, out_dir, is_end, lock_path(root), allow_oos=True)
 
 
 def vault_momentum(vault: Vault, as_of: pd.Timestamp) -> pd.DataFrame:
@@ -501,8 +671,9 @@ def oos_used(cfg: dict, model: str) -> dict:
 
 
 def backtest_book(root: Path, cfg: dict, name: str, scores: pd.DataFrame, market: dict, spec_digest: str,
-                  frozen: dict | None, last_is_week: pd.Timestamp) -> dict:
-    """One continuous book (Amendment 2 C5, S34-7) in the three cost scenarios; writes outputs/oos/<name>/."""
+                  frozen: dict | None, last_is_week: pd.Timestamp, out: Path | None = None) -> dict:
+    """One continuous book (Amendment 2 C5, S34-7) in the three cost scenarios; writes `out` (default
+    outputs/oos/<name>/)."""
     bt = backtest_script()
     u = universe(cfg)
     betas, fwd, realised_on, period, rf = market["betas"], market["fwd"], market["realised_on"], market["period"], market["rf"]
@@ -563,7 +734,7 @@ def backtest_book(root: Path, cfg: dict, name: str, scores: pd.DataFrame, market
         "in_sample_backtest_check": is_check, "scenarios": by_scenario, "rf_constant": rf_constant,
         "benchmark": u.benchmark,
     }
-    out = oos_out_dir(root) / name
+    out = oos_out_dir(root) / name if out is None else Path(out)
     write_csv(scores.loc[_closes(scores.index) > last_is_week], out / "scores.csv")  # the Out-of-Sample refit weeks
     write_csv(weekly, out / "weekly.csv")
     write_csv(pd.DataFrame(rows).set_index(["scenario", "rf", "period"]), out / "metrics.csv")
@@ -572,10 +743,12 @@ def backtest_book(root: Path, cfg: dict, name: str, scores: pd.DataFrame, market
     return summary
 
 
-def run_oos(root: Path = ROOT) -> dict:
-    """The single Out-of-Sample run (S34-4 to S34-7). Returns run.json's content."""
+def run_oos(root: Path = ROOT, rerun: str | None = None) -> dict:
+    """The Out-of-Sample run of record (S34-4 to S34-7), or, with rerun = a decision ID, its rerun after a recorded bug
+    fix (Amendment 8 C1, S36-1), written to the rerun's own folders. Returns run.json's content."""
     root = Path(root)
-    lock, cfg = verify_lock(root)
+    lock, cfg, decision = verify_lock(root, rerun)
+    tables_dir, out_dir = oos_data_dir(root, cfg, rerun), oos_out_dir(root, rerun)
     is_end, end = pd.Timestamp(cfg["split"]["in_sample_end"]), pd.Timestamp(cfg["data"]["end"])
     models = list(lock["models"])
     check_used(data_settings(cfg), processed_dir(root, cfg) / "config.yaml", "01_download_data.py")
@@ -587,10 +760,10 @@ def run_oos(root: Path = ROOT) -> dict:
     if any(_closes(s.index).max() != last_is_week for s in frozen_scores.values()):
         raise SystemExit("the frozen walk-forward scores do not end on the same week")
 
-    entry = append_entry(root, lock)  # every check passed: the access is logged before the vault opens
-    vault = Vault(is_end, lock_path=lock_path(root), log_path=root / VAULT_LOG, data_dir=oos_data_dir(root, cfg), cfg=cfg)
+    entry = append_entry(root, lock, decision)  # every check passed: the access is logged before the vault opens
+    vault = Vault(is_end, lock_path=lock_path(root), log_path=root / VAULT_LOG, data_dir=tables_dir, cfg=cfg)
     vault.unlock()
-    tables = rebuild_tables(root, cfg)
+    tables = rebuild_tables(root, cfg, tables_dir)
     data = ladder_data(vault, end)
     folds = oos_folds(data, cfg, last_is_week)
     refits = refit_scores(models, data, folds, lock, cfg)
@@ -607,7 +780,7 @@ def run_oos(root: Path = ROOT) -> dict:
         validate_scores(scores)
         value = lock["frozen_values"].get(name) if name in TUNED else None
         summaries[name] = backtest_book(root, cfg, name, scores, market, lock["spec_hashes"][name], value,
-                                        last_is_week)
+                                        last_is_week, out=out_dir / name)
     report = {
         "access_entry": entry, "lock_sha256": entry["lock_sha256"], "selected": lock["selected"], "models": models,
         "frozen_values": lock["frozen_values"], "last_in_sample_scored_week": _week(last_is_week),
@@ -616,23 +789,30 @@ def run_oos(root: Path = ROOT) -> dict:
                    "test_end": _week(f.test_end)} for f in folds],
         "reproduction_2019q4": checks, "tables": tables,
         "in_sample_backtest_check": {name: s["in_sample_backtest_check"] for name, s in summaries.items()},
+        "rerun": None if decision is None else {"decision": decision.id, "bug": decision.bug,
+                                                "fix_commit": decision.fix_commit, "fix_files": list(decision.files)},
     }
-    _write_json(report, oos_out_dir(root) / "run.json")
+    _write_json(report, out_dir / "run.json")
     return report
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--freeze", action="store_true", help="write FROZEN.lock (Gate 3); without it: the single OOS run")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--freeze", action="store_true", help="write FROZEN.lock (Gate 3); without a flag: the run of record")
+    mode.add_argument("--rerun", metavar="DECISION_ID", default=None,
+                      help="rerun after the fix of a bug recorded in decision DECISION_ID (Amendment 8 C1, S36-1)")
     args = parser.parse_args(argv)
     if args.freeze:
         lock = freeze(ROOT)
         print(f"Saved {LOCK_NAME}: commit {lock['code_commit'][:12]}, selected {lock['selected']}, {len(lock['artefacts'])} "
               f"artefacts, trial count {lock['trial_count']}. Sign it in docs/decisions.md and commit both (Gate 3).")
         return
-    report = run_oos(ROOT)
-    print(f"Out-of-Sample run done at {report['access_entry']['utc']}: {len(report['models'])} models, "
-          f"{len(report['folds'])} refits -> outputs/oos/; commit {OOS_LOG} with git add -f (S34-4)")
+    report = run_oos(ROOT, rerun=args.rerun)
+    where = oos_out_dir(ROOT, args.rerun).relative_to(ROOT).as_posix()
+    kind = "Out-of-Sample run" if args.rerun is None else f"Out-of-Sample rerun of decision {args.rerun}"
+    print(f"{kind} done at {report['access_entry']['utc']}: {len(report['models'])} models, "
+          f"{len(report['folds'])} refits -> {where}/; commit {OOS_LOG} with git add -f (S34-4, S36-1)")
 
 
 if __name__ == "__main__":

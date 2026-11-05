@@ -66,6 +66,29 @@ reviewed pull requests with green CI. Run `uv run ruff check .` and `uv run pyte
   See [docs/licensing.md](docs/licensing.md).
 - **CI.** Lint and tests run on Windows, macOS and Linux with a synthetic fixture only: no network, no licensed data.
 
+## Building the submission
+
+Build the zip after Gate 4, once the Out-of-Sample run of record and `07_evaluate.py --period OOS` are done. Run it from a
+committed checkout, with the slides exported as a PDF:
+
+```bash
+uv run python make_submission.py --presentation PATH/TO/slides.pdf   # writes group_7.zip and prints its manifest
+```
+
+- **What goes in.** `group_7.zip` holds two things. The first is `project/`: every tracked file plus `data/raw/`,
+  `data/processed/` and `outputs/`, so every result reproduces offline. The second is the slides, stored at the zip root
+  as `presentation.pdf` whatever the file is called. Local tool settings files and synthetic test outputs are left out.
+  `--out PATH` changes where the zip is written, and `--manifest PATH` also saves the manifest. The manifest lists the
+  SHA-256 and size of every entry, then the zip's size and SHA-256.
+- **When it refuses.** The build stops and writes nothing if a tracked file has uncommitted changes, if a file is a
+  `.env` file or holds a key-like string, if the presentation is not a PDF, or if any output was built with another
+  `config.yaml`.
+- **Why the data ships only in the zip.** The course instructions require the raw data, the processed data and the
+  results inside the submitted project, reproducible without downloading anything. The raw vendor data is licensed, so
+  it is never committed to this public repository: `data/raw/` and `data/processed/` are git-ignored, and the commit
+  hook and CI enforce this. The zip goes only to the teaching team, through my.luiss. See
+  [docs/licensing.md](docs/licensing.md) and decisions S35-1 to S35-5 in [docs/decisions.md](docs/decisions.md).
+
 ## Repository map
 
 | Path | Content |
