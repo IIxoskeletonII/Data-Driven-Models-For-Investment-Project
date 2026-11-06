@@ -2036,6 +2036,119 @@ is computed or seen.
 | Files affected | `config.yaml` (new `round2:` section only), `tests/test_round2_config.py`, `docs/decisions.md` |
 | Amendment | Implements Amendment 9 (commit `c8999b0`). No further amendment |
 
+## 2026-11-06 · Session 3.9: `run_all.py`, the one-command In-Sample pipeline (Gate 5)
+
+Evidence-standard format. "Instruction" quotes the session 3.9 prompt (6 Nov 2026). "Answer" quotes the options Mattia
+chose that day for three questions the session asked before any code was written. When this entry was written,
+`FROZEN.lock` did not exist, `outputs/oos_access_log.json` had no entry, and no Out-of-Sample value had been computed or
+seen. `run_all.py` reads and writes In-Sample data only. "Approved by" lists the approvals given so far; Eliya approves
+through the review of the pull request from branch `feat/3.9-run-all`.
+
+### S39-1 · Ownership of `run_all.py` moves to Mattia
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | `run_all.py` is Eliya's file (S2-7). Who builds it for Gate 5? |
+| Options considered | (a) Eliya; (b) Mattia, calling only the pipeline's command lines and the public names of Eliya's files, and editing none of them (chosen) |
+| Decision | (b). Mattia owns `run_all.py` and its test file `tests/test_run_all.py`. `run_all.py` runs each script as a process with its documented options. The only name it reads from Eliya's code is `05_train_walkforward.py`'s `RUNGS` and `fixed_names(cfg)`, which it loads by path and only reads. No file of Eliya's is changed |
+| Rationale | Eliya carries Amendment 9 and the round-2 lab; Mattia owns the engine, the evaluation and the packaging that `run_all.py` drives |
+| Evidence | Instruction: "Session 3.9 — run_all.py, the one-command pipeline for Gate 5 (owner: Mattia, by decision S39-1: ownership moves from Eliya, who approves through this PR's review)."; S2-7; S34-1 (the same pattern for `08_run_oos.py`) |
+| Proposed by | Eliya Allam and Mattia Cervelli (session 3.9 instruction) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No: ownership, not specification |
+
+### S39-2 · The steps, their order, and what `run_all.py` never runs
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Which commands does `run_all.py` run, in which order, and how does it stop? The instruction's list starts at 03 and omits four steps that a run from the raw snapshot needs, or that produce reported outputs |
+| Options considered | (a) the instruction's list only (03, 05 for every configuration, 06 `--all` and the shift checks, 05 `--select`, 07); (b) (a) plus 01 offline, 05 `--agent-returns` and 06 `--placebo` (Answer 2, recommended); (c) (b) plus 06 `--ledger-years` as the last step (chosen, Answer 2) |
+| Decision | (c). The steps, each run as `python <script> <options>` from the project root, in order: `01_download_data.py`; `03_build_features.py`; `05_train_walkforward.py --model R` for every R of 05's `RUNGS`, then `--fixed F` for every F of 05's `fixed_names(cfg)` (read from 05 when `run_all.py` runs, so a round-2 rung added to 05 is included with no change here); `06_backtest.py --all`; `06_backtest.py --shift-check` with every rung of `RUNGS`; `06_backtest.py --placebo` (M0, S32-8); `05_train_walkforward.py --agent-returns`; `05_train_walkforward.py --select`; `07_evaluate.py`; `06_backtest.py --ledger-years`. The four additions and their reasons: 01 without `--refresh` verifies `data/raw/` and rebuilds `data/processed/daily_*.csv`, which 03 reads. `run_all.py` refuses before the first step if `data/raw/manifest.json` is missing, so 01 can never download. `--agent-returns` writes the agent folders without which `--select` stops (S37-7); it re-scores through the sealed vault and calls no LLM (S37-6). The placebo is read by 07's In-Sample table. The ledger reconciliation is the engine's correctness evidence (Gate 2) and runs last: a failure there leaves every earlier result written and is reported in the summary. **Never run:** `04_agent_lab.py` (agent results replay from the committed caches under `agent_lab/`), `08_run_oos.py` (the single Out-of-Sample run, by hand), and `00_smoke_test_data.py` and `02_validate_data.py` (they are not part of the In-Sample results chain; 02 rewrites `docs/qa_report.md`). A step list naming 04 or 08 is refused. **Stop and summary:** the first step that exits with a code other than 0 stops the run, with a message naming the step and its exit code. Before every stop and at the end, `run_all.py` prints a table of every step (`ok`, `FAILED`, `skipped` or `not run`, seconds, note) and the total time. Its own lines are flushed, so in a log file each step's header comes before that step's output (test `test_the_headers_and_the_summary_keep_their_place_when_stdout_is_a_file`) |
+| Rationale | (a) would fail at `--select` on a fresh run (no agent folders) and could not start from the raw snapshot (no `daily_close.csv`). The placebo and the ledger are outputs the submission ships (S35-3) |
+| Evidence | Instruction: "run_all.py runs the full In-Sample pipeline from the raw snapshot, in order: 03_build_features.py; 05_train_walkforward.py for every rung and fixed configuration that has a spec in 05 (it reads the list from 05, so round-2 rungs are included automatically once they exist); 06_backtest.py --all and the shift checks; 05 --select; 07_evaluate.py. It never calls 08_run_oos.py or 04_agent_lab.py (agent results replay from their committed caches). It stops at the first failure with the step's name, prints a summary table of what ran and its time"; Answer 2: "All four, with 06 --ledger-years as the last step: it is the engine's correctness evidence (Gate 2), and a failure there must not block the main results; report it in the summary."; `01_download_data.py` docstring ("Raw data is downloaded only if data/raw/ does not exist (or with --refresh)"); `03_build_features.py: load_inputs` (reads `data/processed/daily_close.csv`); S37-7 ("a walk-forward agent row without its folder stops the run (run `--agent-returns` first)"); S37-6; S32-8, S32-11 (the shift checks of every rung and the placebo on M0); `07_evaluate.py: read_placebo`; tests `test_the_pipeline_runs_every_05_configuration_in_order_and_never_04_or_08`, `test_a_rung_added_to_05_is_run_and_shift_checked`, `test_run_steps_refuses_a_step_that_is_never_run`, `test_preflight_refuses_without_the_raw_snapshot`, `test_it_stops_at_the_first_failure_naming_the_step_and_prints_the_summary`, `test_the_last_step_failing_leaves_the_earlier_outputs` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026 (Answer 2); Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No: deviates from the instruction's step list, not from the pre-registration |
+
+### S39-3 · `run_all.py` after the freeze: the `--after-freeze` flag
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | At Gate 5 `FROZEN.lock` exists. Once it does, `05 --agent-returns` and `05 --select` refuse to run (S37-8 point 2). A rerun of 03 and 05 also rewrites frozen artefacts, and on another machine those can differ in the last bits (ridge scores, S34-2). What does `run_all.py` do when the lock exists? |
+| Options considered | (a) refuse unless `--after-freeze` is passed; with it, skip the two frozen steps and rerun the rest (chosen, Answer 1); (b) always skip the two steps with a notice; (c) refuse after the freeze |
+| Decision | (a). Without the flag, `run_all.py` refuses before the first step when `FROZEN.lock` exists. With the flag and no lock, it also refuses. With the flag and the lock, `--agent-returns` and `--select` are shown as `skipped` (their committed and frozen outputs are used) and every other step runs |
+| Rationale | Nobody can rewrite frozen artefacts by accident, and the graders can still reproduce every In-Sample result after Gate 4 |
+| Evidence | S37-8 (2): "`--select` and `--agent-returns` stop when `FROZEN.lock` exists (`refuse_after_freeze`)"; S34-2; S34-3; Answer 1: "Opt-in flag (Recommended)"; tests `test_preflight_needs_the_flag_after_the_freeze_and_the_lock_with_the_flag`, `test_frozen_steps_are_skipped_after_the_freeze_and_every_step_gets_the_hash_seed` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026 (Answer 1); Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No |
+
+### S39-4 · The clean-tree rule, inside and outside a git checkout
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | How does `run_all.py` refuse a dirty tree, given that the submission zip has no `.git` folder? |
+| Options considered | (a) inside a git work tree, refuse a dirty tree and fail if the run changed the tree; outside one, say that the check is skipped and run (chosen, Answer 3); (b) always require git |
+| Decision | (a). Inside a git work tree, `run_all.py` refuses before the first step if `git status --porcelain` lists any path (untracked files count; git-ignored ones do not, as in S34-3). After the last step it runs the same check again, and fails, naming the first path, if the run changed the tree, since a reproduction must leave it unchanged. A new trial row written by 05 for a new spec is the expected case of such a change, and it must be committed on purpose. Outside a git work tree, or with no git installed, it prints "not a git checkout: the clean-tree check is skipped" and runs |
+| Rationale | The results must come from a committed state of the code and the trial log. The graders' zip must still run |
+| Evidence | Instruction: "and refuses a dirty tree"; Answer 3: "Skip check, say so (Rec.)"; S35-4 (the zip holds `project/<path>`, no `.git`); S34-3 (the porcelain rule of `--freeze`); tests `test_a_dirty_tree_is_refused_and_a_run_that_changes_the_tree_fails`, `test_outside_a_git_checkout_the_tree_check_is_skipped_and_said`, `test_git_dirty_is_none_outside_a_work_tree` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026 (Answer 3); Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No |
+
+### S39-5 · Two runs give identical outputs: the hash seed, the plot ids and the test
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | What does "running it twice gives identical outputs" cover, and what had to change for it to hold? |
+| Options considered | Plots: (a) give each HTML plot a fixed div id derived from its file name (chosen); (b) leave plotly's random id and compare the HTML files without it. Scope: (c) every file under `data/processed/` and `outputs/`, byte for byte, except the append-only access logs (chosen); (d) a tolerance comparison |
+| Decision | (a) and (c). (1) Plotly writes a random div id into every HTML file, so two runs differed. `src/plots.py: _write_html` now passes `div_id = "plot-<file name>"`, so the HTML is identical across runs; the PNG files already were. (2) Every step gets `PYTHONHASHSEED` = `config.seed` (42) (manual §6). (3) "Identical" means byte-identical files, except for the append-only access logs (`outputs/vault_access_log.jsonl`, and the vault server log that `--agent-returns` writes under `outputs/agent_lab/rescore/`), where each run appends its own timestamped lines by design (contract 15). Across machines, S34-2 still applies: ridge scores can differ at floating-point level, so reproduction between machines is judged by tolerance and signal identity. (4) The test runs a stubbed step list twice: three subprocess steps on the synthetic market in the temporary git project of `tests/test_run_oos_script.py`, namely 03's tables, 05's M0 walk-forward with 06's backtest of it, and an equity chart of `src.plots`. It deletes their outputs before each run and compares the SHA-256 of every output file. The trial log must stay byte-identical and the tree clean |
+| Rationale | A byte comparison is the strongest check on one machine and needs no tolerance. The logs record accesses, not results |
+| Evidence | Instruction: "Running it twice gives identical outputs (a test on the synthetic market with a stubbed step list)."; operating manual §6 ("Fixed seeds (`config.seed`); `PYTHONHASHSEED`"); plotly 7.1.0 `write_html` (`div_id` default: a random UUID; `outputs/plots/M0_equity.html` held `id="7a665fb4-…"`); S34-2; contract 15 (the vault access log); tests `test_two_runs_of_a_stubbed_pipeline_give_identical_outputs`, `test_charts_written_twice_are_byte_identical` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `run_all.py`, `src/plots.py`, `tests/test_run_all.py`, `tests/test_plots.py` |
+| Amendment | No |
+
+### S39-6 · The README's run section (shared file)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | What changes in `README.md`, a shared file? |
+| Options considered | (a) only the Quick start: `run_all.py` as the one command, the commands it runs in order, its refusals, and the scripts it does not run (chosen); (b) a wider rewrite |
+| Decision | (a). The Quick start's old list of scripts is replaced. That list included the sentence saying the scripts stop with `NotImplementedError` until their gate, which is no longer true, and a cache path `data/cache/` that does not exist. The new section has `uv sync`, `uv run python run_all.py` and `uv run pytest`, then the commands `run_all.py` runs in order, what it refuses, the `--after-freeze` flag, and the scripts run by hand (00, 02, 04, 08 and `07_evaluate.py --period OOS`). No other section changes |
+| Rationale | One command for the graders, with every step still documented for a step-by-step run |
+| Evidence | Instruction: "Update the README's run section in the same PR, flagged as a shared file."; operating manual §4 (shared files change in small dedicated pull requests; this one is flagged in the pull request); course instructions (p. 4): "a README.md with all the information needed to set up the environment, and the commands required to run the code (scripts or notebooks), in order" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review (shared file) |
+| Files affected | `README.md` |
+| Amendment | No |
+
+### S39-7 · Rehearsal of the full pipeline on the real In-Sample data
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Does `run_all.py` run the real pipeline end to end, leave the tracked files unchanged, and reproduce the existing outputs? |
+| Options considered | Report the rehearsal as run (chosen) |
+| Decision | Before this branch's first code commit, `run_all.py`'s `pipeline(cfg)` was run with `run_steps` on Mattia's machine (Windows 11, the environment of S34-2), on the real In-Sample data. Only the clean-tree check was bypassed, because the branch's changes were not committed yet; `git status` was checked by hand afterwards. Result: all 26 steps `ok`, 218 s in total (longest: `--agent-returns` 71 s, the placebo 32 s, ENS 23 s). 01 verified the 15 raw files against the manifest and downloaded nothing. No tracked file changed: `data/checksums.json`, `data/checksums_features.json` and `docs/trial_log.csv` are byte-identical, so the run added no trial row. Of the 316 files under `data/processed/` and `outputs/` that existed before the run (the access log aside), 246 are byte-identical; the other 70 are the HTML plots, changed only by the fixed div id of S39-5. New on this machine: the 12 agent folders of S37-6 and `selection_gate.json` and `selection_bias.json`. Both files are byte-identical to Eliya's of S37-9 (SHA-256 `ac7d305b…c2ba` and `6740f1e4…56a5`), so the gate and the diagnostics reproduce across machines. Selected: M0\*; M1, M2, M3 and ENS fail and M5 is absent, as in S37-9. The real-data check that S38-2 left open passes: `07_evaluate.py: in_sample_inference` gives 28 columns (12 agent), 624 weeks, N = 56, DSR 3.15e-5 and PBO 0.2934, equal to `selection_bias.json` within 1e-12. No Out-of-Sample path was touched. No code, setting or result was changed because of these results; the one change after the rehearsal is the flushed output of S39-2, which affects only the order of printed lines |
+| Rationale | A one-command pipeline counts for Gate 5 only if it runs on the real data |
+| Evidence | Rehearsal log and before/after SHA-256 lists (6 Nov 2026, kept locally, not committed: they name output files of licensed data); S37-9; S38-2; S34-2 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).

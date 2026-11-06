@@ -50,7 +50,8 @@ def _paths(path: Path) -> tuple[Path, Path]:
 def _write_html(fig: go.Figure, html: Path, title: str, hovermode: str = "x unified") -> None:
     fig.update_layout(title=title, template="plotly_white", hovermode=hovermode, font={"color": TEXT},
                       legend={"orientation": "h", "y": -0.15})
-    fig.write_html(html, include_plotlyjs="directory", full_html=True)
+    # div_id fixed by the file name: plotly's default is a random id, so two runs would differ (S39-5)
+    fig.write_html(html, include_plotlyjs="directory", full_html=True, div_id=f"plot-{html.stem}")
 
 
 def _new_figure(n_panels: int, height: float = 4.5) -> tuple[Figure, list]:
