@@ -1,6 +1,7 @@
 """src/plots.py: curves rebased to 100 per period and dated by realisation, drawdowns, exposures, the cost bridge and the
 placebo histogram; every chart writes an HTML and a PNG file (decision S32-6)."""
 
+import matplotlib.image
 import numpy as np
 import pandas as pd
 import pytest
@@ -120,3 +121,32 @@ def test_charts_written_twice_are_byte_identical(tmp_path):
     for suffix in ("html", "png"):
         assert (tmp_path / "a" / f"equity.{suffix}").read_bytes() == (tmp_path / "b" / f"equity.{suffix}").read_bytes()
     assert 'id="plot-equity"' in (tmp_path / "a" / "equity.html").read_text(encoding="utf-8")
+
+
+def test_rungs_m6_to_m9_have_their_own_colours_and_their_variants_are_dashed():
+    """S42-9: M6 to M9 take distinct categorical colours, different from every other rung, the benchmark greys and the
+    fallback red; a variant takes its rung's colour, dashed."""
+    new = {rung: plots.RUNG_COLORS[rung] for rung in ("M6", "M7", "M8", "M9")}
+    others = [c for rung, c in plots.RUNG_COLORS.items() if rung not in new]
+    taken = [*others, *plots.BENCHMARK_COLORS.values(), plots.OTHER_COLOR]
+    assert len(set(new.values())) == 4 and not set(new.values()) & set(taken)
+    assert plots.RUNG_COLORS["M0"] == "#2a78d6" and plots.RUNG_COLORS["M0_star"] == "#6250d6"  # unchanged
+    for rung, color in new.items():
+        assert plots.series_style(rung) == (color, "solid")
+    assert plots.series_style("M6_a0.1") == (new["M6"], "dash")
+    assert plots.series_style("M7_a1_h4") == (new["M7"], "dash")
+    assert plots.series_style("M8_d3_h2") == (new["M8"], "dash")
+
+
+def test_a_chart_of_many_series_is_taller_so_its_legend_fits(tmp_path):
+    index = _weeks(6)
+    returns = pd.DataFrame({f"M7_a{i}_h2": 0.001 for i in range(24)}, index=index)
+    period = pd.Series("IS", index=index)
+    plots.equity_curves(returns, period, _realised(index), tmp_path / "many")
+    few = tmp_path / "few"
+    plots.equity_curves(returns.iloc[:, :3], period, _realised(index), few)
+    # the PNG heights in pixels (dpi 120): 24 series -> max(4.5, 0.27 * 24 + 0.8) = 7.28 inches; 3 series -> 4.5 (S42-9)
+    many_height = matplotlib.image.imread(tmp_path / "many.png").shape[0]
+    few_height = matplotlib.image.imread(tmp_path / "few.png").shape[0]
+    assert few_height == round(4.5 * 120)
+    assert abs(many_height - (0.27 * 24 + 0.8) * 120) <= 1  # 873.6 px, truncated by the renderer

@@ -10,7 +10,8 @@ Inputs:  outputs/backtests/<model>/        (06_backtest.py --model / --all; chec
 Outputs: outputs/metrics/  is_models.csv (one row per model, round 1 then round 2 as two sections, S42-2: `round`,
                            `section`, `role`, the gate columns, `verdict`), is_benchmarks.csv, shift_check.csv,
                            placebo.csv, used.yaml
-         outputs/plots/    <model>_{equity,drawdown,exposure,bridge}.{html,png}, all_models_equity, placebo_sharpe
+         outputs/plots/    <model>_{equity,drawdown,exposure,bridge}.{html,png}, all_models_equity (round 1), round2_models_equity (round 2, S42-9),
+                           placebo_sharpe
 
 --period OOS (decisions S34-8 to S34-11): only after the single run of 08_run_oos.py (FROZEN.lock and exactly one entry in
 outputs/oos_access_log.json for it). Reads outputs/oos/ and writes outputs/metrics/oos_models.csv (per model and period),
@@ -333,9 +334,17 @@ def evaluate(cfg: dict) -> pd.DataFrame:
         plots.cost_bridge(weekly, plot_dir / f"{model}_bridge",
                           title=f"{model}, In-Sample: gross → costs → borrow → net (mean weekly return × 52)")
     same = [m for m in models if _same_weeks(backtests[m]["summary"], backtests[reference]["summary"])]
-    together = pd.concat([backtests[m]["weekly"]["net"].rename(m) for m in same] + [comparators], axis=1)
+    # S42-9: all_models_equity keeps round 1's models (the plot as it was); round 2 has its own plot, with M0 and M0*
+    round1 = [m for m in same if model_round(m) == 1]
+    round2 = [m for m in same if model_round(m) == 2]
+    together = pd.concat([backtests[m]["weekly"]["net"].rename(m) for m in round1] + [comparators], axis=1)
     plots.equity_curves(together, ref_weekly["period"], ref_weekly["realised_on"], plot_dir / "all_models_equity",
-                        title="In-Sample net equity of every model vs T-bill, SPY and equal weight (100 at start, log)")
+                        title="In-Sample net equity of every round-1 model vs T-bill, SPY and equal weight (100 at start, log)")
+    if round2:
+        shown = [m for m in ("M0", "M0_star") if m in round1] + round2
+        together2 = pd.concat([backtests[m]["weekly"]["net"].rename(m) for m in shown] + [comparators], axis=1)
+        plots.equity_curves(together2, ref_weekly["period"], ref_weekly["realised_on"], plot_dir / "round2_models_equity",
+                            title="Round-2 models, M0 and M0*, In-Sample: net equity (100 at start, log)")
     if placebo is not None:
         marks = {m: backtests[m]["summary"]["net_sharpe_rf_tbill"] for m in models
                  if _same_weeks(backtests[m]["summary"], placebo[0])}
