@@ -7,12 +7,18 @@ model, label and return access goes through src/vault.py, which refuses any date
 every fit, inner and outer, asserts the purge. No performance metric of the test weeks is computed here (06_backtest.py).
 Decisions S23-2, S23-3, S23-5, S23-6, S31-2 to S31-7, S31-10.
 
-Inputs:  data/processed/features.csv, market_states.csv, labels.csv, momentum_variants.csv, sizing_betas.csv,
-         forward_returns.csv (03_build_features.py), data/processed/features_config.yaml (check_used)
+Session 4.1 (Amendment 9 C1, decisions S41-1 to S41-5): the round-2 rungs M6 (ridge on the M2 design with the 4-week
+label), M7 (M6 with the smoothing of H weeks) and M8 (LightGBM LambdaRank with the same smoothing), on round 1's 48
+refits and 624 test weeks, every fit purged by the 4-week label_end; --model M6/M7/M8 (grid point chosen per refit) and
+--fixed M6_a<λ>, M7_a<λ>_h<H>, M8_d<depth>_h<H>. Their specs carry the score-determining keys of config.yaml's
+round2 section (src.models.round2_spec_settings).
+
+Inputs:  data/processed/features.csv, market_states.csv, labels.csv, labels_h4.csv (round 2), momentum_variants.csv,
+         sizing_betas.csv, forward_returns.csv (03_build_features.py), data/processed/features_config.yaml (check_used)
 Outputs: outputs/walkforward/<name>/scores.csv (contract 8: weekly scores of the test weeks, known after Friday close t),
          used.yaml (config sections seed, data, split, execution, features, models; check_used), summary.json (counts,
-         dates, column sums, min, max, fixed spot values, SHA-256), and for M1, M2, M3, M0_star selection.csv (per
-         refit: inner Sharpe of each grid value, the value chosen); one row in docs/trial_log.csv for a new spec (S23-2).
+         dates, column sums, min, max, fixed spot values, SHA-256), and for M1, M2, M3, M0_star, M6, M7, M8
+         selection.csv (per refit: inner Sharpe of each grid value, the value chosen); one row in docs/trial_log.csv for a new spec (S23-2).
          Two runs give identical files.
 
 Session 3.7 (decisions S37-4 to S37-7), In-Sample only:
@@ -47,10 +53,21 @@ from src.data import DATE_FORMAT, sha256, write_csv
 from src.features import features_settings
 from src.labels import label_end_by_week, walk_forward_folds
 from src.metrics import max_drawdown, sharpe_ratio
-from src.models import ENS_MEMBERS, PARAM_KEYS, grid, tuning_spec, walkforward_settings
+from src.models import (
+    ENS_MEMBERS,
+    PARAM_KEYS,
+    ROUND2_RUNGS,
+    grid,
+    round2_grid,
+    round2_spec_settings,
+    round2_tag,
+    tuning_spec,
+    walkforward_settings,
+)
 from src.vault import TRIAL_COLUMNS, Vault, logged_spec_hashes, spec_hash
 
-RUNGS = ("M0", "M1", "M2", "M3", "ENS", "M0_star")  # --model: M0, and the tuned rungs (Amendment 5 C1)
+ROUND1_RUNGS = ("M0", "M1", "M2", "M3", "ENS", "M0_star")  # --model: M0, and the tuned rungs (Amendment 5 C1)
+RUNGS = (*ROUND1_RUNGS, *ROUND2_RUNGS)  # round 2 appended (Amendment 9 C1, S41-5); run_all.py reads this list
 FIXED_PREFIX = {"M1": "a", "M2": "a", "M3": "d", "M0_star": "L"}  # --fixed names: M1_a0.1, M3_d2, M0_L13 (S31-10)
 AUTHOR = "Eliya Allam"
 # Five (date_close, ticker) spot values reported in summary.json, fixed before the first run (S23-3)
@@ -71,19 +88,39 @@ def model_spec(rung: str, cfg: dict) -> dict:
     if rung == "ENS":
         return {"rung": "ENS", "members": list(ENS_MEMBERS), "tuning": tuning_spec(cfg), "author": AUTHOR, "kind": "human",
                 "notes": "ENS: equal-weight rank average of M1, M2, M3, each tuned per Amendment 5 C1 (Phase 3.1)"}
+    if rung in ROUND2_RUNGS:
+        return {"rung": rung, "round2": round2_spec_settings(cfg), "tuning": tuning_spec(cfg), "author": AUTHOR,
+                "kind": "human",
+                "notes": f"{rung} with its grid point chosen at each refit per Amendment 5 C1 (Amendment 9 C1, session 4.1)"}
     if rung not in RUNGS:
         raise ValueError(f"model_spec: unknown rung {rung!r}; known {list(RUNGS)}")
     return {"rung": rung, "tuning": tuning_spec(cfg), "author": AUTHOR, "kind": "human",
             "notes": f"{rung} with its grid value chosen at each refit per Amendment 5 C1 (Phase 3.1)"}
 
 
+def round2_fixed_names(cfg: dict) -> list[str]:
+    """--fixed names of the round-2 grid points (S41-4, S41-5): <rung>_<tag>, in grid order: M6_a0.1 … M8_d3_h4."""
+    return [f"{rung}_{round2_tag(rung, point)}" for rung in ROUND2_RUNGS for point in round2_grid(rung, cfg)]
+
+
 def fixed_names(cfg: dict) -> list[str]:
-    """--fixed names, one per grid value (Amendment 5 C2, S31-10): M1_a<λ>, M2_a<λ>, M3_d<depth>, M0_L<lookback>."""
+    """--fixed names, one per grid value (Amendment 5 C2, S31-10): M1_a<λ>, M2_a<λ>, M3_d<depth>, M0_L<lookback>; then
+    the round-2 grid points (Amendment 9 C1, S41-5): M6_a<λ>, M7_a<λ>_h<H>, M8_d<depth>_h<H>."""
     names = []
     for rung, prefix in FIXED_PREFIX.items():
         stem = "M0" if rung == "M0_star" else rung
         names += [f"{stem}_{prefix}{format(value, 'g')}" for value in grid(rung, cfg)]
-    return names
+    return names + round2_fixed_names(cfg)
+
+
+def round2_fixed_spec(name: str, cfg: dict) -> dict:
+    """The spec of a round-2 grid point run fixed (S41-5): {"rung", "round2": round2_spec_settings(cfg), "params": the
+    grid point,
+    "author", "kind", "notes"}."""
+    rung, tag = name.split("_", 1)
+    point = next(p for p in round2_grid(rung, cfg) if round2_tag(rung, p) == tag)
+    return {"rung": rung, "round2": round2_spec_settings(cfg), "params": dict(point), "author": AUTHOR, "kind": "human",
+            "notes": f"{rung} at the fixed grid point {tag} (Amendment 9 C1, session 4.1)"}
 
 
 def fixed_spec(name: str, cfg: dict) -> dict:
@@ -92,6 +129,8 @@ def fixed_spec(name: str, cfg: dict) -> dict:
     """
     if name not in fixed_names(cfg):
         raise ValueError(f"fixed_spec: unknown name {name!r}; known {fixed_names(cfg)}")
+    if name in round2_fixed_names(cfg):
+        return round2_fixed_spec(name, cfg)
     stem, tag = name.split("_", 1)
     rung = "M0_star" if stem == "M0" else stem
     value = next(v for v in grid(rung, cfg) if format(v, "g") == tag[1:])

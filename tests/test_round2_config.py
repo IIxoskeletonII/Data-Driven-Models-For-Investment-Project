@@ -1,11 +1,13 @@
 """Amendment 9 C4 and decision S40-1: the round2: section of config.yaml leaves every round-1 identity unchanged.
 
 Round-2 settings live in their own section. These tests prove that adding it changed no round-1 spec_hash, no
-walk-forward or backtest settings and no other section, and that every existing outputs/<stage>/<name>/used.yaml still
-passes check_used. The trial log and config.yaml are committed, so the hash tests run in CI. outputs/ is git-ignored, so
-the used.yaml test skips where no output exists (CI) and runs on a machine with the In-Sample outputs.
+walk-forward or backtest settings and no other section, and that every used.yaml and oos_used.yaml under outputs/
+(any depth, synthetic wiring outputs skipped, each mapped to its writer; S41-8) still passes check_used. The trial log and config.yaml are committed, so the hash tests run in CI. outputs/ is git-ignored, so
+the real-tree test skips where no output exists (CI) and runs on a machine with the outputs; the mapping itself is
+tested on a temporary outputs tree.
 """
 
+import copy
 import csv
 import functools
 import hashlib
@@ -15,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import ROOT, check_used, load_config
+from src.config import ROOT, check_used, load_config, save_used
 from src.models import walkforward_settings
 from src.vault import spec_hash
 
@@ -111,24 +113,168 @@ def test_every_trial_log_spec_hash_unchanged():
     assert not changed, f"trials {changed} no longer reproduce their logged spec_hash under config.yaml"
 
 
-def used_files() -> list[Path]:
-    return sorted((ROOT / "outputs").glob("*/*/used.yaml"))
+SETTINGS_NAMES = ("used.yaml", "oos_used.yaml")  # the settings files check_used verifies (make_submission.py, S35-3)
 
 
-def expected_used(path: Path, cfg: dict) -> tuple[dict, str]:
-    stage, name = path.parent.parent.name, path.parent.name
-    if stage == "walkforward":
-        return walkforward_settings(cfg), f"05_train_walkforward.py for {name}"
-    if stage == "backtests":
-        return backtest_script().backtest_used(cfg, name), f"06_backtest.py --model {name}"
-    raise AssertionError(f"{path.relative_to(ROOT)}: no known writer; extend this test")
+@functools.cache
+def script(filename: str):
+    """06_backtest.py, 07_evaluate.py or 08_run_oos.py, loaded by path (their settings functions only)."""
+    spec = importlib.util.spec_from_file_location(f"round2_config_{filename[:2]}", ROOT / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def used_files(root: Path = ROOT) -> list[Path]:
+    """Every used.yaml and oos_used.yaml under root/outputs at any depth, sorted, without synthetic wiring outputs (a
+    folder named synthetic, as make_submission.py leaves out of the zip, S35-3; decision S41-8)."""
+    outputs = Path(root) / "outputs"
+    if not outputs.is_dir():
+        return []
+    files = sorted(p for name in SETTINGS_NAMES for p in outputs.rglob(name) if p.is_file())
+    return [p for p in files if "synthetic" not in p.relative_to(outputs).parts[:-1]]
+
+
+def expected_used(path: Path, cfg: dict, root: Path = ROOT) -> tuple[dict, str]:
+    """(settings, writer) that the writer of `path` saves under cfg (S41-8); AssertionError for an unknown place, or for
+    the placebo file without its summary.json (its reference is read from there, never assumed)."""
+    outputs = Path(root) / "outputs"
+    parts = path.relative_to(outputs).parts
+    bt = backtest_script()
+    if len(parts) == 3 and parts[0] == "walkforward" and parts[2] == "used.yaml":
+        return walkforward_settings(cfg), f"05_train_walkforward.py for {parts[1]}"
+    if len(parts) == 3 and parts[0] == "backtests" and parts[2] == "used.yaml":
+        return bt.backtest_used(cfg, parts[1]), f"06_backtest.py --model {parts[1]}"
+    if len(parts) == 4 and parts[:2] == ("diagnostics", "shift") and parts[3] == "used.yaml":
+        return bt.backtest_used(cfg, parts[2]), f"06_backtest.py --shift-check {parts[2]}"
+    if parts == ("diagnostics", "placebo", "used.yaml"):
+        summary = outputs / "diagnostics" / "placebo" / "summary.json"
+        assert summary.exists(), f"{summary.relative_to(root)} not found: the placebo reference cannot be read"
+        reference = json.loads(summary.read_text(encoding="utf-8"))["reference"]
+        return bt.placebo_used(cfg, reference), "06_backtest.py --placebo"
+    if parts == ("ledger", "used.yaml"):
+        return bt.ledger_used(cfg), "06_backtest.py --ledger-years"
+    if parts == ("metrics", "used.yaml"):
+        return script("07_evaluate.py").metrics_used(cfg), "07_evaluate.py"
+    if parts == ("metrics", "oos_used.yaml"):
+        return script("07_evaluate.py").oos_metrics_used(cfg), "07_evaluate.py --period OOS"
+    if len(parts) == 3 and parts[0] == "oos" and parts[2] == "used.yaml":
+        return script("08_run_oos.py").oos_used(cfg, parts[1]), "08_run_oos.py"
+    if len(parts) == 4 and parts[0] == "oos_reruns" and parts[3] == "used.yaml":
+        return script("08_run_oos.py").oos_used(cfg, parts[2]), f"08_run_oos.py --rerun {parts[1]}"
+    raise AssertionError(f"{path.relative_to(root)}: no known writer; extend this test")
+
+
+def check_tree(root: Path, cfg: dict) -> None:
+    for path in used_files(root):
+        settings, writer = expected_used(path, cfg, root)
+        check_used(settings, path, writer)
 
 
 def test_existing_used_yaml_pass_check_used():
     files = used_files()
     if not files:
-        pytest.skip("no outputs/<stage>/<name>/used.yaml (outputs/ is git-ignored; CI has none)")
+        pytest.skip("no used.yaml or oos_used.yaml under outputs/ (outputs/ is git-ignored; CI has none)")
+    check_tree(ROOT, load_config())
+
+
+# -- the collection and the mapping on a temporary outputs tree (S41-8) ---------------------------------------------------
+
+PLACEBO_REFERENCE = "M2"  # not the default M0, so the test shows the reference is read from summary.json
+
+
+def writer_files(cfg: dict) -> dict[str, dict]:
+    """Every place of S41-8 (path under outputs/) and the settings its writer saves, from the writer's own function."""
+    bt, ev, oos = backtest_script(), script("07_evaluate.py"), script("08_run_oos.py")
+    return {
+        "walkforward/M7/used.yaml": walkforward_settings(cfg),
+        "backtests/M6/used.yaml": bt.backtest_used(cfg, "M6"),
+        "diagnostics/shift/M8/used.yaml": bt.backtest_used(cfg, "M8"),
+        "diagnostics/placebo/used.yaml": bt.placebo_used(cfg, PLACEBO_REFERENCE),
+        "ledger/used.yaml": bt.ledger_used(cfg),
+        "metrics/used.yaml": ev.metrics_used(cfg),
+        "metrics/oos_used.yaml": ev.oos_metrics_used(cfg),
+        "oos/M0_star/used.yaml": oos.oos_used(cfg, "M0_star"),
+        "oos_reruns/S99-1/M0/used.yaml": oos.oos_used(cfg, "M0"),
+    }
+
+
+def build_tree(root: Path, cfg: dict, *, written_with: dict | None = None) -> Path:
+    """root/outputs with one settings file per writer place, the placebo summary.json, a synthetic file with other
+    settings and nothing else; written_with (default cfg) is the config the files are written under."""
+    source = cfg if written_with is None else written_with
+    for relative, settings in writer_files(source).items():
+        save_used(settings, root / "outputs" / relative)
+    summary = root / "outputs" / "diagnostics" / "placebo" / "summary.json"
+    summary.write_text(json.dumps({"reference": PLACEBO_REFERENCE}), encoding="utf-8")
+    save_used({"something": "else"}, root / "outputs" / "backtests" / "synthetic" / "used.yaml")
+    save_used({"something": "else"}, root / "outputs" / "diagnostics" / "synthetic" / "M0" / "oos_used.yaml")
+    return root / "outputs"
+
+
+def other_config() -> dict:
+    cfg = copy.deepcopy(load_config())
+    cfg["seed"] = int(cfg["seed"]) + 1  # in every writer's settings (walkforward_settings and 06 used_settings)
+    return cfg
+
+
+def test_every_writer_place_is_collected_and_synthetic_folders_are_skipped(tmp_path):
     cfg = load_config()
-    for path in files:
-        settings, script = expected_used(path, cfg)
-        check_used(settings, path, script)
+    outputs = build_tree(tmp_path, cfg)
+    found = [p.relative_to(outputs).as_posix() for p in used_files(tmp_path)]
+    assert len(found) == len(set(found)) == len(writer_files(cfg))
+    assert sorted(found) == sorted(writer_files(cfg))
+    assert not any("synthetic" in rel.split("/") for rel in found)
+
+
+def test_every_writer_file_written_under_the_current_config_is_accepted(tmp_path):
+    cfg = load_config()
+    build_tree(tmp_path, cfg)
+    check_tree(tmp_path, cfg)
+
+
+@pytest.mark.parametrize("relative", sorted(writer_files(load_config())))
+def test_a_writer_file_written_under_another_config_is_refused(tmp_path, relative):
+    cfg = load_config()
+    outputs = build_tree(tmp_path, cfg)
+    save_used(writer_files(other_config())[relative], outputs / relative)
+    with pytest.raises(ValueError, match="different config.yaml"):
+        check_tree(tmp_path, cfg)
+
+
+def test_an_unknown_place_is_refused(tmp_path):
+    cfg = load_config()
+    outputs = build_tree(tmp_path, cfg)
+    save_used(walkforward_settings(cfg), outputs / "elsewhere" / "M6" / "used.yaml")
+    with pytest.raises(AssertionError, match="no known writer"):
+        check_tree(tmp_path, cfg)
+
+
+@pytest.mark.parametrize("relative", ["walkforward/M6/extra/used.yaml", "used.yaml", "ledger/2016/used.yaml",
+                                      "backtests/M6/oos_used.yaml", "oos/M0/extra/used.yaml"])
+def test_a_known_folder_at_another_depth_or_file_name_is_refused(tmp_path, relative):
+    cfg = load_config()
+    outputs = build_tree(tmp_path, cfg)
+    save_used(walkforward_settings(cfg), outputs / relative)
+    with pytest.raises(AssertionError, match="no known writer"):
+        check_tree(tmp_path, cfg)
+
+
+def test_the_placebo_file_without_its_summary_is_refused(tmp_path):
+    cfg = load_config()
+    outputs = build_tree(tmp_path, cfg)
+    (outputs / "diagnostics" / "placebo" / "summary.json").unlink()
+    with pytest.raises(AssertionError, match="placebo reference"):
+        check_tree(tmp_path, cfg)
+
+
+def test_the_placebo_reference_comes_from_its_summary(tmp_path):
+    cfg = load_config()
+    outputs = build_tree(tmp_path, cfg)
+    (outputs / "diagnostics" / "placebo" / "summary.json").write_text(json.dumps({"reference": "M0"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="different config.yaml"):
+        check_tree(tmp_path, cfg)
+
+
+def test_a_missing_outputs_folder_gives_no_file(tmp_path):
+    assert used_files(tmp_path) == []

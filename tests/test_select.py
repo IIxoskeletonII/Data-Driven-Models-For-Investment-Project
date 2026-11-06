@@ -95,8 +95,10 @@ def script():
 
 
 def names() -> list[str]:
-    """The 17 backtest names of S31-10: the rungs and the fixed grid values."""
-    return list(s05().RUNGS) + list(s05().fixed_names(CFG))
+    """The 17 backtest names of S31-10: the round-1 rungs and fixed grid values (the round-2 names of S41-5, which 05
+    lists after them, are outside this fixture of the round-1 selection step)."""
+    round2 = set(s05().round2_fixed_names(CFG))
+    return list(s05().ROUND1_RUNGS) + [name for name in s05().fixed_names(CFG) if name not in round2]
 
 
 def human_names() -> list[str]:

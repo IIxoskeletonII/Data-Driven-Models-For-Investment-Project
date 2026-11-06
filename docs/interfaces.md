@@ -122,6 +122,15 @@ unique, weeks without any session dropped. Weekly prices: `weekly_open[t]` = fir
   `03_build_features.py: build_labels(daily_open, daily_close, is_end)` builds it; its writer refuses a later `label_end`
   while the vault is sealed. `src.features.features_settings(cfg)` = `{data, features, execution, in_sample_end}` is saved as
   `data/processed/features_config.yaml` for `check_used`.
+- 4-week label (Amendment 9 C1, S41-1): `data/processed/labels_h4.csv` has exactly the shape above (columns `y`,
+  `label_end`; passes `validate_labels`), with `y` = y4[t, i] = R4[t, i] − mean_j R4[t, j], R4 = O(t+5)/O(t+1) − 1 on the
+  adjusted weekly opens, and `label_end` = the session of O(t+5). In-Sample only: the last label week is the one ending
+  2019-11-22 (`label_end` 2019-12-23). Builders: `src.labels.make_horizon_labels(weekly_open, sessions, horizon)` (h = 1
+  returns exactly `make_labels(fwd, sessions)`) and `03_build_features.py: build_horizon_labels(daily_open, daily_close,
+  is_end, horizon, truncate_at=None, lock_path=None)` (inputs truncated at `truncate_at`, default `is_end`; rows with
+  `label_end ≤ truncate_at`; a `truncate_at` after `is_end` raises `OOSAccessError` unless `lock_path` is an existing
+  `FROZEN.lock`, one before `is_end` raises `ValueError`). Its checksum entry is in `data/checksums_features.json`; the
+  writer's seal covers it like `labels.csv`.
 
 ## 7. Forward returns, `realised_on`, `period` (§05, §10)
 
@@ -277,6 +286,15 @@ consecutive records have `next.test_start > test_end` with no In-Sample week in 
 `max(label_end of its training rows) ≤ purge_end`. OOS refits (§07, "the same refits continue during OOS") are produced by
 `08_run_oos.py` after the freeze with the same rule, never before.
 
+Round 2 (Amendment 9 C1, S41-2): M6, M7 and M8 use these same records (48 refits, 624 test weeks = `round2.test_weeks`).
+Each fit uses the rows with a 4-week label whose `label_end ≤ purge_end`, asserted on every fit, inner and full; the fold
+record of a round-2 fit is the record above with `train_end` = the last week whose 4-week `label_end ≤ purge_end`. The
+inner split of Amendment 5 C1 is `src.models.inner_fold` on the 4-week `label_end` (validation = the last 104 weeks of
+that window). Out-of-Sample hook (Amendment 6 C2, S41-6): `src.models.round2_frozen_value(rung, selection, cfg)` reads
+the grid point chosen at the last In-Sample refit from the rung's `selection.csv`, and
+`src.models.walkforward_round2(rung, data, labels_h4, folds, cfg, value=frozen)` refits only the parameters on 08's
+Out-of-Sample folds (tuning, `value=None`, is refused for a fold ending after `split.in_sample_end` of the `cfg` given).
+
 ## 14. Model protocol (§07)
 
 ```python
@@ -375,6 +393,28 @@ class ScoreModel(Protocol):          # src/contracts.py
   `summary.json` of the same `spec_hash`, and writes `outputs/metrics/selection_bias.json`: `selected`, `dsr`, `pbo`,
   `matrix` (weeks and one entry per column: `name`, `kind`, `rung`, `spec_hash`, `trial_ids`, `aliases`, `source`) and
   `excluded` (trial rows without weekly returns). The three files are written only after every check passed.
+- Round 2 (Amendment 9, S41-1 to S41-6). `Vault.labels(as_of, horizon=1)`: horizon 1 is the call above, unchanged;
+  horizon `round2.label.horizon_weeks` (4) returns the rows of `labels_h4.csv` (or `frames["labels_h4"]`) with
+  `label_end ≤ as_of`, sealed by the same date check and logged with method `labels_h4`; any other horizon raises
+  `ValueError` (logged `refused`). Round-2 specs (rungs M6, M7, M8): tuned `{"rung": R, "round2": round2_spec_settings(cfg),
+  "tuning": tuning_spec(cfg), ...}`, fixed `{"rung": R, "round2": round2_spec_settings(cfg), "params": P, ...}` with
+  P = `{"alpha": λ}` (M6), `{"alpha": λ, "half_life_weeks": H}` (M7), `{"max_depth": d, "half_life_weeks": H}` (M8),
+  values of `round2.models.<R>` with their YAML type; `round2` must equal `src.models.round2_spec_settings(cfg)`, the
+  score-determining keys `test_weeks`, `label`, `smoothing`, `models`, `tie_order`, `tie_precedence` of the `round2`
+  section (`ROUND2_SCORE_KEYS`; `selection`, `candidate_order` and `agent_lab` are left out); `feature`, `members` and
+  `agent_features` are refused for them, and `round2` is refused in a round-1 spec. `spec_hash` is unchanged, so every
+  round-1 hash is unchanged. `src.models`: `ROUND2_RUNGS = ("M6", "M7", "M8")`; `round2_grid(rung, cfg)` (grid points as
+  parameter dicts, config order: first parameter outer, H inner); `round2_tie_order(rung, cfg)` (the same points in the
+  tie order of S41-4); `round2_tag(rung, point)` (`a0.1`, `a10_h4`, `d2_h2`); `smoothing_weights(half_life, lags_per_half_life)`
+  (w_k = 2^(−k/H) for k = 0 … lags_per_half_life × H, normalised to sum 1); `smooth_weekly(raw, weights, weeks)` (weekly
+  score frame on `weeks`: Σ_k w_k × the row k places earlier in `raw`'s weekly index; NaN where any lag is missing or
+  absent); `within_week_relevance(y)` (int 0 … 8 per `date_close`, ties to the alphabetically earlier ticker);
+  `RankerModel(max_depth, n_estimators=200, learning_rate=0.03, seed=42, name="M8", num_threads=1, levels=9)` with `params()`,
+  `fit(X, y)` and `score(X)` (contract 14; S41-3); `walkforward_round2(rung, data, labels_h4, folds, cfg=None, *,
+  value=None) -> (scores, selection)` (selection `None` for a fixed value). `05_train_walkforward.py --model {M6, M7, M8}`
+  and `--fixed` `M6_a0.1`, `M6_a1`, `M6_a10`, `M7_a{0.1,1,10}_h{2,4}`, `M8_d{2,3}_h{2,4}` write the outputs above;
+  `used.yaml` is `walkforward_settings(cfg)` as in round 1, and tuned rungs write `selection.csv` with round 1's date
+  columns, one `sharpe_<tag>` per grid point, `chosen` (the tag) and `chosen_<parameter>` per parameter (S41-4).
 - Agents reach the vault only through the MCP server `ddmi-vault` (`src/agents/vault_server.py`, protocol section 08)
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
   show sectors as anonymised codes A1 … A9 and return summary metrics, never price series.

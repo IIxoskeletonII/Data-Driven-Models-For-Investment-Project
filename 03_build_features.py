@@ -1,5 +1,6 @@
 """Build the weekly features, market states and sizing betas of protocol section 06, and the training labels of
-section 05, and the forward returns of contract 7 (S31-1), from the daily data.
+section 05, and the forward returns of contract 7 (S31-1), from the daily data. Session 4.1 (S41-1): also the 4-week
+labels of Amendment 9 C1 (round2.label.horizon_weeks), labels_h4.csv.
 
 Until FROZEN.lock exists, every input is truncated at the In-Sample end (split.in_sample_end, 2019-12-27) right after
 it is read, and no row with a later date_close, and no label with a later label_end, is written (docs/decisions.md
@@ -10,7 +11,7 @@ ending 2019-12-13 (label_end 2019-12-23).
 Inputs:  data/processed/daily_close.csv, daily_open.csv, data/processed/config.yaml (check_used),
          data/raw/yahoo/VIX.csv (Close), data/raw/fred/<SERIES>.csv
 Outputs: data/processed/features.csv, market_states.csv, sizing_betas.csv, momentum_variants.csv, labels.csv,
-         forward_returns.csv (git-ignored; realised_on <= 2019-12-27), data/processed/features_config.yaml, data/checksums_features.json (rows, date range, columns,
+         labels_h4.csv (S41-1; label_end <= 2019-12-27), forward_returns.csv (git-ignored; realised_on <= 2019-12-27), data/processed/features_config.yaml, data/checksums_features.json (rows, date range, columns,
          size, SHA-256)
 """
 
@@ -40,11 +41,13 @@ from src.features import (
     sizing_betas,
     weekly_index,
 )
-from src.labels import make_labels
+from src.labels import make_horizon_labels, make_labels
 from src.vault import OOSAccessError
 
 TABLE_KEYS = ("features", "market_states", "sizing_betas", "momentum_variants")
 LABELS_KEY = "labels"
+LABELS_H4_KEY = "labels_h4"  # 4-week labels of Amendment 9 C1 (S41-1)
+LABEL_KEYS = (LABELS_KEY, LABELS_H4_KEY)  # tables whose label_end is sealed at the In-Sample end
 FORWARD_KEY = "forward_returns"  # S31-1
 REALISED_ON, PERIOD = "realised_on", "period"
 LOCK_NAME = "FROZEN.lock"
@@ -150,6 +153,34 @@ def build_labels(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end) ->
     return labels
 
 
+def build_horizon_labels(daily_open: pd.DataFrame, daily_close: pd.DataFrame, is_end, horizon: int, truncate_at=None,
+                         lock_path: Path | None = None) -> pd.DataFrame:
+    """Relative labels over `horizon` weeks (Amendment 9 C1: 4 weeks), In-Sample only unless unlocked (S41-1, S41-6).
+
+    Both inputs are truncated to dates <= truncate_at (default is_end, the In-Sample end) right away; weekly opens come
+    from src.data.weekly_panel and the labels from src.labels.make_horizon_labels with the truncated session calendar:
+    y[t, i] = O(t+h+1, i) / O(t+1, i) − 1 minus its mean over the 9 sectors, label_end = the session of O(t+h+1). Only
+    rows with label_end <= truncate_at are kept (for h = 4 at the In-Sample end: last week 2019-11-22, label_end
+    2019-12-23). A truncate_at after is_end (08_run_oos.py at data.end, Gate 4) needs lock_path to be an existing
+    FROZEN.lock, else OOSAccessError; one before is_end raises ValueError. Returns index (date_close, ticker), columns
+    [y, label_end]; passes validate_labels.
+    """
+    is_end = pd.Timestamp(is_end)
+    truncate_at = is_end if truncate_at is None else pd.Timestamp(truncate_at)
+    if truncate_at < is_end:
+        raise ValueError(f"build_horizon_labels: truncate_at {truncate_at.date()} is before the In-Sample end "
+                         f"{is_end.date()}")
+    if truncate_at > is_end and not (lock_path is not None and Path(lock_path).exists()):
+        raise OOSAccessError(f"build_horizon_labels: truncating at {truncate_at.date()}, after the In-Sample end "
+                             f"{is_end.date()}, needs an existing FROZEN.lock (S41-6)")
+    daily_open, daily_close = _up_to(daily_open, truncate_at), _up_to(daily_close, truncate_at)
+    weekly_open, _ = weekly_panel(daily_open, daily_close)
+    labels = make_horizon_labels(weekly_open, pd.DatetimeIndex(daily_close.index), horizon)
+    labels = labels.loc[np.asarray(pd.DatetimeIndex(labels["label_end"]) <= truncate_at)]
+    validate_labels(labels)
+    return labels
+
+
 def _check_label_weeks(labels: pd.DataFrame, features: pd.DataFrame) -> None:
     """Raise ValueError unless every label week is a week of the features (the same weekly index)."""
     extra = pd.DatetimeIndex(labels.index.get_level_values("date_close").unique()).difference(
@@ -194,7 +225,8 @@ def _date_closes(table: pd.DataFrame) -> pd.DatetimeIndex:
 def write_tables(tables: dict[str, pd.DataFrame], out_dir: Path, is_end, lock_path: Path, allow_oos: bool = False) -> dict:
     """Write `<key>.csv` for each table and describe it; refuse rows after the In-Sample end while sealed (S22-5, S23-1).
 
-    If any table has a date_close after is_end, the "labels" table a label_end after is_end, or the "forward_returns"
+    If any table has a date_close after is_end, a label table ("labels", "labels_h4") a label_end after is_end, or the
+    "forward_returns"
     table a realised_on after is_end, raise
     src.vault.OOSAccessError unless lock_path exists and allow_oos is True (only 08_run_oos.py passes it, Gate 4);
     nothing is written when it raises. Returns {filename: {rows, first_date_close, last_date_close, columns, bytes,
@@ -205,7 +237,7 @@ def write_tables(tables: dict[str, pd.DataFrame], out_dir: Path, is_end, lock_pa
     for key, table in tables.items():
         dates = _date_closes(table)
         late = len(dates) and dates.max() > is_end
-        if key == LABELS_KEY and len(table):
+        if key in LABEL_KEYS and len(table):
             late = late or pd.DatetimeIndex(table["label_end"]).max() > is_end
         if key == FORWARD_KEY and len(table):
             late = late or bool((pd.DatetimeIndex(table[REALISED_ON]).dropna() > is_end).any())
@@ -249,9 +281,11 @@ def main(argv: list[str] | None = None) -> None:
     daily_open = load_opens(data_dir, end=is_end)
     tables = build_tables(daily_close, vix, fred, cfg)
     tables[LABELS_KEY] = build_labels(daily_open, daily_close, is_end)
+    tables[LABELS_H4_KEY] = build_horizon_labels(daily_open, daily_close, is_end, int(cfg["round2"]["label"]["horizon_weeks"]))
     tables[FORWARD_KEY] = build_forward_returns(daily_open, daily_close, is_end)
     validate_forward_returns(*split_forward_returns(tables[FORWARD_KEY]), is_end=is_end)
     _check_label_weeks(tables[LABELS_KEY], tables["features"])
+    _check_label_weeks(tables[LABELS_H4_KEY], tables["features"])
     records = write_tables(tables, processed, is_end, ROOT / LOCK_NAME)
     save_used(features_settings(cfg), processed / FEATURES_CONFIG_NAME)
     _write_json(records, data_dir / CHECKSUMS_NAME)

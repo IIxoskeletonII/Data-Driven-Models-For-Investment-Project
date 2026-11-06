@@ -71,6 +71,65 @@ def make_labels(fwd: pd.DataFrame, sessions: pd.DatetimeIndex) -> pd.DataFrame:
     return labels
 
 
+def _label_end_ahead(weeks: pd.MultiIndex, sessions: pd.DatetimeIndex, rows_ahead: int) -> np.ndarray:
+    """Per row t of the weekly index: the first session on or after date_open of the row `rows_ahead` places later.
+
+    NaT for the last `rows_ahead` rows and where no such session exists. With rows_ahead = 2 this is
+    _label_end_of_rows (S22-7). Returns datetime64[ns] values.
+    """
+    days = _sessions_ns(sessions)
+    opens = pd.DatetimeIndex(weeks.get_level_values("date_open")).as_unit("ns").to_numpy()
+    result = np.full(len(opens), np.datetime64("NaT", "ns"), dtype="datetime64[ns]")
+    if len(opens) <= rows_ahead or len(days) == 0:
+        return result
+    target = opens[rows_ahead:]
+    position = np.searchsorted(days, target, side="left")
+    found = position < len(days)
+    result[:-rows_ahead][found] = days[position[found]]
+    return result
+
+
+def make_horizon_labels(weekly_open: pd.DataFrame, sessions: pd.DatetimeIndex, horizon: int) -> pd.DataFrame:
+    """Relative training labels over `horizon` weeks with their label_end dates (Amendment 9 C1, decision S41-1).
+
+    weekly_open: adjusted first open of each week (src.data.weekly_panel), columns include the 9 sectors; sessions: the
+    equity sessions. R_h[t, i] = O(t+h+1, i) / O(t+1, i) − 1 (decimal; for h = 1 the arithmetic of
+    src.backtest.forward_returns); y[t, i] = R_h[t, i] − mean of R_h[t] over the 9 sectors; label_end[t] = the first
+    session on or after date_open of the week h+1 rows later (the session of O(t+h+1): for h = 4, O(t+5)). The label of
+    row t is realised only at label_end[t], after Friday close t. Rows exist only where the 9 sector values are defined.
+    Returns index (date_close, ticker) sorted, columns [y (float64), label_end (datetime64)]; passes validate_labels.
+    With horizon = 1 the result equals make_labels(fwd, sessions).
+    """
+    horizon = int(horizon)
+    if horizon < 1:
+        raise ValueError(f"make_horizon_labels: horizon must be at least 1 week, got {horizon}")
+    sectors = list(universe().sectors)
+    missing = [ticker for ticker in sectors if ticker not in weekly_open.columns]
+    if missing:
+        raise ValueError(f"make_horizon_labels: weekly_open lacks the sector columns {missing}")
+    opens = weekly_open[sectors].astype(np.float64)
+    values = (opens.shift(-(horizon + 1)) / opens.shift(-1) - 1).to_numpy(dtype=np.float64)
+    label_end = _label_end_ahead(weekly_open.index, sessions, horizon + 1)
+    complete = ~np.isnan(values).any(axis=1)
+    undated = complete & np.isnat(label_end)
+    if undated.any():
+        week = pd.Timestamp(weekly_open.index.get_level_values("date_close")[np.flatnonzero(undated)[0]]).date()
+        raise ValueError(f"make_horizon_labels: week {week} has a {horizon}-week return but no session at the open of "
+                         f"week t+{horizon + 1}")
+    values, label_end = values[complete], label_end[complete]
+    dates = pd.DatetimeIndex(weekly_open.index.get_level_values("date_close"))[complete]
+    order = np.argsort(np.asarray(sectors, dtype=object))
+    tickers = [sectors[i] for i in order]
+    relative = values - values.mean(axis=1, keepdims=True)
+    index = pd.MultiIndex.from_arrays([np.repeat(dates, len(tickers)), np.tile(np.asarray(tickers, dtype=object), len(dates))],
+                                      names=LABEL_LEVELS)
+    labels = pd.DataFrame({"y": relative[:, order].reshape(-1),
+                           "label_end": np.repeat(label_end, len(tickers))}, index=index)
+    labels = labels.sort_index()
+    validate_labels(labels)
+    return labels
+
+
 def label_end_by_week(labels: pd.DataFrame, weeks: pd.MultiIndex) -> pd.Series:
     """label_end of each week of the weekly index `weeks` (contract 6): the session of O(t+2), identical for the 9
     sectors; NaT where the week has no label. Returns a datetime64[ns] Series named "label_end" on `weeks`.
