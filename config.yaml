@@ -112,3 +112,40 @@ qa: # section 04 QA gates; thresholds fixed before the data was downloaded
   reconciliation_step_tol: 0.001 # largest day-to-day change of Adj Close / Close not explained by a dividend
   second_source_dates: 20 # dates sampled (seed above) for the Stooq cross-check
   second_source_tol: 0.001 # |daily return difference| allowed against the second source (10 bps)
+
+round2: # Amendment 9 (6 Nov 2026), C1 to C4: the second and last round of candidates. Read only by round-2 code. Kept out
+  # of every round-1 section on purpose: models: is part of walkforward_settings(cfg), so editing it would change every
+  # round-1 spec_hash and stale every round-1 output (decision S40-1). Gate thresholds other than bootstrap_prob, costs,
+  # signal, sizing and the hurdle M0 come unchanged from the round-1 sections (C3, C4).
+  test_weeks: 624 # round-2 rungs are scored on exactly round 1's walk-forward test weeks (C1)
+  label: # C1, M6 to M8: y4[t,i] = R4[t,i] - mean_j R4[t,j], R4 = O(t+5)/O(t+1) - 1
+    horizon_weeks: 4
+    cross_sectional_demean: true
+    label_end: open_of_t_plus_5 # the session of O(t+5); purging and the one-week embargo apply to it
+  smoothing: # C1, M7 and M8: score = sum_k w_k * f(x[t-k]) with the current fit f, w_k = 2^(-k/H) normalised
+    half_life_weeks: [2, 4] # H
+    lags_per_half_life: 3 # k = 0 ... 3H
+  models: # C1, one idea each; each grid value chosen per refit by Amendment 5 C1, and also run fixed as a logged trial
+    M6: { kind: ridge, inputs: M2, label: y4, alpha: [0.1, 1, 10] }
+    M7: { kind: ridge, inputs: M2, label: y4, alpha: [0.1, 1, 10], half_life_weeks: [2, 4] } # M6 + smoothing, grid alpha x H
+    M8: { kind: lightgbm, objective: lambdarank, inputs: M2, label: y4, relevance: within_week_rank, relevance_levels: 9,
+          label_gain: linear, positions_evaluated: 9, max_depth: [2, 3], n_estimators: 200, learning_rate: 0.03,
+          num_threads: 1, deterministic: true, half_life_weeks: [2, 4] } # seed: the top-level seed; grid depth x H
+    M9: { base: M7, agent_features: approved_by_name } # M7 + agent features Eliya and Mattia approve by name; else absent
+  tie_order: # C1, equal inner Sharpe: the simpler value of each parameter listed first
+    alpha: [10, 1, 0.1] # the larger lambda
+    max_depth: [2, 3] # the smaller depth
+    half_life_weeks: [4, 2] # the larger H
+  tie_precedence: [alpha, max_depth, half_life_weeks] # lambda or depth decides first, then H (C1)
+  candidate_order: [M6, M7, M8, M9] # C3: appended after models.candidate_order [M1, M2, M3, M5, ENS]
+  selection: # C3: round-2 gate; Sharpe uplift and drawdown tolerance as in selection:
+    bootstrap_prob: 0.90 # paired block bootstrap P(uplift > 0) >= 0.90 (round 1: 0.80)
+  agent_lab: # C2, M9: the section-08 lab once more
+    base_rung: M7
+    max_candidates: 40
+    coder_repairs: 1 # one repair per invalid specification, shown the Validator's error
+    budget_usd: 10 # hard stop in code
+    api_key_env: DDMI_ANTHROPIC_API_KEY # the lab reads its key only from this variable, never ANTHROPIC_API_KEY (S40-1)
+    planted_signal_test: true # repeated with the round-2 model; must pass before real data is touched
+    recognition_probe: true # repeated
+    # model: the most capable Claude model on the Anthropic API at run time; its id and prices go in a decision first
