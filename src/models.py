@@ -3,21 +3,23 @@
 Phase 2.2 (Eliya): M0 and the in-fold scaling pipeline (decisions S22-6, S22-11; Amendment 2 C1, C7; Amendment 4 C1).
 Phase 3.1 (Eliya): ridge (M1, M2), LightGBM (M3), ENS, M0* and the choice within the fixed grids of Amendment 5 C1
 (decisions S31-2 to S31-6), with the walk-forward loop the vault runs. Phase 3.3 (Eliya): agent feature columns and
-their in-fold state products in the design (Amendment 7 C2, S33-4). Interfaces: docs/interfaces.md, contracts 5, 8,
-13 and 14.
+their in-fold state products in the design (Amendment 7 C2, S33-4). Session 4.1 (Eliya): the round-2 rungs M6, M7
+and M8 of Amendment 9 C1 and their Out-of-Sample hook, added after the round-1 code, which is unchanged (decisions S41-1
+to S41-6). Interfaces: docs/interfaces.md, contracts 5, 8, 13, 14 and 15.
 """
 
+import itertools
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor
+from lightgbm import LGBMRanker, LGBMRegressor
 from sklearn.linear_model import Ridge
 
 from src.backtest import run as run_backtest
 from src.config import load_config
-from src.contracts import ContractError, WalkForwardFold, interaction_columns, universe, validate_scores
+from src.contracts import ContractError, WalkForwardFold, interaction_columns, universe, validate_labels, validate_scores
 from src.labels import assert_purged, label_end_by_week
 from src.metrics import annualized_return, annualized_volatility, ratio
 from src.sizing import size_book
@@ -611,3 +613,354 @@ def walkforward_rung(rung: str, data: LadderData, folds: Sequence[WalkForwardFol
     scores = to_weekly(pd.concat(rows), test_weeks, cfg)
     validate_scores(scores)
     return scores, (pd.DataFrame(selection) if value is None else None)
+
+
+# -- Amendment 9 C1: the round-2 rungs M6, M7 and M8 (session 4.1, decisions S41-1 to S41-6) ---------------------------
+
+ROUND2_RUNGS = ("M6", "M7", "M8")
+HALF_LIFE = "half_life_weeks"
+ROUND2_PARAMS = {"M6": ("alpha",), "M7": ("alpha", HALF_LIFE), "M8": ("max_depth", HALF_LIFE)}  # S41-5 spec params
+ROUND2_TAG_PREFIX = {"alpha": "a", "max_depth": "d", HALF_LIFE: "h"}  # tags a0.1, a10_h4, d2_h2 (S41-4)
+# The round2 keys that determine M6-M8 scores, carried in every round-2 spec (S41-5): a trial's identity is the set of
+# settings that determine its scores, so round2.selection, round2.candidate_order and round2.agent_lab are left out.
+ROUND2_SCORE_KEYS = ("test_weeks", "label", "smoothing", "models", "tie_order", "tie_precedence")
+
+
+def _round2_section(cfg: dict) -> dict:
+    try:
+        return cfg["round2"]
+    except KeyError:
+        raise KeyError("config.yaml lacks the round2 section (Amendment 9, S40-1)") from None
+
+
+def round2_spec_settings(cfg: dict | None = None) -> dict:
+    """The "round2" entry of every M6-M8 spec (S41-5): the keys ROUND2_SCORE_KEYS of config.yaml's round2 section
+    (test weeks, 4-week label, smoothing, models, tie order and precedence), each the whole subsection. Gate and
+    agent-lab settings are not part of it, so changing them leaves every round-2 spec_hash unchanged."""
+    section = _round2_section(_cfg(cfg))
+    missing = [key for key in ROUND2_SCORE_KEYS if key not in section]
+    if missing:
+        raise KeyError(f"config.yaml round2 lacks {missing} (Amendment 9 C1, S40-1)")
+    return {key: section[key] for key in ROUND2_SCORE_KEYS}
+
+
+def _check_round2_rung(rung: str) -> None:
+    if rung not in ROUND2_RUNGS:
+        raise ValueError(f"unknown round-2 rung {rung!r}; round-2 rungs {list(ROUND2_RUNGS)}")
+
+
+def round2_grid(rung: str, cfg: dict | None = None) -> list[dict]:
+    """The grid points of a round-2 rung (Amendment 9 C1, S41-4) as parameter dicts, in config order, first parameter
+    outer and H inner: M6 {"alpha": λ}; M7 {"alpha": λ, "half_life_weeks": H}; M8 {"max_depth": d, "half_life_weeks": H}.
+    Values keep their YAML type (0.1 float, 1 and 10 int). The half-lives of M7 and M8 must be round2.smoothing's.
+    """
+    cfg = _cfg(cfg)
+    _check_round2_rung(rung)
+    section = _round2_section(cfg)
+    model = section["models"][rung]
+    keys = ROUND2_PARAMS[rung]
+    if HALF_LIFE in keys and list(model[HALF_LIFE]) != list(section["smoothing"][HALF_LIFE]):
+        raise ValueError(f"round2.models.{rung}.{HALF_LIFE} {model[HALF_LIFE]} differs from round2.smoothing.{HALF_LIFE} "
+                         f"{section['smoothing'][HALF_LIFE]}")
+    return [dict(zip(keys, combo, strict=True)) for combo in itertools.product(*(list(model[key]) for key in keys))]
+
+
+def round2_tie_order(rung: str, cfg: dict | None = None) -> list[dict]:
+    """The grid points of round2_grid in the tie order of S41-4: sorted by the position of each parameter's value in
+    round2.tie_order, parameters taken in round2.tie_precedence order (λ or depth first, then H). The first point of
+    this list wins a tie of inner Sharpes. ValueError unless each tie order lists each grid value exactly once.
+    """
+    cfg = _cfg(cfg)
+    points = round2_grid(rung, cfg)
+    section = _round2_section(cfg)
+    keys = ROUND2_PARAMS[rung]
+    precedence = list(section["tie_precedence"])
+    missing = [key for key in keys if key not in precedence]
+    if missing:
+        raise ValueError(f"round2.tie_precedence {precedence} lacks {missing}")
+    orders = {}
+    for key in keys:
+        order = list(section["tie_order"][key])
+        values = list(dict.fromkeys(point[key] for point in points))
+        if len(order) != len(values) or set(order) != set(values) or len(set(order)) != len(order):
+            raise ValueError(f"round2.tie_order.{key} {order} must list each grid value {values} exactly once")
+        orders[key] = order
+    ranked = sorted(keys, key=precedence.index)
+    return sorted(points, key=lambda point: tuple(orders[key].index(point[key]) for key in ranked))
+
+
+def round2_tag(rung: str, point: Mapping) -> str:
+    """The tag of a grid point (S41-4): a<λ> (M6), a<λ>_h<H> (M7), d<depth>_h<H> (M8), values formatted with 'g'."""
+    _check_round2_rung(rung)
+    return "_".join(f"{ROUND2_TAG_PREFIX[key]}{format(point[key], 'g')}" for key in ROUND2_PARAMS[rung])
+
+
+def smoothing_weights(half_life: int, lags_per_half_life: int = 3) -> np.ndarray:
+    """Weights of the round-2 smoothing (Amendment 9 C1, S41-3): w_k = 2^(−k/H) for k = 0 … lags_per_half_life × H,
+    normalised to sum 1 (H = 2: 7 weights; H = 4: 13 weights). w_0 applies to week t itself."""
+    half_life, lags = int(half_life), int(lags_per_half_life)
+    if half_life < 1 or lags < 0:
+        raise ValueError(f"smoothing_weights: half-life {half_life} must be >= 1 and lags per half-life {lags} >= 0")
+    k = np.arange(lags * half_life + 1, dtype=np.float64)
+    weights = np.power(2.0, -k / half_life)
+    return weights / weights.sum()
+
+
+def smooth_weekly(raw: pd.DataFrame, weights: Sequence[float], weeks: pd.MultiIndex) -> pd.DataFrame:
+    """Smoothed weekly scores (S41-3): row t of the result = Σ_k weights[k] × the row k places earlier in raw's weekly
+    index (k = 0 is week t itself).
+
+    raw: weekly score frame (contract 8) on a contiguous run of the weekly calendar, each row known after its Friday
+    close; weeks: the weeks to return (rows of raw). A value is NaN when the week or any of its lags is absent from raw
+    or NaN. Returns a float64 frame on `weeks` with raw's columns; row t uses only rows of raw dated on or before t.
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    values = raw.to_numpy(dtype=np.float64)
+    positions = raw.index.get_indexer(weeks)
+    out = np.zeros((len(weeks), values.shape[1]), dtype=np.float64)
+    for k, weight in enumerate(w):
+        lagged = positions - k
+        valid = (positions >= 0) & (lagged >= 0)
+        rows = np.full((len(weeks), values.shape[1]), np.nan)
+        rows[valid] = values[lagged[valid]]
+        out += weight * rows
+    return pd.DataFrame(out, index=weeks, columns=raw.columns, dtype=np.float64)
+
+
+def within_week_relevance(y: pd.Series) -> pd.Series:
+    """LambdaRank relevance of M8 (Amendment 9 C1, S41-3): within each date_close, the rank of y, 0 for the lowest …
+    n − 1 for the highest (8 with 9 sectors); exact ties give the higher relevance to the alphabetically earlier ticker
+    (§09 step 2). y: finite values on (date_close, ticker). Returns an int64 Series named "relevance" on y's index.
+    """
+    values = y.to_numpy(dtype=np.float64)
+    if not np.isfinite(values).all():
+        raise ValueError("within_week_relevance: y must be finite")
+    frame = pd.DataFrame({"date": np.asarray(y.index.get_level_values("date_close")),
+                          "ticker": np.asarray(y.index.get_level_values("ticker"), dtype=object),
+                          "y": values, "position": np.arange(len(values))})
+    frame = frame.sort_values(["date", "y", "ticker"], ascending=[True, False, True], kind="mergesort")
+    order = frame.groupby("date", sort=False).cumcount().to_numpy()
+    size = frame.groupby("date", sort=False)["y"].transform("size").to_numpy()
+    relevance = np.empty(len(values), dtype=np.int64)
+    relevance[frame["position"].to_numpy()] = size - 1 - order
+    return pd.Series(relevance, index=y.index, name="relevance", dtype=np.int64)
+
+
+class RankerModel:
+    """LightGBM LambdaRank ranker of M8 (Amendment 9 C1, S41-3) on the M2 design: one query group per week (the 9
+    sectors), relevance = within_week_relevance of the 4-week label, linear label gain over the levels, every position
+    evaluated; max_depth ∈ {2, 3}, 200 trees, learning rate 0.03, deterministic=True, num_threads=1, seed from
+    config.seed; also force_row_wise=True and verbose=-1, library defaults otherwise.
+    """
+
+    def __init__(self, max_depth: int, n_estimators: int = 200, learning_rate: float = 0.03, seed: int = 42,
+                 name: str = "M8", num_threads: int = 1, levels: int = 9) -> None:
+        self.max_depth = max_depth
+        self.n_estimators = n_estimators
+        self.learning_rate = learning_rate
+        self.seed = seed
+        self.name = name
+        self.num_threads = num_threads
+        self.levels = levels
+        self._model = None
+        self.columns: list[str] = []
+
+    def params(self) -> dict:
+        """Every parameter passed to lightgbm.LGBMRanker (S41-3)."""
+        levels = int(self.levels)
+        return {"objective": "lambdarank", "max_depth": int(self.max_depth), "n_estimators": int(self.n_estimators),
+                "learning_rate": float(self.learning_rate), "num_threads": int(self.num_threads), "deterministic": True,
+                "force_row_wise": True, "random_state": int(self.seed), "verbose": -1,
+                "label_gain": [float(level) for level in range(levels)], "lambdarank_truncation_level": levels}
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "RankerModel":
+        """Fit on purged training rows (label_end ≤ purge_end, asserted by the caller): X the M2 design on
+        (date_close, ticker), y the 4-week relative label (decimal). Each week must hold exactly `levels` rows (the 9
+        sectors). Returns self."""
+        _check_training(X, y, self.name)
+        X, y = X.sort_index(), y.sort_index()
+        dates = pd.DatetimeIndex(X.index.get_level_values("date_close"))
+        groups = pd.Series(np.ones(len(dates), dtype=np.int64), index=dates).groupby(level=0, sort=False).sum()
+        if (groups.to_numpy() != int(self.levels)).any():
+            week = groups.index[np.flatnonzero(groups.to_numpy() != int(self.levels))[0]]
+            raise ValueError(f"{self.name}.fit: the training week {week.date()} has {groups[week]} rows, not one per "
+                             f"sector ({self.levels})")
+        self.columns = list(X.columns)
+        relevance = within_week_relevance(y)
+        self._model = LGBMRanker(**self.params()).fit(X.to_numpy(dtype=np.float64), relevance.to_numpy(),
+                                                      group=groups.to_numpy())
+        return self
+
+    def score(self, X: pd.DataFrame) -> pd.Series:
+        """Float64 Series named `score` on X's index (higher = more attractive), known after Friday close t; NaN for a row
+        with a missing input. Does not change the model."""
+        return _predict(self._model, X, self.columns, self.name)
+
+
+def _round2_point(rung: str, value: Mapping, cfg: dict) -> dict:
+    """A grid point given as a parameter dict, checked against round2_grid (same keys, values equal with the same
+    type, S31-12); returns the grid's own dict."""
+    if not isinstance(value, Mapping) or set(value) != set(ROUND2_PARAMS[rung]):
+        raise ValueError(f"{rung}: a grid point is {{{', '.join(repr(k) for k in ROUND2_PARAMS[rung])}}}, got {value!r}")
+    for point in round2_grid(rung, cfg):
+        if all(not isinstance(value[key], bool) and value[key] == point[key] and type(value[key]) is type(point[key])
+               for key in point):
+            return dict(point)
+    raise ValueError(f"{rung}: {dict(value)!r} is not, with the same types, a point of the pre-registered grid "
+                     f"{round2_grid(rung, cfg)} (round2.models.{rung})")
+
+
+def round2_fold(fold: WalkForwardFold, label_end_h4: pd.Series) -> WalkForwardFold:
+    """The fold record of a round-2 fit (S41-2): `fold` with train_end = the last week from train_start whose 4-week
+    label_end ≤ purge_end. label_end_h4: per-week 4-week label_end (label_end_by_week of the 4-week labels)."""
+    closes = (pd.DatetimeIndex(label_end_h4.index.get_level_values("date_close"))
+              if isinstance(label_end_h4.index, pd.MultiIndex) else pd.DatetimeIndex(label_end_h4.index))
+    ends = pd.to_datetime(label_end_h4).to_numpy(dtype="datetime64[ns]")
+    train = np.asarray(closes >= fold.train_start) & ~np.isnat(ends) & (ends <= fold.purge_end.to_datetime64())
+    if not train.any():
+        raise ValueError(f"round2_fold: refit {fold.test_year} Q{fold.refit} has no week with a 4-week label realised by "
+                         f"purge_end {fold.purge_end.date()}")
+    return replace(fold, train_end=pd.Timestamp(closes[train].max()))
+
+
+def _round2_fit(rung: str, point: Mapping, data: LadderData, labels_h4: pd.DataFrame, fold: WalkForwardFold,
+                cfg: dict) -> tuple[object, dict]:
+    """Fit a round-2 model at a grid point on the purged training rows of `fold` (S41-2, S41-3): rows with date_close in
+    [train_start, train_end] and a 4-week label, assert_purged on their 4-week label_end before the fit; M2 design with
+    the in-fold state scaling. Returns (fitted model, design parameters)."""
+    source = data.features[list(cfg["features"]["asset"])]
+    dates = _closes_of(source)
+    train_index = source.index[np.asarray((dates >= fold.train_start) & (dates <= fold.train_end))]
+    train_index = train_index[train_index.isin(labels_h4.index)]
+    assert_purged(labels_h4.loc[train_index, "label_end"], fold)
+    y = labels_h4.loc[train_index, "y"].astype(np.float64)
+    X_train, params = fit_transform_train(data.features.loc[train_index], data.states, True, cfg)
+    if rung == "M8":
+        m8 = _round2_section(cfg)["models"]["M8"]
+        model = RankerModel(int(point["max_depth"]), n_estimators=int(m8["n_estimators"]),
+                            learning_rate=float(m8["learning_rate"]), seed=int(cfg["seed"]), name="M8",
+                            num_threads=int(m8["num_threads"]), levels=int(m8["relevance_levels"]))
+    else:
+        model = RidgeModel(float(point["alpha"]), name=rung)
+    return model.fit(X_train, y.loc[X_train.index]), params
+
+
+def _round2_raw(model, params: dict, data: LadderData, weeks: pd.MultiIndex, cfg: dict) -> pd.DataFrame:
+    """Unsmoothed weekly scores of a fitted round-2 model on `weeks` (rows of the weekly calendar)."""
+    closes = pd.DatetimeIndex(weeks.get_level_values("date_close"))
+    rows = data.features.index[np.asarray(_closes_of(data.features).isin(closes))]
+    X = transform_test(data.features.loc[rows], data.states, params)
+    return to_weekly(model.score(X), weeks, cfg)
+
+
+def _round2_scores(model, params: dict, data: LadderData, weeks: pd.MultiIndex, half_life, cfg: dict) -> pd.DataFrame:
+    """Weekly scores of a fitted round-2 model on `weeks`: unsmoothed for M6 (half_life None), else the smoothing of
+    S41-3 over the 3H weeks before each week on the weekly calendar (data.states' index)."""
+    if half_life is None:
+        return _round2_raw(model, params, data, weeks, cfg)
+    weights = smoothing_weights(int(half_life), int(_round2_section(cfg)["smoothing"]["lags_per_half_life"]))
+    calendar = data.states.index
+    positions = calendar.get_indexer(weeks)
+    if (positions < 0).any():
+        raise ValueError("round-2 smoothing: a week to score is not on the weekly calendar")
+    first = max(int(positions.min()) - (len(weights) - 1), 0)
+    span = calendar[first:int(positions.max()) + 1]
+    return smooth_weekly(_round2_raw(model, params, data, span, cfg), weights, weeks)
+
+
+def _round2_choose(rung: str, data: LadderData, labels_h4: pd.DataFrame, fold: WalkForwardFold, label_end_h4: pd.Series,
+                   cfg: dict) -> tuple[dict, dict]:
+    """The Amendment 5 C1 choice at one round-2 refit (S41-2, S41-4): (chosen grid point, selection row)."""
+    split = inner_fold(fold, label_end_h4, inner_validation_weeks(cfg), int(cfg["split"]["embargo_weeks"]))
+    validation = _weeks_between(data.states.index, split.test_start, split.test_end)
+    _check_realised(data, validation, fold)
+    points = round2_grid(rung, cfg)
+    fits: dict = {}
+    sharpes = {}
+    for point in points:
+        key = point[ROUND2_PARAMS[rung][0]]  # the fit depends on λ or depth only; H changes the scoring (S41-3)
+        if key not in fits:
+            fits[key] = _round2_fit(rung, point, data, labels_h4, split, cfg)
+        weekly = _round2_scores(*fits[key], data, validation, point.get(HALF_LIFE), cfg)
+        sharpes[round2_tag(rung, point)] = inner_sharpe(weekly, data.betas, data.fwd, data.period, cfg)
+    chosen_tag = choose_grid_value(sharpes, [round2_tag(rung, point) for point in round2_tie_order(rung, cfg)])
+    chosen = next(point for point in points if round2_tag(rung, point) == chosen_tag)
+    row = {"test_year": fold.test_year, "refit": fold.refit, "test_start": fold.test_start, "train_start": fold.train_start,
+           "train_end": fold.train_end, "purge_end": fold.purge_end, "inner_train_end": split.train_end,
+           "inner_purge_end": split.purge_end, "inner_val_start": split.test_start, "inner_val_end": split.test_end,
+           "inner_val_weeks": len(validation)}
+    row.update({f"sharpe_{tag}": sharpe for tag, sharpe in sharpes.items()})
+    row["chosen"] = chosen_tag
+    row.update({f"chosen_{key}": chosen[key] for key in ROUND2_PARAMS[rung]})
+    return chosen, row
+
+
+def walkforward_round2(rung: str, data: LadderData, labels_h4: pd.DataFrame, folds: Sequence[WalkForwardFold],
+                       cfg: dict | None = None, *, value: Mapping | None = None) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Weekly scores of a round-2 rung (M6, M7, M8) over walk-forward refits (Amendment 9 C1; S41-2 to S41-4, S41-6).
+
+    data: the ladder tables (contract 3, 4, 6; betas and forward returns for tuning); labels_h4: the 4-week labels
+    (contract 6 shape, S41-1); folds: refit records (round 1's In-Sample folds, or 08's Out-of-Sample folds). Each fit
+    uses the rows whose 4-week label_end ≤ purge_end, asserted on every fit, inner and full. value: a fixed grid point
+    (round2_grid dict; at Out-of-Sample refits the frozen point of round2_frozen_value, Amendment 6 C2); None applies
+    the Amendment 5 C1 choice at every refit, refused for a fold ending after split.in_sample_end. Returns (scores:
+    contract 8 on the test weeks of `folds`, known after Friday close t; selection: one row per refit, None for a
+    fixed point).
+    """
+    cfg = _cfg(cfg)
+    _check_round2_rung(rung)
+    if data.agent_columns:
+        raise ValueError(f"walkforward_round2: {rung} takes no agent features (M9 is a separate rung, Amendment 9 C2)")
+    validate_labels(labels_h4)
+    folds = list(folds)
+    if not folds:
+        raise ValueError("walkforward_round2: no refit")
+    point = None if value is None else _round2_point(rung, value, cfg)
+    is_end = pd.Timestamp(cfg["split"]["in_sample_end"])
+    if point is None and any(fold.test_end > is_end for fold in folds):
+        raise ValueError(f"walkforward_round2: tuning on a fold ending after the In-Sample end {is_end.date()} is refused; "
+                         "Out-of-Sample refits keep the frozen grid point (Amendment 6 C2)")
+    weeks = data.states.index
+    label_end_h4 = label_end_by_week(labels_h4, weeks)
+    frames, selection = [], []
+    for fold in folds:
+        fold4 = round2_fold(fold, label_end_h4)
+        chosen = point
+        if point is None:
+            chosen, record = _round2_choose(rung, data, labels_h4, fold4, label_end_h4, cfg)
+            selection.append(record)
+        model, params = _round2_fit(rung, chosen, data, labels_h4, fold4, cfg)
+        fold_weeks = _weeks_between(weeks, fold.test_start, fold.test_end)
+        frames.append(_round2_scores(model, params, data, fold_weeks, chosen.get(HALF_LIFE), cfg))
+    test_weeks = _weeks_between(weeks, folds[0].test_start, folds[-1].test_end)
+    scores = pd.concat(frames)
+    if not scores.index.equals(test_weeks):
+        raise ValueError("walkforward_round2: the refits' test windows do not partition the test weeks")
+    scores = scores[list(universe(cfg).sectors)].astype(np.float64)
+    validate_scores(scores)
+    return scores, (pd.DataFrame(selection) if point is None else None)
+
+
+def round2_frozen_value(rung: str, selection: pd.DataFrame, cfg: dict | None = None) -> dict:
+    """The grid point chosen at the last In-Sample refit of a tuned round-2 rung (Amendment 6 C2, S41-6), from its
+    selection.csv (S41-4): the last row by (test_year, refit), whose test_year must be the last of split.test_years.
+    Returns the round2_grid dict with the grid's types; ValueError if the row's chosen_<parameter> values or its tag are
+    not a grid point."""
+    cfg = _cfg(cfg)
+    _check_round2_rung(rung)
+    keys = ROUND2_PARAMS[rung]
+    needed = ["test_year", "refit", "chosen"] + [f"chosen_{key}" for key in keys]
+    missing = [column for column in needed if column not in selection.columns]
+    if missing or selection.empty:
+        raise ValueError(f"round2_frozen_value: the {rung} selection table is empty or lacks {missing}")
+    last = selection.sort_values(["test_year", "refit"]).iloc[-1]
+    last_year = int(cfg["split"]["test_years"][1])
+    if int(last["test_year"]) != last_year:
+        raise ValueError(f"round2_frozen_value: the last {rung} refit is in {int(last['test_year'])}, not the last In-Sample "
+                         f"test year {last_year}")
+    matches = [point for point in round2_grid(rung, cfg)
+               if all(float(point[key]) == float(last[f"chosen_{key}"]) for key in keys)]
+    if len(matches) != 1 or round2_tag(rung, matches[0]) != str(last["chosen"]):
+        raise ValueError(f"round2_frozen_value: the last {rung} refit chose {last['chosen']!r}, not a point of the grid "
+                         f"{round2_grid(rung, cfg)}")
+    return dict(matches[0])

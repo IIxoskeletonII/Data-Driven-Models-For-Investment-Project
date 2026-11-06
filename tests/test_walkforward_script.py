@@ -155,9 +155,12 @@ def test_model_spec_of_an_unknown_rung_is_refused(script):
 
 
 def test_fixed_names_follow_the_grids(script):
-    """S31-10: one --fixed name per grid value, built from config.yaml."""
+    """S31-10: one --fixed name per grid value, built from config.yaml; round 1's names first, then the round-2 grid
+    points of S41-5."""
     assert script.fixed_names(CFG) == ["M1_a0.1", "M1_a1", "M1_a10", "M2_a0.1", "M2_a1", "M2_a10", "M3_d2", "M3_d3",
-                                       "M0_L13", "M0_L26", "M0_L52"]
+                                       "M0_L13", "M0_L26", "M0_L52",
+                                       "M6_a0.1", "M6_a1", "M6_a10", "M7_a0.1_h2", "M7_a0.1_h4", "M7_a1_h2", "M7_a1_h4",
+                                       "M7_a10_h2", "M7_a10_h4", "M8_d2_h2", "M8_d2_h4", "M8_d3_h2", "M8_d3_h4"]
 
 
 @pytest.mark.parametrize("name, params", [("M1_a0.1", {"alpha": 0.1}), ("M2_a10", {"alpha": 10}),

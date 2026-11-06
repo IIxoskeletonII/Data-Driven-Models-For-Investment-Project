@@ -3,6 +3,7 @@ until FROZEN.lock exists, and is the only path from the built data to models and
 
 Phase 2.2 (Eliya); decisions S22-7 and S22-8. Phase 3.1: forward returns (S31-1) and the ladder specs (S31-2).
 Phase 3.3: daily closes and the weekly T-bill for the agent lab, and agent features added to a base rung (S33-2, S33-4).
+Session 4.1: the 4-week labels (labels(as_of, horizon)) and the round-2 rungs M6, M7, M8 (Amendment 9 C1, S41-1 to S41-5).
 Interfaces: docs/interfaces.md, contract 15.
 """
 
@@ -36,9 +37,14 @@ from src.models import (
     ENS_MEMBERS,
     GRID_KEYS,
     PARAM_KEYS,
+    ROUND2_PARAMS,
+    ROUND2_RUNGS,
     LadderData,
+    _round2_point,
     grid,
+    round2_spec_settings,
     tuning_spec,
+    walkforward_round2,
     walkforward_rung,
     walkforward_settings,
 )
@@ -47,17 +53,18 @@ TRIAL_COLUMNS = ["trial_id", "timestamp", "author", "kind", "rung", "spec_hash",
                  "notes"]
 TRIAL_KINDS = ("human", "agent")
 FRAME_NAMES = ("features", "market_states", "labels", "momentum_variants", "sizing_betas", "forward_returns", "daily_close",
-               "dgs3mo")
+               "dgs3mo", "labels_h4")
+LABEL_FRAMES = ("labels", "labels_h4")  # contract 6 tables; labels_h4 holds the 4-week label of Amendment 9 C1 (S41-1)
 DAILY_FRAMES = ("daily_close", "dgs3mo")  # date-indexed; cut at is_end right after reading (S33-4)
 WEEKLY_FRAMES = ("market_states", "sizing_betas", "forward_returns")  # weekly index; the others (date_close, ticker)
 REALISED_ON, PERIOD = "realised_on", "period"  # the date and period columns of forward_returns.csv (S31-1)
 SPEC_DATE_KEYS = ("as_of", "end")  # refused in any spec (S33-2): OOSAccessError after is_end, ValueError otherwise
-# anything else is refused (S22-12); params, tuning and members added for the ladder (S31-2)
-SPEC_KEYS = ("rung", "feature", "author", "kind", "notes", "params", "tuning", "members", "agent_features")
+# anything else is refused (S22-12); params, tuning and members added for the ladder (S31-2); round2 for M6-M8 (S41-5)
+SPEC_KEYS = ("rung", "feature", "author", "kind", "notes", "params", "tuning", "members", "agent_features", "round2")
 AGENT_RUNGS = ("M1", "M2", "M3")  # rungs that take agent features (Amendment 7, S33-4)
 AGENT_PREFIX = "AG"  # agent feature k (1-based, list order) is the design column AG<k> (S33-4)
 MOMENTUM_VARIANT = re.compile(r"MOM\d+_1")
-IMPLEMENTED_RUNGS = ("M0", "M1", "M2", "M3", "M0_star", "ENS")
+IMPLEMENTED_RUNGS = ("M0", "M1", "M2", "M3", "M0_star", "ENS", *ROUND2_RUNGS)
 
 
 class OOSAccessError(PermissionError):
@@ -107,7 +114,7 @@ def _read_frame(name: str, path: Path) -> pd.DataFrame:
     if name in WEEKLY_FRAMES:
         frame = pd.read_csv(path, index_col=["date_open", "date_close"], parse_dates=["date_open", "date_close"])
     else:
-        dates = ["date_close", "label_end"] if name == "labels" else ["date_close"]
+        dates = ["date_close", "label_end"] if name in LABEL_FRAMES else ["date_close"]
         frame = pd.read_csv(path, index_col=["date_close", "ticker"], parse_dates=dates)
     numeric = [column for column in frame.columns if column != "label_end"]
     return frame.astype(dict.fromkeys(numeric, np.float64))  # an all-integer column (BEAR24 0/1) reads back as int64
@@ -119,7 +126,7 @@ def _validate_frame(name: str, frame: pd.DataFrame, cfg: dict | None = None) -> 
         validate_features(frame)
     elif name == "market_states":
         validate_market_states(frame)
-    elif name == "labels":
+    elif name in LABEL_FRAMES:
         validate_labels(frame)
     elif name == "sizing_betas":
         validate_betas(frame)
@@ -351,17 +358,36 @@ class Vault:
         self._log("tbill_weekly", "ok", as_of=as_of)
         return rf
 
-    def labels(self, as_of: pd.Timestamp) -> pd.DataFrame:
-        """Labels (contract 6) with label_end ≤ as_of: only returns already realised at as_of."""
+    def _label_table(self, horizon) -> str:
+        """Table of a label horizon (S41-1): 1 → labels, round2.label.horizon_weeks (4) → labels_h4; ValueError else."""
+        if isinstance(horizon, int | np.integer) and not isinstance(horizon, bool) and int(horizon) == 1:
+            return "labels"  # the 1-week call never reads the round2 section (unchanged behaviour)
+        cfg = load_config() if self._cfg is None else self._cfg
+        allowed = {1: "labels", int(cfg["round2"]["label"]["horizon_weeks"]): "labels_h4"}
+        if isinstance(horizon, bool) or not isinstance(horizon, int | np.integer) or int(horizon) not in allowed:
+            raise ValueError(f"Vault.labels: horizon {horizon!r} is not one of the label horizons {sorted(allowed)} "
+                             "(1 week, §05; round2.label.horizon_weeks, Amendment 9 C1)")
+        return allowed[int(horizon)]
+
+    def labels(self, as_of: pd.Timestamp, horizon: int = 1) -> pd.DataFrame:
+        """Labels (contract 6) with label_end ≤ as_of: only returns already realised at as_of.
+
+        horizon 1 (default): the 1-week labels of §05 (labels.csv), logged as "labels". horizon
+        round2.label.horizon_weeks (4): the 4-week labels of Amendment 9 C1 (labels_h4.csv, label_end = the session of
+        O(t+5)), sealed alike and logged as "labels_h4" (S41-1). Any other horizon raises ValueError, logged refused.
+        """
         as_of = pd.Timestamp(as_of)
+        method = "labels"
         try:
-            self._check_date("labels", as_of)
-            frame = self._frame("labels")
+            name = self._label_table(horizon)
+            method = name
+            self._check_date(method, as_of)
+            frame = self._frame(name)
             rows = frame.loc[np.asarray(pd.DatetimeIndex(frame["label_end"]) <= as_of)].copy()
         except Exception:
-            self._log("labels", "refused", as_of=as_of)
+            self._log(method, "refused", as_of=as_of)
             raise
-        self._log("labels", "ok", as_of=as_of)
+        self._log(method, "ok", as_of=as_of)
         return rows
 
     # -- walk-forward ---------------------------------------------------------------------------------------------------
@@ -403,7 +429,10 @@ class Vault:
         kind = spec.get("kind")
         if kind is not None and kind not in TRIAL_KINDS:
             raise ValueError(f"run_walkforward: kind must be one of {TRIAL_KINDS}, got {kind!r}")
-        _check_ladder_keys(str(rung), spec, cfg)
+        if rung in ROUND2_RUNGS:
+            _check_round2_keys(str(rung), spec, cfg)
+        else:
+            _check_ladder_keys(str(rung), spec, cfg)
         return str(rung)
 
     def _with_agent_features(self, features: pd.DataFrame, agent_specs, cfg: dict) -> tuple[pd.DataFrame, tuple]:
@@ -454,6 +483,8 @@ class Vault:
         """
         data = self._ladder_data(cfg, tuned="tuning" in spec, agent_specs=spec.get("agent_features"))
         folds = walk_forward_folds(data.states.index, label_end_by_week(data.labels, data.states.index), cfg)
+        if rung in ROUND2_RUNGS:
+            return self._round2_scores(spec, rung, data, folds, cfg)
         if rung == "M0":
             feature = str(spec.get("feature") or cfg["models"]["M0"]["feature"])
             self._feature_column(feature, cfg)
@@ -463,6 +494,19 @@ class Vault:
         params = spec.get("params")
         value = None if params is None else params[PARAM_KEYS[rung]]
         return walkforward_rung(rung, data, folds, cfg, value=value)
+
+    def _round2_scores(self, spec: Mapping[str, object], rung: str, data: LadderData, folds: list,
+                       cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        """A round-2 rung on round 1's refits (S41-2): the 4-week labels realised by is_end, every fit purged by their
+        label_end (src.models.walkforward_round2); the scored weeks must number round2.test_weeks (624)."""
+        labels_h4 = self._frame("labels_h4")
+        labels_h4 = labels_h4.loc[np.asarray(pd.DatetimeIndex(labels_h4["label_end"]) <= self.is_end)]
+        scores, selection = walkforward_round2(rung, data, labels_h4, folds, cfg, value=spec.get("params"))
+        expected = int(cfg["round2"]["test_weeks"])
+        if len(scores) != expected:
+            raise ValueError(f"run_walkforward: {rung} scored {len(scores)} weeks, not the round2.test_weeks = {expected} "
+                             "test weeks of round 1 (Amendment 9 C1, S41-2)")
+        return scores, selection
 
     def run_walkforward(self, spec: Mapping[str, object], evaluate: Callable[[pd.DataFrame], tuple[float, float]] | None = None,
                         *, trial_path: Path = ROOT / "docs" / "trial_log.csv") -> pd.DataFrame:
@@ -508,8 +552,31 @@ class Vault:
         return scores
 
 
+def _check_round2_keys(rung: str, spec: Mapping[str, object], cfg: dict) -> None:
+    """Raise ValueError unless a round-2 spec (M6, M7, M8) is one of S41-5: "round2" equal to round2_spec_settings(cfg)
+    (the score-determining keys of config.yaml's round2 section), exactly one
+    of "params" (a grid point, same types) and "tuning" (= tuning_spec(cfg)); no feature, members or agent_features."""
+    for key in ("feature", "members", "agent_features"):
+        if spec.get(key) is not None:
+            raise ValueError(f"run_walkforward: {key!r} does not belong to a spec of the round-2 rung {rung} (S41-5)")
+    if "round2" not in spec or _canonical(spec["round2"]) != _canonical(round2_spec_settings(cfg)):
+        raise ValueError(f"run_walkforward: a {rung} spec must carry 'round2' equal to src.models.round2_spec_settings(cfg), "
+                         "the score-determining keys of config.yaml's round2 section (Amendment 9, S41-5)")
+    params, tuning = spec.get("params"), spec.get("tuning")
+    if (params is None) == (tuning is None):
+        raise ValueError(f"run_walkforward: a {rung} spec takes exactly one of 'params' and 'tuning' (S41-5)")
+    if tuning is not None and _canonical(tuning) != _canonical(tuning_spec(cfg)):
+        raise ValueError("run_walkforward: 'tuning' must equal src.models.tuning_spec(cfg) (Amendment 5 C1, S41-5)")
+    if params is not None:
+        if not isinstance(params, Mapping) or set(params) != set(ROUND2_PARAMS[rung]):
+            raise ValueError(f"run_walkforward: {rung} params must have exactly the keys {list(ROUND2_PARAMS[rung])}")
+        _round2_point(rung, params, cfg)  # ValueError unless a grid point with the grid's types (S31-12)
+
+
 def _check_ladder_keys(rung: str, spec: Mapping[str, object], cfg: dict) -> None:
     """Raise ValueError unless the spec's feature, params, tuning and members fit its rung (S31-2)."""
+    if spec.get("round2") is not None:
+        raise ValueError(f"run_walkforward: 'round2' belongs to a spec of the round-2 rungs {list(ROUND2_RUNGS)}, not {rung}")
     params, tuning, members = spec.get("params"), spec.get("tuning"), spec.get("members")
     agent = spec.get("agent_features")
     if agent is not None:
