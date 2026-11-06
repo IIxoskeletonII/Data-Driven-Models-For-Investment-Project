@@ -24,6 +24,7 @@ from src import features
 from src.config import data_settings, load_config, save_used
 from src.data import write_csv
 from src.models import ensemble_scores, walkforward_rung
+from src.vault import OOSAccessError
 
 ROOT = Path(__file__).resolve().parents[1]
 IS_END = pd.Timestamp("2019-12-27")
@@ -366,6 +367,34 @@ def test_the_full_range_tables_reach_the_data_end_with_periods_by_realisation(sc
     frozen = pd.read_csv(ran["root"] / "data" / "processed" / "features.csv", index_col=[0, 1], parse_dates=[0])
     full = pd.read_csv(oos_dir / "features.csv", index_col=[0, 1], parse_dates=[0])
     assert np.allclose(full.loc[frozen.index].to_numpy(), frozen.to_numpy(), atol=1e-12, rtol=0, equal_nan=True)
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_rebuild_tables_passes_the_truncation_and_the_lock_to_the_builder(script, project, tmp_path, monkeypatch):
+    """S38-1: is_end stays the period boundary, truncate_at = data.end, lock_path = the project's FROZEN.lock."""
+    root = frozen_copy(script, project, tmp_path)
+    calls = []
+
+    def spy(daily_open, daily_close, is_end, truncate_at=None, lock_path=None):
+        calls.append((pd.Timestamp(is_end), truncate_at, lock_path))
+        raise _Stop
+
+    monkeypatch.setattr(script.features_script(), "build_forward_returns", spy)
+    with pytest.raises(_Stop):
+        script.rebuild_tables(root, project["cfg"], tmp_path / "tables")
+    assert calls == [(IS_END, pd.Timestamp(DATA_END), root / "FROZEN.lock")]
+    assert not (tmp_path / "tables").exists()
+
+
+def test_rebuild_tables_is_refused_by_the_builder_without_the_lock(script, project, tmp_path):
+    """S38-1: without FROZEN.lock, build_forward_returns itself raises before any table is built or written."""
+    root = copy_project(project, tmp_path)
+    with pytest.raises(OOSAccessError, match="needs an existing FROZEN.lock"):
+        script.rebuild_tables(root, project["cfg"], tmp_path / "tables")
+    assert not (tmp_path / "tables").exists()
 
 
 def test_the_refits_start_with_2019_q4_and_continue_quarterly_purged(script, ran):
