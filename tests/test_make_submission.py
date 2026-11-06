@@ -323,7 +323,8 @@ def test_no_tracked_file_of_this_repository_holds_a_key_like_string():
 
 # ---------------------------------------------------------------- round-2 output folders (Amendment 9, S42-3)
 
-ROUND2 = ("M7", "M7_a0.1_h2", "M8_d2_h4", "M6_a10")
+ROUND2 = ("M7", "M7_a0.1_h2", "M8_d2_h4", "M6_a999")  # M6_a999: a round-2 shape, but 999 is no grid value of
+# config.yaml, so 05 never has a spec for it (before and after session 4.1)
 
 
 @pytest.fixture
@@ -388,8 +389,8 @@ def test_a_round_2_setting_change_stops_the_build_although_every_used_yaml_match
 
 def test_a_round_2_folder_without_its_summary_or_spec_is_refused(round2_project, monkeypatch):
     root = round2_project["root"]
-    (root / "outputs" / "backtests" / "M6_a10" / "summary.json").unlink()
-    refused(round2_project, r"outputs/backtests/M6_a10/summary.json: missing")
+    (root / "outputs" / "backtests" / "M6_a999" / "summary.json").unlink()
+    refused(round2_project, r"outputs/backtests/M6_a999/summary.json: missing")
     s05 = make_submission._script("06_backtest.py")._walkforward_script()
-    monkeypatch.setattr(s05, "spec_for", round2_project["real_spec_for"])  # 05 before session 4.1: no round-2 spec
-    refused(round2_project, r"outputs/walkforward/M6_a10/: M6_a10: 05_train_walkforward.py has no spec for this name")
+    monkeypatch.setattr(s05, "spec_for", round2_project["real_spec_for"])  # the real 05: no spec for M6_a999
+    refused(round2_project, r"outputs/walkforward/M6_a999/: M6_a999: 05_train_walkforward.py has no spec for this name")

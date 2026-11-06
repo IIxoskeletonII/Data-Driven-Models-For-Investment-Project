@@ -66,7 +66,9 @@ def test_the_pipeline_runs_every_05_configuration_in_order_and_never_04_or_08(sc
                    "05_train_walkforward.py --agent-returns", "05_train_walkforward.py --select", "07_evaluate.py",
                    "06_backtest.py --ledger-years"])
     assert names == expected
-    assert len(fixed) == 11 and "M0_star" in rungs
+    round2 = tuple(f"{r}_" for r in cfg["round2"]["candidate_order"])
+    assert len(set(fixed)) == len(fixed) and not set(fixed) & set(rungs) and "M0_star" in rungs
+    assert len([f for f in fixed if not f.startswith(round2)]) == 11  # round 1's fixed values (S31-10); round 2 is extra
     assert not any(name.startswith(("04_", "08_")) for name in names)
     assert [s.name for s in script.pipeline(cfg) if s.frozen] == ["05_train_walkforward.py --agent-returns",
                                                                     "05_train_walkforward.py --select"]
