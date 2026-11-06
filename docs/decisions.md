@@ -1944,6 +1944,59 @@ computed or seen. "Approved by" is completed by Mattia's approving review of the
 | Files affected | `docs/decisions.md` only |
 | Amendment | No |
 
+## 2026-11-06 · Session 3.8: follow-ups from Session 3.7 and a flaky test
+
+Evidence-standard format. "Instruction" quotes the session 3.8 prompt (6 Nov 2026). Everything below is built and tested
+on the synthetic markets of `tests/test_run_oos_script.py` and `tests/test_evaluate_script.py` only. When this entry was
+written, `FROZEN.lock` did not exist, `outputs/oos_access_log.json` had no entry, and no Out-of-Sample value had been
+computed or seen. "Approved by" lists the approvals given so far; Eliya approves through the review of the pull request
+from branch `feat/3.8-oos-followups`.
+
+### S38-1 · `08_run_oos.py` builds the forward returns with the truncation date and the lock (S37-2, S37-8 point 1)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | S37-8 (1) found that 08's `rebuild_tables` calls `build_forward_returns(daily_open, daily_close, end)` with a late `is_end`. That call bypasses the builder's own lock check and labels every week `IS`, which 08 then re-labels. How does 08 call the builder now? |
+| Options considered | (a) `build_forward_returns(daily_open, daily_close, is_end, truncate_at=data.end, lock_path=<root>/FROZEN.lock)`, with 08's period re-assignment dropped (chosen); (b) keep the three-argument call and the re-assignment |
+| Decision | (a). `rebuild_tables` passes `split.in_sample_end` as `is_end` (the period boundary), `data.end` as `truncate_at` and the project's `FROZEN.lock` as `lock_path`. The builder labels `period` from `realised_on` (contract 7, through `src.backtest.forward_returns`, the rule 08 applied before), and 08 still checks the table with `validate_forward_returns`. The forward returns are now built first, before `build_tables` and `build_labels`, so without `FROZEN.lock` the builder raises `OOSAccessError` before any other table is computed and nothing is written. The values, `realised_on` and `period` are those of the previous code. Open point for Eliya, not changed here (his file, S34-1): `build_labels(daily_open, daily_close, is_end)` has no `truncate_at`, so 08 still calls it with `data.end` as `is_end`, and inside it `build_forward_returns` runs with a late `is_end` and no lock check. In 08 that call now runs only after the guarded call above has passed |
+| Rationale | The builder's own check now protects the Out-of-Sample path, as S37-2 intended, and 08 keeps no second copy of the period rule |
+| Evidence | S37-8 (1): "08 should move to `build_forward_returns(daily_open, daily_close, is_end, truncate_at=end, lock_path=<FROZEN.lock>)` and drop its period re-assignment."; S37-2 (signature and lock rule); contract 7; Instruction (a): "08_run_oos.py: call build_forward_returns(..., is_end, truncate_at=end, lock_path=FROZEN.lock) as S37-2 provides, so the function's own lock check protects the OOS path. Tests."; tests `test_rebuild_tables_passes_the_truncation_and_the_lock_to_the_builder`, `test_rebuild_tables_is_refused_by_the_builder_without_the_lock`, `test_the_full_range_tables_reach_the_data_end_with_periods_by_realisation` (unchanged, passes) |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py` |
+| Amendment | No |
+
+### S38-2 · `07_evaluate.py --period OOS` takes its DSR and PBO matrix from `selection_bias.json` (supersedes the matrix of S34-11)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | S37-7 found that 07's Out-of-Sample report built its In-Sample trial matrix from `outputs/backtests/` only. That gives 16 columns instead of the 28 of `selection_bias.json` (S37-9), so its In-Sample DSR and PBO would differ from the recorded ones. Which matrix does 07 use? |
+| Options considered | (a) rebuild the matrix from the columns that `outputs/metrics/selection_bias.json` declares (contract 15: `name`, `kind`, `spec_hash`, `source`, in its order), and check the In-Sample DSR and PBO against the file's values (chosen); (b) import 05's `trial_matrix` (a function of Eliya's file that is not in the contract); (c) copy the file's values without recomputing them |
+| Decision | (a). `07_evaluate.py: trial_matrix` reads `selection_bias.json` and stops (`SystemExit`) in these cases: the file is missing; its columns and `excluded` rows do not cover each `spec_hash` of `docs/trial_log.csv` exactly once; its `dsr.n_trials` is not the trial log's row count; a column's `source` is not a `weekly.csv` under `outputs/backtests/` or `outputs/agent_lab/walkforward/`; the `summary.json` next to that source does not hold the column's `spec_hash`; any week is not In-Sample; or the inner join of the columns does not give exactly the file's `matrix.weeks` complete weeks. The column order is the file's, so CSCV breaks ties as 05 does (S37-8: `M1_a0.1` and `M1_a1` are equal columns). The new `in_sample_inference` stops unless the file's `selected` is the run's selected model. It computes the selected model's In-Sample DSR (`src.stats.deflated_sharpe_ratio`, N = trial-log rows) and PBO (`src.stats.pbo_cscv`, `inference.pbo_blocks`), and stops unless each is within 1e-12 of the file's `dsr.value` and `pbo.value`. It reads In-Sample outputs only, so it can be run before the freeze. `inference_row` adds the Out-of-Sample DSR against the same trial Sharpes, as information (S34-11). `oos_inference.csv` gains `matrix_columns_agent` and keeps its other columns. On the real outputs this means the 28 columns and the In-Sample DSR 3.1e-5 and PBO 0.293 of S37-9. They were not recomputed on this machine, which holds neither `selection_bias.json` nor `outputs/agent_lab/`. The synthetic test writes the file with 05's own `selection_bias` and checks the match |
+| Rationale | One matrix for the selection-bias numbers in every report. (a) depends only on a file format the contract declares, not on another owner's private code. Recomputing and comparing catches a stale file or a changed column, where (c) would not |
+| Evidence | S37-7: "`07_evaluate.py --period OOS` builds its In-Sample matrix from `outputs/backtests/` only, so it would hold 16 columns, not 28, and its In-Sample DSR and PBO would differ from these; it is Mattia's file, so this is an open point for him (read the agent folders or `selection_bias.json`)"; S37-9 (DSR 3.1e-5, N = 56, PBO 0.293 over 28 configurations); S34-11; `docs/interfaces.md` contract 15 (`selection_bias.json`: `matrix` "one entry per column: `name`, `kind`, `rung`, `spec_hash`, `trial_ids`, `aliases`, `source`" and `excluded`); §10 validation hierarchy items 2 and 3; Instruction (b): "07_evaluate.py --period OOS (S34-11): build the DSR/PBO matrix from the same configurations as outputs/metrics/selection_bias.json (including the 12 agent candidates' weekly returns that 05 --agent-returns re-scores), so its In-Sample DSR and PBO match S37-9. Tests."; tests `test_oos_inference_uses_the_matrix_of_selection_bias`, `test_oos_inference_needs_selection_bias`, `test_oos_inference_refuses_a_selection_bias_that_does_not_match` (6 cases), `test_oos_inference_refuses_a_stale_or_changed_column` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: applies §10 and §11 with the matrix of S37-7 |
+
+### S38-3 · The temporary git repositories of `tests/test_run_oos_script.py` are copied without git's lock files
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | On macOS CI (PR #19) the fixture that copies the temporary git repository failed with `shutil.Error` on `.git/objects/maintenance.lock`. Git's background auto-maintenance, started by a commit, deleted the file during `copytree`. How is the copy made reliable? |
+| Options considered | (a) turn git's automatic housekeeping off in the fixture's repository (`gc.auto 0`, `maintenance.auto false`, set after `git init` and before the first commit) and copy with an ignore of `*.lock` inside `.git/` only (chosen); (b) `shutil.ignore_patterns("*.lock")`, which applies at every depth and would drop the committed `FROZEN.lock` that the frozen and run copies need; (c) `git clone`, which would not copy the git-ignored `data/` and `outputs/` the tests need |
+| Decision | (a). `init_repo` runs `git init` and sets both settings in `.git/config`, so every copy inherits them. `copy_repo` replaces every `shutil.copytree` of the file (five places) and skips names ending in `.lock` under `.git/` only. `FROZEN.lock` and any other file outside `.git/` are copied. No test assertion changed |
+| Rationale | Turning maintenance off removes the cause. The ignore keeps the copy safe from any lock git still creates. Restricting the ignore to `.git/` keeps the frozen projects intact |
+| Evidence | Instruction (c): "tests/test_run_oos_script.py: the fixture that copies its temporary git repository is flaky on macOS (shutil.Error on .git/objects/maintenance.lock, CI log of PR #19): git's background auto-maintenance deletes a lock file during copytree. In the fixture's repo, set gc.auto 0 and maintenance.auto false, and copy with an ignore for *.lock (or use git clone instead of copytree)."; tests `test_copy_repo_skips_git_lock_files_and_keeps_frozen_lock`, `test_project_copies_keep_automatic_git_housekeeping_off` |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `tests/test_run_oos_script.py` |
+| Amendment | No: test infrastructure |
+
 ## 2026-11-06 · Session 4.0: attribution policy, then Amendment 9
 
 "Instruction" quotes Eliya's instruction of 6 Nov 2026. It came after the commit of the Amendment 9 draft was refused by

@@ -570,21 +570,19 @@ def append_entry(root: Path, lock: dict, decision: RerunDecision | None = None) 
 def rebuild_tables(root: Path, cfg: dict, out_dir: Path | None = None) -> dict:
     """The full-range tables through 03's unlock path (S34-5), written to out_dir (default data/processed/oos/; a
     rerun's data/processed/oos_reruns/<ID>/, S36-1): the six tables of
-    03_build_features.py built from the inputs cut at data.end; the forward returns' period re-assigned from realised_on
-    against split.in_sample_end (contract 7). Returns 03's {file: rows, dates, columns, bytes, sha256}."""
+    03_build_features.py built from the inputs cut at data.end. The forward returns come from
+    build_forward_returns(..., is_end, truncate_at=data.end, lock_path=FROZEN.lock) (S37-2, S38-1): the builder labels
+    the period from realised_on against split.in_sample_end (contract 7) and raises OOSAccessError itself unless
+    FROZEN.lock exists. Returns 03's {file: rows, dates, columns, bytes, sha256}."""
     s03 = features_script()
     data_dir = Path(root) / cfg["data"]["data_dir"]
     end, is_end = pd.Timestamp(cfg["data"]["end"]), pd.Timestamp(cfg["split"]["in_sample_end"])
     daily_close, vix, fred = s03.load_inputs(data_dir, end=end, cfg=cfg)
     daily_open = s03.load_opens(data_dir, end=end)
+    forward = s03.build_forward_returns(daily_open, daily_close, is_end, truncate_at=end, lock_path=lock_path(root))
+    validate_forward_returns(*s03.split_forward_returns(forward), is_end=is_end)
     tables = s03.build_tables(daily_close, vix, fred, cfg)
     tables["labels"] = s03.build_labels(daily_open, daily_close, end)
-    forward = s03.build_forward_returns(daily_open, daily_close, end)
-    realised = pd.DatetimeIndex(forward["realised_on"])
-    period = np.where(realised <= is_end, "IS", "OOS").astype(object)
-    period[realised.isna()] = None
-    forward["period"] = period
-    validate_forward_returns(*s03.split_forward_returns(forward), is_end=is_end)
     tables["forward_returns"] = forward
     out_dir = oos_data_dir(root, cfg) if out_dir is None else Path(out_dir)
     return s03.write_tables(tables, out_dir, is_end, lock_path(root), allow_oos=True)
