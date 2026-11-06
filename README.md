@@ -21,19 +21,38 @@ macOS: run `brew install libomp` once (LightGBM needs the OpenMP runtime).
 
 ```bash
 uv sync                                    # Python 3.12 and every dependency, pinned by uv.lock
-uv run python 00_smoke_test_data.py        # check that every data series is available (saves nothing)
-uv run python 01_download_data.py          # download once, archive with checksums, build the weekly panel
-uv run python 02_validate_data.py          # QA gates -> docs/qa_report.md and data/qa/
-uv run python 03_build_features.py         # features and market states            (Gate 2)
-uv run python 04_agent_lab.py              # research lab, replayed from data/cache/ (Gate 2)
-uv run python 05_train_walkforward.py --model M0  # AI ladder, walk-forward In-Sample (Gate 2)
-uv run python 06_backtest.py               # sizing, hedge, costs                   (Gate 2)
-uv run python 07_evaluate.py               # metrics, selection gate, plots         (Gate 3)
-uv run python 08_run_oos.py                # single Out-of-Sample run               (Gate 4)
+uv run python run_all.py                   # the whole In-Sample pipeline, from the raw snapshot, in one command
 uv run pytest                              # tests on a synthetic fixture
 ```
 
-Scripts marked with a gate are implemented in that gate of the calendar and stop with `NotImplementedError` until then.
+`run_all.py` needs the raw data in `data/raw/` (it is in the submission zip; team members see [Contributing](#contributing))
+and never downloads anything. It runs these commands in order, each as its own process, and they can also be run one by
+one:
+
+```bash
+uv run python 01_download_data.py          # verify data/raw/ against its checksums, rebuild data/processed/ (offline)
+uv run python 03_build_features.py         # features, market states, labels, forward returns (In-Sample)
+uv run python 05_train_walkforward.py --model M0   # walk-forward of each rung (M0, M1, M2, M3, ENS, M0_star) ...
+uv run python 05_train_walkforward.py --fixed M1_a1  # ... and of each fixed grid value (the list is read from 05)
+uv run python 06_backtest.py --all         # In-Sample backtest of every walk-forward
+uv run python 06_backtest.py --shift-check M0 M1 M2 M3 ENS M0_star   # one-week-shift leakage check
+uv run python 06_backtest.py --placebo     # placebo books
+uv run python 05_train_walkforward.py --agent-returns   # agent candidates re-scored through the sealed vault
+uv run python 05_train_walkforward.py --select          # selection gate, trial metrics, DSR and PBO
+uv run python 07_evaluate.py               # In-Sample metrics, benchmarks and plots
+uv run python 06_backtest.py --ledger-years  # ledger reconciliation of the engine (last)
+```
+
+It stops at the first failing step and names it, and it ends with a table of every step and its time. Two runs give the
+same files (the access logs aside). In a git checkout it refuses uncommitted changes and fails if a step changes a
+tracked file; outside one (the zip) it says that this check is skipped. Once `FROZEN.lock` exists it refuses unless
+`--after-freeze` is given; `--agent-returns` and `--select` are then skipped, because their outputs are frozen.
+
+`run_all.py` never runs the other scripts. `00_smoke_test_data.py` checks that every series can be downloaded;
+`02_validate_data.py` runs the data QA gates (`docs/qa_report.md`); `04_agent_lab.py` is the agent research lab, whose
+results replay from the committed caches under `agent_lab/`; `08_run_oos.py` is the single Out-of-Sample run (Gate 4),
+run by hand once, then `07_evaluate.py --period OOS`.
+
 All settings are in [config.yaml](config.yaml); each script refuses outputs built with a different configuration.
 
 ## Contributing
