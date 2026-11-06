@@ -2,7 +2,9 @@
 the plots, built from the outputs of 06_backtest.py on the synthetic market laid out as real data (decisions S32-1 to
 S32-6)."""
 
+import contextlib
 import copy
+import csv
 import importlib.util
 import json
 
@@ -169,6 +171,46 @@ def _oos_helpers():
     return module
 
 
+def add_agent_trials(helpers, root, cfg) -> dict:
+    """Two synthetic agent rows appended to the trial log, one that reached the walk-forward (with its folder of S37-6:
+    weekly.csv and summary.json, net returns derived from M0's) and one that stopped before it; then
+    outputs/metrics/selection_bias.json written by 05's own selection_bias (S37-7), the reference of S38-2."""
+    s05 = helpers.load("oos_evaluate_05", "05_train_walkforward.py")
+    rows = s05.trial_rows(root)
+    first = max(int(row["trial_id"]) for row in rows) + 1
+    with open(root / "docs" / "trial_log.csv", "a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        for offset, stage in enumerate(("walk_forward", "invalid_spec")):
+            spec = {"rung": "M2", "agent_feature": f"synthetic_{offset + 1}"}
+            writer.writerow([first + offset, "2026-11-05T00:00:00+00:00", "agent", "agent", "M2", spec_hash(spec, cfg),
+                             json.dumps(spec, sort_keys=True, separators=(",", ":")), "", "",
+                             json.dumps({"stage": stage, "candidate": offset + 1})])
+    m0 = s05.read_weekly(root / "outputs" / "backtests" / "M0" / "weekly.csv")
+    weekly = m0[["realised_on", "period", "net", "rf"]].copy()
+    weekly["net"] = 0.6 * m0["net"] + 0.002 * np.sin(np.arange(len(m0)))
+    folder = root / "outputs" / "agent_lab" / "walkforward" / "agent_c01"
+    write_csv(weekly, folder / "weekly.csv")
+    agent_hash = spec_hash({"rung": "M2", "agent_feature": "synthetic_1"}, cfg)
+    (folder / "summary.json").write_text(json.dumps({"trial_id": first, "candidate": 1, "spec_hash": agent_hash}),
+                                         encoding="utf-8")
+    bias = s05.selection_bias(cfg, root, "M0_star")
+    path = root / "outputs" / "metrics" / "selection_bias.json"
+    path.write_text(json.dumps(bias, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    helpers.commit(root, "data: synthetic agent trials")
+    return bias
+
+
+@contextlib.contextmanager
+def changed(path, edit):
+    """Rewrite a file of the shared OOS layout with edit(text) for the duration of the block, then restore it."""
+    original = path.read_bytes()
+    path.write_text(edit(original.decode("utf-8")), encoding="utf-8")
+    try:
+        yield
+    finally:
+        path.write_bytes(original)
+
+
 @pytest.fixture
 def oos_layout(script, synthetic_market, tmp_path_factory, monkeypatch):
     if not _OOS:
@@ -178,11 +220,12 @@ def oos_layout(script, synthetic_market, tmp_path_factory, monkeypatch):
         order = load_config()["models"]["candidate_order"]
         gate = {"selected": "M0_star", "candidates": [{"name": name, "status": "absent"} for name in order]}
         cfg = helpers.build_project(root, synthetic_market, walkforwards=("M0", "M0_star"), gate_content=gate)
+        bias = add_agent_trials(helpers, root, cfg)
         run_script = helpers.load("oos_evaluate_08", "08_run_oos.py")
         run_script.freeze(root)
         helpers.commit(root, "docs: lock")
         run_script.run_oos(root)
-        _OOS.update(root=root, cfg=cfg, helpers=helpers)
+        _OOS.update(root=root, cfg=cfg, helpers=helpers, bias=bias)
     monkeypatch.setattr(script, "ROOT", _OOS["root"])
     monkeypatch.setattr(script.bt, "ROOT", _OOS["root"])
     return _OOS
@@ -248,9 +291,88 @@ def test_oos_secondary_and_inference(script, oos_layout):
                                             and secondary["max_drawdown"] > secondary["spy_max_drawdown"])
     inference = tables["inference"].loc["M0_star"]
     assert inference["n_trials"] == len(pd.read_csv(root / "docs" / "trial_log.csv"))
-    assert inference["matrix_columns"] == 2  # M0 and M0_star: two spec_hashes of the trial log
     for key in ("dsr_in_sample", "dsr_out_of_sample", "pbo"):
         assert 0.0 <= inference[key] <= 1.0
+
+
+def test_oos_inference_uses_the_matrix_of_selection_bias(script, oos_layout):
+    """S38-2: the columns of selection_bias.json (M0, M0_star and the agent candidate), and its In-Sample DSR and PBO."""
+    bias = oos_layout["bias"]
+    assert [c["name"] for c in bias["matrix"]["columns"]] == ["M0", "M0_star", "agent_c01"]
+    assert len(bias["excluded"]) == 1 and bias["excluded"][0]["stage"] == "invalid_spec"
+    inference = script.evaluate_oos(oos_layout["cfg"])["inference"].loc["M0_star"]
+    assert inference["matrix_columns"] == 3 and inference["matrix_columns_agent"] == 1
+    assert inference["matrix_weeks"] == bias["matrix"]["weeks"] and inference["n_trials"] == bias["dsr"]["n_trials"]
+    assert inference["dsr_in_sample"] == pytest.approx(bias["dsr"]["value"], abs=1e-12, rel=0)
+    assert inference["pbo"] == pytest.approx(bias["pbo"]["value"], abs=1e-12, rel=0)
+
+
+def _bias_check(script, oos_layout):
+    return script.in_sample_inference(oos_layout["cfg"], script.load_run_script(), "M0_star")
+
+
+def test_oos_inference_needs_selection_bias(script, oos_layout):
+    path = oos_layout["root"] / "outputs" / "metrics" / "selection_bias.json"
+    original = path.read_bytes()
+    path.unlink()
+    try:
+        with pytest.raises(SystemExit, match="selection_bias.json not found"):
+            _bias_check(script, oos_layout)
+    finally:
+        path.write_bytes(original)
+    assert _bias_check(script, oos_layout)[0]["matrix_columns"] == 3
+
+
+def _edit_json(edit):
+    def apply(text):
+        content = json.loads(text)
+        edit(content)
+        return json.dumps(content)
+    return apply
+
+
+@pytest.mark.parametrize("case, expected", [
+    ("pbo", "In-Sample PBO .* differs"),
+    ("dsr", "In-Sample DSR .* differs"),
+    ("selected", "written for M0, the run selected M0_star"),
+    ("n_trials", "counts 99 trials"),
+    ("drop_column", "do not cover each spec_hash"),
+    ("source", "not a backtest or agent weekly.csv"),
+])
+def test_oos_inference_refuses_a_selection_bias_that_does_not_match(script, oos_layout, case, expected):
+    edits = {
+        "pbo": lambda c: c["pbo"].update(value=c["pbo"]["value"] + 1e-6),
+        "dsr": lambda c: c["dsr"].update(value=c["dsr"]["value"] + 1e-6),
+        "selected": lambda c: c.update(selected="M0"),
+        "n_trials": lambda c: c["dsr"].update(n_trials=99),
+        "drop_column": lambda c: c["matrix"].update(columns=c["matrix"]["columns"][:2]),
+        "source": lambda c: c["matrix"]["columns"][2].update(source="outputs/oos/M0/weekly.csv"),
+    }
+    path = oos_layout["root"] / "outputs" / "metrics" / "selection_bias.json"
+    with changed(path, _edit_json(edits[case])), pytest.raises(SystemExit, match=expected):
+        _bias_check(script, oos_layout)
+
+
+def test_oos_inference_refuses_a_stale_or_changed_column(script, oos_layout):
+    folder = oos_layout["root"] / "outputs" / "agent_lab" / "walkforward" / "agent_c01"
+    with changed(folder / "summary.json", _edit_json(lambda c: c.update(spec_hash="0" * 64))), \
+            pytest.raises(SystemExit, match="does not hold the spec_hash of column agent_c01"):
+        _bias_check(script, oos_layout)
+    lines = (folder / "weekly.csv").read_text(encoding="utf-8").splitlines(keepends=True)
+    header, rows = lines[0], lines[1:]
+    with changed(folder / "weekly.csv", lambda _: header + "".join(rows[:-1])), \
+            pytest.raises(SystemExit, match="complete common weeks"):
+        _bias_check(script, oos_layout)
+    net = header.strip().split(",").index("net")
+
+    def bump(_):
+        first = rows[0].rstrip("\n").split(",")
+        first[net] = repr(float(first[net]) + 0.01)
+        return header + ",".join(first) + "\n" + "".join(rows[1:])
+    with changed(folder / "weekly.csv", bump), pytest.raises(SystemExit, match="differs from"):
+        _bias_check(script, oos_layout)
+    assert _bias_check(script, oos_layout)[0]["dsr_in_sample"] == pytest.approx(oos_layout["bias"]["dsr"]["value"],
+                                                                               abs=1e-12, rel=0)
 
 
 def test_oos_evaluation_refuses_before_the_run(script, tmp_path, monkeypatch):

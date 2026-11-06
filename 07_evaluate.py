@@ -12,7 +12,9 @@ Outputs: outputs/metrics/  is_models.csv (one row per model), is_benchmarks.csv,
 --period OOS (decisions S34-8 to S34-11): only after the single run of 08_run_oos.py (FROZEN.lock and exactly one entry in
 outputs/oos_access_log.json for it). Reads outputs/oos/ and writes outputs/metrics/oos_models.csv (per model and period),
 oos_benchmarks.csv, oos_bonus.csv (the §11 market-neutral tests), oos_secondary.csv (Sharpe and drawdown vs SPY,
-Ledoit-Wolf), oos_inference.csv (DSR with the full trial count, PBO), oos_used.yaml, and outputs/plots/oos_*.
+Ledoit-Wolf), oos_inference.csv (DSR with the full trial count, PBO), oos_used.yaml, and outputs/plots/oos_*. The DSR and
+PBO matrix is the one of outputs/metrics/selection_bias.json (05_train_walkforward.py --select, S37-7), rebuilt from its
+column sources (outputs/backtests/ and outputs/agent_lab/walkforward/) and checked against its values (S38-2).
 """
 
 import argparse
@@ -406,35 +408,80 @@ def secondary_row(model: str, weekly: pd.DataFrame, spy: pd.Series, selected: st
             "lw_z": test["z"], "lw_p_value": test["p_value"], "meets": meets}
 
 
-def trial_matrix(cfg: dict, run_script) -> tuple[pd.DataFrame, int]:
-    """In-Sample baseline net returns of every backtested trial (decision S34-11): one column per distinct spec_hash of
-    the trial log, on the common weeks; and N = the number of trial-log rows (S31-7)."""
+BIAS_FILE = "outputs/metrics/selection_bias.json"  # 05_train_walkforward.py --select (S37-7)
+MATRIX_SOURCES = ("outputs/backtests/", "outputs/agent_lab/walkforward/")  # the two writers of its columns (S37-7)
+BIAS_TOLERANCE = 1e-12  # In-Sample DSR and PBO against selection_bias.json (S38-2; tolerances, never hashes)
+
+
+def trial_matrix(cfg: dict, run_script) -> tuple[pd.DataFrame, int, dict]:
+    """(matrix, N, selection_bias.json) for the DSR and PBO (decisions S34-11, S38-2). The matrix holds the In-Sample
+    baseline weekly net returns of exactly the columns of outputs/metrics/selection_bias.json, in its order (the backtest
+    folders and the agent candidates of S37-6, S37-7), on their common weeks; N = the number of trial-log rows (S31-7).
+    Stops unless the file's columns and excluded rows cover every spec_hash of the trial log once, its N is the trial
+    log's, each column's summary.json holds the column's spec_hash, and every week is In-Sample."""
+    path = ROOT / BIAS_FILE
+    if not path.exists():
+        raise SystemExit(f"refused: {BIAS_FILE} not found; it is written by 05_train_walkforward.py --select (S37-7)")
+    bias = _read_json(path)
     trial_log = ROOT / run_script.TRIAL_LOG
     hashes = run_script.logged_spec_hashes(trial_log)
     n_trials = len(pd.read_csv(trial_log))
-    columns = {}
-    for model in backtested_models():
-        digest = _read_json(ROOT / "outputs" / "backtests" / model / "summary.json").get("spec_hash")
-        if digest not in hashes:
-            raise SystemExit(f"refused: outputs/backtests/{model} has spec_hash {str(digest)[:12]}…, not a trial-log row")
-        if digest not in columns:
-            weekly = read_weekly(ROOT / "outputs" / "backtests" / model / "weekly.csv")
-            refuse_non_in_sample(weekly, pd.Timestamp(cfg["split"]["in_sample_end"]), f"outputs/backtests/{model}")
-            columns[digest] = weekly["net"].rename(model)
-    matrix = pd.concat(list(columns.values()), axis=1).dropna()
-    return matrix, n_trials
+    described = bias["matrix"]["columns"]
+    covered = [c["spec_hash"] for c in described]
+    excluded = [e["spec_hash"] for e in bias["excluded"]]
+    if len(set(covered + excluded)) != len(covered) + len(excluded) or set(covered + excluded) != hashes:
+        raise SystemExit(f"refused: the columns and excluded rows of {BIAS_FILE} do not cover each spec_hash of "
+                         f"{run_script.TRIAL_LOG} exactly once (stale)")
+    if bias["dsr"]["n_trials"] != n_trials:
+        raise SystemExit(f"refused: {BIAS_FILE} counts {bias['dsr']['n_trials']} trials, {run_script.TRIAL_LOG} has "
+                         f"{n_trials} rows (stale)")
+    is_end = pd.Timestamp(cfg["split"]["in_sample_end"])
+    columns = []
+    for column in described:
+        source = str(column["source"])
+        if not source.startswith(MATRIX_SOURCES) or not source.endswith("/weekly.csv") or ".." in source:
+            raise SystemExit(f"refused: {BIAS_FILE} names the source {source!r}, not a backtest or agent weekly.csv")
+        folder = ROOT / Path(source).parent
+        if _read_json(folder / "summary.json").get("spec_hash") != column["spec_hash"]:
+            raise SystemExit(f"refused: {Path(source).parent.as_posix()}/summary.json does not hold the spec_hash of "
+                             f"column {column['name']} of {BIAS_FILE} (stale)")
+        weekly = read_weekly(ROOT / source)
+        refuse_non_in_sample(weekly, is_end, source)
+        columns.append(weekly["net"].astype(np.float64).rename(column["name"]))
+    matrix = pd.concat(columns, axis=1, join="inner")
+    if matrix.empty or matrix.isna().any().any() or len(matrix) != bias["matrix"]["weeks"]:
+        raise SystemExit(f"refused: the trial matrix has {len(matrix)} complete common weeks, {BIAS_FILE} records "
+                         f"{bias['matrix']['weeks']}")
+    return matrix, n_trials, bias
+
+
+def in_sample_inference(cfg: dict, run_script, selected: str) -> tuple[dict, pd.DataFrame, int]:
+    """In-Sample DSR of the selected model and PBO on the matrix of trial_matrix (S34-11, S38-2), checked against
+    selection_bias.json within BIAS_TOLERANCE. Reads In-Sample outputs only. Returns (row, matrix, N)."""
+    matrix, n_trials, bias = trial_matrix(cfg, run_script)
+    if bias["selected"] != selected:
+        raise SystemExit(f"refused: {BIAS_FILE} was written for {bias['selected']}, the run selected {selected}")
+    path = ROOT / "outputs" / "backtests" / selected / "weekly.csv"
+    if not path.exists():
+        raise SystemExit(f"refused: {path.relative_to(ROOT).as_posix()} not found")
+    weekly = read_weekly(path)
+    refuse_non_in_sample(weekly, pd.Timestamp(cfg["split"]["in_sample_end"]), f"outputs/backtests/{selected}")
+    dsr = stats.deflated_sharpe_ratio(weekly["net"], n_trials, trial_returns=matrix)
+    pbo = stats.pbo_cscv(matrix, int(cfg["inference"]["pbo_blocks"]))
+    for name, value, recorded in (("DSR", dsr, bias["dsr"]["value"]), ("PBO", pbo, bias["pbo"]["value"])):
+        if not abs(value - float(recorded)) <= BIAS_TOLERANCE:
+            raise SystemExit(f"refused: the In-Sample {name} {value!r} differs from {recorded!r} in {BIAS_FILE}")
+    row = {"selected": selected, "n_trials": n_trials, "matrix_columns": matrix.shape[1],
+           "matrix_columns_agent": sum(c["kind"] == "agent" for c in bias["matrix"]["columns"]),
+           "matrix_weeks": matrix.shape[0], "dsr_in_sample": dsr, "pbo": pbo}
+    return row, matrix, n_trials
 
 
 def inference_row(cfg: dict, run_script, selected: str, selected_oos: pd.Series) -> dict:
-    """DSR with the full trial count and PBO (decision S34-11)."""
-    matrix, n_trials = trial_matrix(cfg, run_script)
-    is_path = ROOT / "outputs" / "backtests" / selected / "weekly.csv"
-    selected_is = read_weekly(is_path)["net"] if is_path.exists() else None
-    return {"selected": selected, "n_trials": n_trials, "matrix_columns": matrix.shape[1], "matrix_weeks": matrix.shape[0],
-            "dsr_in_sample": (stats.deflated_sharpe_ratio(selected_is, n_trials, trial_returns=matrix)
-                              if selected_is is not None else np.nan),
-            "dsr_out_of_sample": stats.deflated_sharpe_ratio(selected_oos, n_trials, trial_returns=matrix),
-            "pbo": stats.pbo_cscv(matrix, int(cfg["inference"]["pbo_blocks"]))}
+    """DSR with the full trial count and PBO (decisions S34-11, S38-2): the In-Sample values of in_sample_inference,
+    and the DSR of the selected model's Out-of-Sample net returns against the same trial Sharpes, as information."""
+    row, matrix, n_trials = in_sample_inference(cfg, run_script, selected)
+    return row | {"dsr_out_of_sample": stats.deflated_sharpe_ratio(selected_oos, n_trials, trial_returns=matrix)}
 
 
 def evaluate_oos(cfg: dict) -> dict[str, pd.DataFrame]:
