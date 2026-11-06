@@ -319,3 +319,78 @@ def test_no_tracked_file_of_this_repository_holds_a_key_like_string():
         pytest.skip("not a git clone (e.g. the submission zip)")
     present = [path for path in tracked if (REPO / path).is_file()]
     assert make_submission.key_findings(REPO, present, env={}) == []
+
+
+# ---------------------------------------------------------------- round-2 output folders (Amendment 9, S42-3)
+
+ROUND2 = ("M7", "M7_a0.1_h2", "M8_d2_h4", "M6_a999")  # M6_a999: a round-2 shape, but 999 is no grid value of
+# config.yaml, so 05 never has a spec for it (before and after session 4.1)
+
+
+@pytest.fixture
+def round2_project(project, monkeypatch):
+    """The project plus round-2 walk-forward and backtest folders and a shift check of M7, each with the used.yaml its
+    writer saves. 05 has no spec for a round-2 name before session 4.1, so its spec_for is stubbed for them with a spec
+    that holds config.yaml's round2 section, as a round-2 trial's identity does."""
+    import json
+
+    from src.vault import spec_hash
+
+    root, cfg = project["root"], project["cfg"]
+    bt = make_submission._script("06_backtest.py")
+    s05 = bt._walkforward_script()
+    real = s05.spec_for
+    monkeypatch.setattr(s05, "spec_for", lambda name, c: {"rung": name, "round2": c["round2"]}
+                        if make_submission._script("07_evaluate.py").model_round(name) == 2 else real(name, c))
+    for name in ROUND2:
+        digest = spec_hash(s05.spec_for(name, cfg), cfg)
+        walk, back = root / "outputs" / "walkforward" / name, root / "outputs" / "backtests" / name
+        make_files(root, [f"outputs/walkforward/{name}/scores.csv", f"outputs/backtests/{name}/weekly.csv"])
+        save_used(walkforward_settings(cfg), walk / "used.yaml")
+        save_used(bt.backtest_used(cfg, name), back / "used.yaml")
+        for folder in (walk, back):
+            (folder / "summary.json").write_text(json.dumps({"spec_hash": digest}), encoding="utf-8")
+    save_used(bt.backtest_used(cfg, "M7"), root / "outputs" / "diagnostics" / "shift" / "M7" / "used.yaml")
+    return project | {"real_spec_for": real}
+
+
+def test_round_2_folders_ship_when_their_identity_is_current(round2_project):
+    build(round2_project)
+    with zipfile.ZipFile(round2_project["out"]) as archive:
+        names = set(archive.namelist())
+    for name in ROUND2:
+        assert {f"project/outputs/walkforward/{name}/summary.json", f"project/outputs/backtests/{name}/used.yaml"} <= names
+    assert "project/outputs/diagnostics/shift/M7/used.yaml" in names
+
+
+def test_output_model_names_the_model_of_a_model_folder():
+    assert make_submission.output_model("outputs/walkforward/M7_a0.1_h2/used.yaml") == "M7_a0.1_h2"
+    assert make_submission.output_model("outputs/backtests/M8_d2_h4/used.yaml") == "M8_d2_h4"
+    assert make_submission.output_model("outputs/diagnostics/shift/M7/used.yaml") == "M7"
+    for path in ("outputs/metrics/used.yaml", "outputs/oos/M7/used.yaml", "outputs/walkforward/M7/summary.json",
+                 "outputs/diagnostics/placebo/used.yaml"):
+        assert make_submission.output_model(path) is None
+
+
+def test_a_round_2_setting_change_stops_the_build_although_every_used_yaml_matches(round2_project):
+    """round2: is outside every used.yaml (S40-1): check_used passes, the spec_hash check refuses (S42-3)."""
+    import yaml
+
+    root = round2_project["root"]
+    cfg = copy.deepcopy(round2_project["cfg"])
+    cfg["round2"]["smoothing"]["half_life_weeks"] = [2, 8]
+    with open(root / "config.yaml", "w", encoding="utf-8", newline="\n") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    commit_all(root)
+    assert [p for p in make_submission.stale_outputs(root, make_submission.submission_files(root), cfg)
+            if "different config.yaml" in p] == []
+    refused(round2_project, r"outputs/walkforward/M7/summary.json: spec_hash .*round-2 setting changed")
+
+
+def test_a_round_2_folder_without_its_summary_or_spec_is_refused(round2_project, monkeypatch):
+    root = round2_project["root"]
+    (root / "outputs" / "backtests" / "M6_a999" / "summary.json").unlink()
+    refused(round2_project, r"outputs/backtests/M6_a999/summary.json: missing")
+    s05 = make_submission._script("06_backtest.py")._walkforward_script()
+    monkeypatch.setattr(s05, "spec_for", round2_project["real_spec_for"])  # the real 05: no spec for M6_a999
+    refused(round2_project, r"outputs/walkforward/M6_a999/: M6_a999: 05_train_walkforward.py has no spec for this name")

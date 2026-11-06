@@ -17,7 +17,8 @@ decision S34-1), with the bug-fix rerun of Amendment 8 (decision S36-1).
              freeze; then every check of the run, one more log entry naming ID, and the same run written to
              data/processed/oos_reruns/ID/ and outputs/oos_reruns/ID/, so the run of record's outputs stay untouched.
 
-Inputs:  FROZEN.lock, config.yaml, docs/trial_log.csv, outputs/metrics/selection_gate.json (src.stats.selection_gate),
+Inputs:  FROZEN.lock, config.yaml, docs/trial_log.csv, outputs/metrics/selection_gate.json (src.stats.selection_gate;
+         the candidates of both rounds, Amendment 9 C3, S42-1),
          outputs/walkforward/<model>/, data/processed/ (the frozen In-Sample tables and daily prices), data/raw/
 Outputs: FROZEN.lock (--freeze); outputs/oos_access_log.json, data/processed/oos/*.csv, outputs/oos/run.json and
          outputs/oos/<model>/{scores.csv, weekly.csv, metrics.csv, summary.json, used.yaml} (the run; git-ignored);
@@ -296,44 +297,122 @@ def check_oos_log_text(text: str, where: str = OOS_LOG, decisions_text: str = ""
     return check_oos_log_entries(parse_oos_log(text, where), decisions_text, where)
 
 
-# -- the selection gate's output (decision S34-3) -----------------------------------------------------------------------
+# -- the selection gate's output (decisions S34-3, S42-1) ---------------------------------------------------------------
+
+FALLBACK = "M0_star"  # traded when no candidate passes (§07 step 5, Amendment 9 C3)
+GATE_NUMBERS = ("sharpe", "sharpe_m0", "mdd", "mdd_m0", "p_uplift_positive")  # every evaluated row (src.stats.selection_gate)
+GATE_VERDICTS = ("passes_sharpe", "passes_mdd", "passes_bootstrap", "passes")
+
+
+def candidate_rounds(cfg: dict) -> tuple[list[str], list[str]]:
+    """(round-1, round-2) candidates in order: models.candidate_order and round2.candidate_order. Amendment 9 C3 appends
+    the second after the first; a config without a round2 section has no round-2 candidate."""
+    return list(cfg["models"]["candidate_order"]), list((cfg.get("round2") or {}).get("candidate_order", []))
+
+
+def bootstrap_threshold(name: str, cfg: dict) -> float:
+    """The P(uplift > 0) threshold of a candidate's gate: selection.bootstrap_prob (0.80) in round 1,
+    round2.selection.bootstrap_prob (0.90) in round 2 (Amendment 9 C3). The Sharpe uplift and the drawdown tolerance are
+    those of selection: in both rounds."""
+    first, second = candidate_rounds(cfg)
+    if name in first:
+        return float(cfg["selection"]["bootstrap_prob"])
+    if name in second:
+        return float(cfg["round2"]["selection"]["bootstrap_prob"])
+    raise ValueError(f"{name} is not a candidate of models.candidate_order or round2.candidate_order")
+
+
+def _first_passing(rows: list[dict]) -> str:
+    return next((row["name"] for row in rows if row["status"] == "evaluated" and row["passes"]), FALLBACK)
+
+
+def check_gate(gate, cfg: dict, where: str = GATE_FILE) -> dict:
+    """Validate a selection-gate JSON (S34-3, S42-1). Its candidates are models.candidate_order followed, once round 2
+    is in the file, by round2.candidate_order (Amendment 9 C3); each is `evaluated` or `absent`. Every evaluated row
+    must hold the numbers and verdicts of src.stats.selection_gate, and its verdicts must follow from its numbers: Sharpe
+    >= M0's + selection.sharpe_uplift, drawdown >= M0's - selection.mdd_tolerance, P(uplift > 0) >= its round's threshold
+    (bootstrap_threshold), and passes = all three. Every evaluated row has the same hurdle (M0's Sharpe and drawdown).
+    `selected` is the first passing candidate in the file's order, else M0_star.
+
+    Returns {"names", "complete" (round 2 listed), "selected", "round1_selected" (the first passing round-1 candidate,
+    else M0_star: the primary pre-registered result, Amendment 9 C3)}. SystemExit naming the first problem."""
+    first, second = candidate_rounds(cfg)
+    full = first + second
+    candidates = gate.get("candidates") if isinstance(gate, dict) else None
+    if not isinstance(candidates, list) or not all(isinstance(c, dict) for c in candidates):
+        raise SystemExit(f"{where}: 'candidates' must be the list returned by src.stats.selection_gate")
+    names = [c.get("name") for c in candidates]
+    if names not in (first, full):
+        raise SystemExit(f"{where}: candidates {names} differ from models.candidate_order + round2.candidate_order "
+                         f"{full} (Amendment 9 C3; a file written before round 2 lists {first})")
+    if any(c.get("status") not in ("evaluated", "absent") for c in candidates):
+        raise SystemExit(f"{where}: every candidate status must be 'evaluated' or 'absent'")
+    selected = gate.get("selected")
+    evaluated = [c for c in candidates if c["status"] == "evaluated"]
+    if selected != FALLBACK and selected not in [c["name"] for c in evaluated]:
+        raise SystemExit(f"{where}: selected {selected!r} is neither an evaluated candidate nor M0_star")
+    sel = cfg["selection"]
+    for row in evaluated:
+        name = row["name"]
+        numbers = [k for k in GATE_NUMBERS if isinstance(row.get(k), bool) or not isinstance(row.get(k), (int, float))]
+        flags = [k for k in GATE_VERDICTS if not isinstance(row.get(k), bool)]
+        if numbers or flags:
+            raise SystemExit(f"{where}: evaluated candidate {name} lacks {numbers + flags} (the row of "
+                             "src.stats.selection_gate)")
+        expected = {"passes_sharpe": row["sharpe"] >= row["sharpe_m0"] + sel["sharpe_uplift"],
+                    "passes_mdd": row["mdd"] >= row["mdd_m0"] - sel["mdd_tolerance"],
+                    "passes_bootstrap": row["p_uplift_positive"] >= bootstrap_threshold(name, cfg)}
+        expected["passes"] = all(expected.values())
+        wrong = [k for k in GATE_VERDICTS if row[k] != bool(expected[k])]
+        if wrong:
+            raise SystemExit(f"{where}: candidate {name}: {wrong} do not follow from its numbers and the thresholds "
+                             f"(Sharpe uplift {sel['sharpe_uplift']}, drawdown tolerance {sel['mdd_tolerance']}, "
+                             f"P(uplift > 0) >= {bootstrap_threshold(name, cfg)}; §07, Amendment 9 C3)")
+    if len({(row["sharpe_m0"], row["mdd_m0"]) for row in evaluated}) > 1:
+        raise SystemExit(f"{where}: the evaluated candidates do not share one hurdle (M0's Sharpe and drawdown); the "
+                         "hurdle does not change in round 2 (Amendment 9 C4)")
+    if selected != _first_passing(candidates):
+        raise SystemExit(f"{where}: selected {selected!r}, but the first passing candidate in "
+                         f"{names} is {_first_passing(candidates)!r} (§07 step 4, Amendment 9 C3)")
+    return {"names": names, "complete": names == full, "selected": selected,
+            "round1_selected": _first_passing([c for c in candidates if c["name"] in first])}
 
 
 def read_gate(root: Path, cfg: dict) -> dict:
-    """The JSON of src.stats.selection_gate at outputs/metrics/selection_gate.json: `selected` (a candidate of
-    models.candidate_order that passed, or M0_star) and `candidates` (name, status evaluated/absent, one per candidate)."""
+    """The JSON of the §07 selection step at outputs/metrics/selection_gate.json, validated by check_gate: `selected`
+    and `candidates` (name, status evaluated/absent) of models.candidate_order + round2.candidate_order (Amendment 9 C3).
+    Refused when it lists only the round-1 candidates: the order of Amendment 9 C3 includes round 2, whose candidates
+    may be absent or evaluated (S42-1)."""
     path = Path(root) / GATE_FILE
     if not path.exists():
         raise SystemExit(f"{GATE_FILE} not found: apply the §07 selection gate (src.stats.selection_gate) and save its "
                          "result there first (missing hook, S34-5)")
     gate = _read_json(path)
-    order = list(cfg["models"]["candidate_order"])
-    candidates = gate.get("candidates") if isinstance(gate, dict) else None
-    if not isinstance(candidates, list) or not all(isinstance(c, dict) for c in candidates):
-        raise SystemExit(f"{GATE_FILE}: 'candidates' must be the list returned by src.stats.selection_gate")
-    names = [c.get("name") for c in candidates]
-    if names != order:
-        raise SystemExit(f"{GATE_FILE}: candidates {names} differ from models.candidate_order {order}")
-    if any(c.get("status") not in ("evaluated", "absent") for c in candidates):
-        raise SystemExit(f"{GATE_FILE}: every candidate status must be 'evaluated' or 'absent'")
-    selected = gate.get("selected")
-    evaluated = [c["name"] for c in candidates if c["status"] == "evaluated"]
-    if selected != "M0_star" and selected not in evaluated:
-        raise SystemExit(f"{GATE_FILE}: selected {selected!r} is neither an evaluated candidate nor M0_star")
+    checked = check_gate(gate, cfg)
+    if not checked["complete"]:
+        first, second = candidate_rounds(cfg)
+        raise SystemExit(f"{GATE_FILE}: lists only the round-1 candidates {first}; Amendment 9 C3 appends {second} "
+                         "(each absent or evaluated), so the selection step must be run with round 2 first (S42-1)")
     return gate
 
 
 def run_models(gate: dict, cfg: dict) -> list[str]:
-    """The models of the OOS run (S34-6): the evaluated candidates in models.candidate_order (the selected among them),
-    then M0 and M0_star; ENS adds its members."""
+    """The models of the OOS run (S34-6): the evaluated candidates in models.candidate_order + round2.candidate_order
+    (the selected among them), then M0 and M0_star; ENS adds its members. An evaluated round-2 candidate is refused:
+    its Out-of-Sample refit needs the round-2 refit hook of 05 (session 4.2b, S42-1)."""
+    first, second = candidate_rounds(cfg)
     evaluated = [c["name"] for c in gate["candidates"] if c["status"] == "evaluated"]
     if "M5" in evaluated:
         raise SystemExit("M5 has no Out-of-Sample refit in 08_run_oos.py yet: its spec and refit hook come with Phase 3.3")
+    round2 = [name for name in evaluated if name in second]
+    if round2:
+        raise SystemExit(f"round-2 candidates {round2} were evaluated, but 08_run_oos.py has no Out-of-Sample refit for "
+                         "round 2 yet: it needs the round-2 refit hook of 05_train_walkforward.py (session 4.2b, S42-1)")
     models = list(evaluated)
     if "ENS" in models:
         models += [m for m in ENS_MEMBERS if m not in models]
     models += [m for m in FIXED_RUNGS if m not in models]
-    order = list(cfg["models"]["candidate_order"]) + list(FIXED_RUNGS)
+    order = first + second + list(FIXED_RUNGS)
     return sorted(dict.fromkeys(models), key=order.index)
 
 

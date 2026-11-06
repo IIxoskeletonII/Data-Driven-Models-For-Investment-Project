@@ -32,9 +32,23 @@ DATA_END = "2020-12-18"
 SPOTS = (("2017-01-06", "XLB"), ("2017-06-09", "XLK"), ("2018-02-09", "XLE"), ("2018-10-12", "XLF"),
          ("2019-12-13", "XLY"))
 WALKFORWARDS = ("M0", "M0_star", "M1", "M2", "M3", "ENS")
-GATE = {"selected": "M2", "candidates": [{"name": "M1", "status": "evaluated"}, {"name": "M2", "status": "evaluated"},
-                                          {"name": "M3", "status": "evaluated"}, {"name": "M5", "status": "absent"},
-                                          {"name": "ENS", "status": "evaluated"}]}
+HURDLE = {"sharpe_m0": -0.5, "mdd_m0": -0.30}  # M0's figures, shared by every evaluated row
+
+
+def gate_row(name: str, passes: bool, p: float | None = None) -> dict:
+    """An evaluated row of src.stats.selection_gate whose verdicts follow from its numbers (S42-1): passing every test
+    (Sharpe −0.30 ≥ −0.5 + 0.15, the same drawdown, P = 0.95) or failing every test; `p` overrides P(uplift > 0) and
+    the bootstrap verdict is then that of the round-1 threshold 0.80."""
+    sharpe, mdd, prob = (-0.30, -0.30, 0.95) if passes else (-0.60, -0.40, 0.30)
+    prob = prob if p is None else p
+    flags = {"passes_sharpe": passes, "passes_mdd": passes, "passes_bootstrap": prob >= 0.80 if p is not None else passes}
+    return {"name": name, "status": "evaluated", "sharpe": sharpe, "mdd": mdd, "p_uplift_positive": prob, **HURDLE,
+            **flags, "passes": all(flags.values())}
+
+
+ROUND2_ABSENT = [{"name": name, "status": "absent"} for name in ("M6", "M7", "M8", "M9")]  # round2.candidate_order
+GATE = {"selected": "M2", "candidates": [gate_row("M1", False), gate_row("M2", True), gate_row("M3", False),
+                                          {"name": "M5", "status": "absent"}, gate_row("ENS", False)] + ROUND2_ABSENT}
 
 
 def load(name: str, filename: str):
@@ -253,6 +267,104 @@ def test_read_gate_refuses_a_selected_model_that_was_not_evaluated(script, tmp_p
 def test_read_gate_needs_the_gate_file(script, tmp_path):
     with pytest.raises(SystemExit, match="selection_gate.json not found"):
         script.read_gate(tmp_path, load_config())
+
+
+# ---------------------------------------------------------------- the gate of both rounds (Amendment 9 C3, S42-1)
+
+
+def write_gate(root: Path, gate: dict) -> None:
+    path = root / "outputs" / "metrics" / "selection_gate.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(gate), encoding="utf-8")
+
+
+def with_round2(rows: dict, selected: str) -> dict:
+    """GATE with the given round-2 rows (name -> row) in place of the absent ones, and `selected`."""
+    candidates = [rows.get(c["name"], c) for c in GATE["candidates"]]
+    return {"selected": selected, "candidates": candidates}
+
+
+def test_the_candidate_order_and_the_thresholds_come_from_both_config_sections(script):
+    cfg = load_config()
+    assert script.candidate_rounds(cfg) == (["M1", "M2", "M3", "M5", "ENS"], ["M6", "M7", "M8", "M9"])
+    assert [c["name"] for c in GATE["candidates"]] == script.candidate_rounds(cfg)[0] + script.candidate_rounds(cfg)[1]
+    assert [script.bootstrap_threshold(n, cfg) for n in ("M1", "ENS", "M6", "M9")] == [0.80, 0.80, 0.90, 0.90]
+    with pytest.raises(ValueError, match="not a candidate"):
+        script.bootstrap_threshold("M0_star", cfg)
+
+
+def test_read_gate_accepts_both_rounds_with_round_2_absent(script, tmp_path):
+    write_gate(tmp_path, GATE)
+    assert script.read_gate(tmp_path, load_config()) == GATE
+    assert script.check_gate(GATE, load_config()) == {"names": [c["name"] for c in GATE["candidates"]],
+                                                      "complete": True, "selected": "M2", "round1_selected": "M2"}
+
+
+def test_read_gate_refuses_a_gate_file_of_round_1_only(script, tmp_path):
+    """The round-1 file of S37-9 is valid on its own (07 reads it), but the freeze needs the order of Amendment 9 C3."""
+    round1 = {"selected": "M0_star", "candidates": [gate_row(n, False) if n != "M5" else {"name": n, "status": "absent"}
+                                                    for n in ("M1", "M2", "M3", "M5", "ENS")]}
+    assert script.check_gate(round1, load_config())["complete"] is False
+    assert script.check_gate(round1, load_config())["round1_selected"] == "M0_star"
+    write_gate(tmp_path, round1)
+    with pytest.raises(SystemExit, match="lists only the round-1 candidates"):
+        script.read_gate(tmp_path, load_config())
+
+
+def test_a_round_2_candidate_needs_the_round_2_bootstrap_threshold(script, tmp_path):
+    """P = 0.85 passes the round-1 threshold 0.80 but not the round-2 threshold 0.90 (Amendment 9 C3)."""
+    cfg = load_config()
+    honest = gate_row("M7", True) | {"p_uplift_positive": 0.85, "passes_bootstrap": False, "passes": False}
+    assert script.check_gate(with_round2({"M7": honest}, "M2"), cfg)["selected"] == "M2"
+    lenient = honest | {"passes_bootstrap": True, "passes": True}  # judged with 0.80
+    with pytest.raises(SystemExit, match=r"M7: \['passes_bootstrap', 'passes'\].*P\(uplift > 0\) >= 0.9"):
+        script.check_gate(with_round2({"M7": lenient}, "M2"), cfg)
+    round1 = gate_row("M1", False, p=0.85)  # in round 1, the same P passes the bootstrap test
+    assert round1["passes_bootstrap"] is True and round1["passes"] is False
+    script.check_gate({"selected": "M2", "candidates": [round1] + GATE["candidates"][1:]}, cfg)
+
+
+def test_selected_is_the_first_passing_candidate_of_both_rounds(script):
+    cfg = load_config()
+    no_round1 = [gate_row(c["name"], False) if c["status"] == "evaluated" else c for c in GATE["candidates"][:5]]
+    gate = {"selected": "M7", "candidates": no_round1 + [ROUND2_ABSENT[0], gate_row("M7", True), gate_row("M8", True),
+                                                         ROUND2_ABSENT[3]]}
+    checked = script.check_gate(gate, cfg)
+    assert (checked["selected"], checked["round1_selected"]) == ("M7", "M0_star")  # round 1's verdict is kept apart
+    for wrong in ("M8", "M0_star"):
+        with pytest.raises(SystemExit, match="first passing candidate"):
+            script.check_gate(gate | {"selected": wrong}, cfg)
+    with pytest.raises(SystemExit, match="first passing candidate .* is 'M2'"):
+        script.check_gate(GATE | {"selected": "M0_star"}, cfg)
+
+
+@pytest.mark.parametrize("edit, expected", [
+    (lambda row: row.pop("p_uplift_positive"), "lacks \\['p_uplift_positive'\\]"),
+    (lambda row: row.update(passes="yes"), "lacks \\['passes'\\]"),
+    (lambda row: row.update(sharpe=True), "lacks \\['sharpe'\\]"),
+    (lambda row: row.update(passes_mdd=False, passes=False), "do not follow from its numbers"),
+    (lambda row: row.update(sharpe_m0=-0.6), "one hurdle"),
+])
+def test_check_gate_refuses_a_row_that_is_not_a_gate_row(script, edit, expected):
+    gate = copy.deepcopy(GATE)
+    edit(gate["candidates"][1])
+    with pytest.raises(SystemExit, match=expected):
+        script.check_gate(gate, load_config())
+
+
+def test_run_models_refuse_an_evaluated_round_2_candidate_until_its_refit_exists(script):
+    cfg = load_config()
+    assert script.run_models(GATE, cfg) == ["M1", "M2", "M3", "ENS", "M0", "M0_star"]  # round 2 absent: unchanged
+    with pytest.raises(SystemExit, match="round-2 candidates \\['M6'\\] were evaluated.*session 4.2b"):
+        script.run_models(with_round2({"M6": gate_row("M6", False)}, "M2"), cfg)
+
+
+def test_freeze_refuses_a_gate_file_of_round_1_only(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    write_gate(root, {"selected": "M2", "candidates": GATE["candidates"][:5]})  # outputs/ is git-ignored: tree clean
+    with pytest.raises(SystemExit, match="lists only the round-1 candidates"):
+        script.freeze(root)
+    assert not (root / "FROZEN.lock").exists()
 
 
 # ---------------------------------------------------------------- --freeze

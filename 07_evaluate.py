@@ -6,7 +6,10 @@ Inputs:  outputs/backtests/<model>/        (06_backtest.py --model / --all; chec
          outputs/diagnostics/shift/<model>/ (06_backtest.py --shift-check), outputs/diagnostics/placebo/ (--placebo)
          outputs/walkforward/<model>/scores.csv (rank IC) and the raw prices cut at the In-Sample end through
          06_backtest.py: in_sample_market (refuse_oos_returns), for SPY and the equal-weight basket
-Outputs: outputs/metrics/  is_models.csv (one row per model), is_benchmarks.csv, shift_check.csv, placebo.csv, used.yaml
+         outputs/metrics/selection_gate.json, if written (05_train_walkforward.py --select): the gate columns and verdicts
+Outputs: outputs/metrics/  is_models.csv (one row per model, round 1 then round 2 as two sections, S42-2: `round`,
+                           `section`, `role`, the gate columns, `verdict`), is_benchmarks.csv, shift_check.csv,
+                           placebo.csv, used.yaml
          outputs/plots/    <model>_{equity,drawdown,exposure,bridge}.{html,png}, all_models_equity, placebo_sharpe
 
 --period OOS (decisions S34-8 to S34-11): only after the single run of 08_run_oos.py (FROZEN.lock and exactly one entry in
@@ -20,6 +23,7 @@ column sources (outputs/backtests/ and outputs/agent_lab/walkforward/) and check
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +39,74 @@ from src.models import walkforward_settings
 
 EQUAL_WEIGHT, TBILL = "Equal weight", "T-bill"
 REFERENCE = "M0"  # the hurdle: benchmarks and the all-models chart use its weeks
+
+# -- the two rounds of the In-Sample table (Amendment 9, decision S42-2) ------------------------------------------------
+
+_VALUE = r"\d+(?:\.\d+)?"  # a grid value as 05 writes it in a fixed name: 0.1, 1, 10, 2
+ROUND1_NAME = re.compile(rf"M0|M0_star|M1|M2|M3|M5|ENS|M[12]_a{_VALUE}|M3_d{_VALUE}|M0_L{_VALUE}")  # S31-10
+ROUND2_NAME = re.compile(rf"M6|M7|M8|M9|M6_a{_VALUE}|M7_a{_VALUE}_h{_VALUE}|M8_d{_VALUE}_h{_VALUE}")  # Amendment 9 C1
+SECTIONS = {1: "Round 1: the pre-registered ladder (§07; gate P(uplift > 0) >= selection.bootstrap_prob)",
+            2: "Round 2: Amendment 9, added after the round-1 In-Sample results (gate P(uplift > 0) >= "
+               "round2.selection.bootstrap_prob)"}
+PRIMARY = "primary pre-registered result (round-1 gate, §07)"
+TRADED = "traded (first passing candidate of both rounds, Amendment 9 C3)"
+ROLES = ("hurdle", "candidate", "fallback", "fixed configuration")
+
+
+def model_round(name: str) -> int | None:
+    """1 for a round-1 output folder (the rungs, M5, ENS, M0* and the fixed names M1_a*, M2_a*, M3_d*, M0_L*), 2 for a
+    round-2 one (M6 to M9 and the fixed names M6_a*, M7_a*_h*, M8_d*_h*, dots included), None for any other name."""
+    if ROUND1_NAME.fullmatch(name):
+        return 1
+    if ROUND2_NAME.fullmatch(name):
+        return 2
+    return None
+
+
+def model_role(name: str, cfg: dict) -> str:
+    """hurdle (M0), fallback (M0*), candidate (models.candidate_order or round2.candidate_order) or fixed configuration
+    (a fixed grid value run through the walk-forward: a trial, never a candidate, Amendment 5 C2)."""
+    candidates = list(cfg["models"]["candidate_order"]) + list((cfg.get("round2") or {}).get("candidate_order", []))
+    return "hurdle" if name == "M0" else "fallback" if name == "M0_star" else \
+        "candidate" if name in candidates else "fixed configuration"
+
+
+def table_order(models: list[str], cfg: dict) -> list[str]:
+    """Round 1, then round 2; within a round the hurdle, the candidates in their order, M0*, then the fixed names."""
+    candidates = list(cfg["models"]["candidate_order"]) + list((cfg.get("round2") or {}).get("candidate_order", []))
+
+    def key(name: str):
+        role = model_role(name, cfg)
+        return model_round(name), ROLES.index(role), candidates.index(name) if role == "candidate" else 0, name
+
+    return sorted(models, key=key)
+
+
+def gate_columns(cfg: dict, run_script) -> tuple[dict[str, dict], dict | None]:
+    """The rows of outputs/metrics/selection_gate.json, if 05 --select has written it, checked with 08's check_gate
+    (S42-1): {candidate: gate_status, gate_passes, gate_bootstrap_prob} and the checked summary (selected,
+    round1_selected, complete); ({}, None) without the file."""
+    path = ROOT / run_script.GATE_FILE
+    if not path.exists():
+        return {}, None
+    gate = _read_json(path)
+    checked = run_script.check_gate(gate, cfg, run_script.GATE_FILE)
+    rows = {row["name"]: {"gate_status": row["status"],
+                          "gate_passes": row["passes"] if row["status"] == "evaluated" else np.nan,
+                          "gate_bootstrap_prob": run_script.bootstrap_threshold(row["name"], cfg)}
+            for row in gate["candidates"]}
+    return rows, checked
+
+
+def verdict(name: str, checked: dict | None) -> str:
+    """The label of a model's row: round 1's selection is the primary pre-registered result (Amendment 9 C3); the
+    selection over both rounds is the traded model once the gate file holds round 2."""
+    if checked is None:
+        return ""
+    labels = [PRIMARY] if name == checked["round1_selected"] else []
+    if checked["complete"] and name == checked["selected"]:
+        labels.append(TRADED)
+    return "; ".join(labels)
 
 
 def load_backtest_script():
@@ -200,6 +272,11 @@ def evaluate(cfg: dict) -> pd.DataFrame:
     models = backtested_models()
     if not models:
         raise SystemExit("07_evaluate.py: no outputs/backtests/<model>/; run 06_backtest.py --model NAME or --all first")
+    unknown = [model for model in models if model_round(model) is None]
+    if unknown:
+        raise SystemExit(f"07_evaluate.py: outputs/backtests/{unknown[0]}/ is not a model of round 1 or round 2 (S42-2)")
+    models = table_order(models, cfg)
+    gate, checked = gate_columns(cfg, load_run_script())
     backtests = {model: read_backtest(cfg, model, is_end) for model in models}
     shift = read_shift_checks(cfg, is_end)
     placebo = read_placebo(cfg)
@@ -211,7 +288,12 @@ def evaluate(cfg: dict) -> pd.DataFrame:
         percentile = np.nan
         if placebo is not None and _same_weeks(summary, placebo[0]):
             percentile = bt.placebo_percentile(placebo[1]["net_sharpe_rf_tbill"], summary["net_sharpe_rf_tbill"])
-        rows.append(model_row(model, backtest, model_rank_ic(cfg, model, backtest["weekly"].index, fwd, is_end), percentile))
+        number = model_round(model)
+        labels = {"round": number, "section": SECTIONS[number], "role": model_role(model, cfg),
+                  "gate_status": np.nan, "gate_passes": np.nan, "gate_bootstrap_prob": np.nan}
+        labels |= gate.get(model, {}) | {"verdict": verdict(model, checked)}
+        row = model_row(model, backtest, model_rank_ic(cfg, model, backtest["weekly"].index, fwd, is_end), percentile)
+        rows.append({"model": model} | labels | row)
     table = pd.DataFrame(rows).set_index("model")
 
     reference = REFERENCE if REFERENCE in backtests else models[0]
@@ -553,11 +635,30 @@ def main(argv: list[str] | None = None) -> None:
         print("plots -> outputs/plots/oos_*")
         return
     table = evaluate(cfg)
-    shown = ["weeks", "net_sharpe_rf_tbill", "net_sharpe_rf_constant", "net_sharpe_zero_cost", "gross_sharpe_zero_cost",
-             "annualized_return", "max_drawdown", "mean_turnover", "rank_ic_mean", "placebo_percentile"]
     print(f"In-Sample metrics, baseline costs, {len(table)} model(s) -> outputs/metrics/is_models.csv")
-    print(table[shown].to_string(float_format=lambda x: f"{x:.4f}"))
+    print(sections_text(table, cfg))
     print("plots -> outputs/plots/")
+
+
+SHOWN = ["role", "weeks", "net_sharpe_rf_tbill", "net_sharpe_zero_cost", "gross_sharpe_zero_cost", "annualized_return",
+         "max_drawdown", "mean_turnover", "rank_ic_mean", "placebo_percentile", "gate_passes"]
+
+
+def sections_text(table: pd.DataFrame, cfg: dict) -> str:
+    """The In-Sample table as two sections, round 1 then round 2 (S42-2), each with its gate threshold, and the rows
+    that carry a verdict (round 1's selection: the primary pre-registered result, Amendment 9 C3)."""
+    thresholds = {1: cfg["selection"]["bootstrap_prob"],
+                  2: ((cfg.get("round2") or {}).get("selection") or {}).get("bootstrap_prob")}
+    lines = []
+    for number in (1, 2):
+        part = table.loc[(table["round"] == number).to_numpy()]
+        lines += ["", f"{SECTIONS[number]} = {thresholds[number]}"]
+        lines.append(part[SHOWN].to_string(float_format=lambda x: f"{x:.4f}") if len(part) else "  (no output yet)")
+    labelled = table.loc[table["verdict"].fillna("").astype(str) != "", "verdict"]
+    lines += [""] + [f"{model}: {text}" for model, text in labelled.items()]
+    if not len(labelled):
+        lines.append("No verdict: outputs/metrics/selection_gate.json not found (05_train_walkforward.py --select)")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

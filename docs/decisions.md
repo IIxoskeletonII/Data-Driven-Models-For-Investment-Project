@@ -2149,6 +2149,76 @@ through the review of the pull request from branch `feat/3.9-run-all`.
 | Files affected | `docs/decisions.md` only |
 | Amendment | No |
 
+## 2026-11-06 · Session 4.2a: round-2 readiness of 07, 08 and `make_submission.py`; the methods of Mattia's modules
+
+Evidence-standard format. "Instruction" quotes the session 4.2a prompt (6 Nov 2026). Everything below is built and tested
+on synthetic fixtures. Two real In-Sample outputs were read: the gate file of S37-9, through `check_gate` and `read_gate`,
+and the In-Sample backtests, through `07_evaluate.py`. When this entry was written, `FROZEN.lock` did not exist,
+`outputs/oos_access_log.json` had no entry, no Out-of-Sample value had been computed or seen, and no round-2 output
+existed. The round-2 Out-of-Sample refits are not wired here: they need Eliya's hook from session 4.1 (session 4.2b).
+"Approved by" lists the approvals given so far; Eliya approves through the review of the pull request from branch
+`feat/4.2a-round2-ready`.
+
+### S42-1 · `08_run_oos.py`: the gate file of both rounds
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Amendment 9 C3 extends the candidate order to M1, M2, M3, M5, ENS, M6, M7, M8, M9 and sets the round-2 bootstrap threshold to 0.90. How does 08 validate a gate file now, and what does it do with a round-2 candidate before the round-2 Out-of-Sample refits exist? |
+| Options considered | Order: (a) accept only the extended order; (b) accept the round-1 order too, everywhere; (c) validate both forms with one function, `check_gate`, and let only the extended form pass `read_gate`, which `--freeze` uses (chosen). Thresholds: (d) check only `status` and `selected`, as before; (e) recompute every evaluated row's verdicts from its numbers, with its round's threshold, and check that `selected` is the first passing candidate (chosen). Round-2 candidate evaluated: (f) refuse in `run_models` until session 4.2b (chosen); (g) wire the round-2 refits now (excluded by the instruction) |
+| Decision | (c), (e) and (f). **Order.** `candidate_rounds(cfg)` = (`models.candidate_order`, `round2.candidate_order`). A gate file lists either the round-1 candidates only or both rounds in that order, each `evaluated` or `absent`. **Verdicts.** Every evaluated row must hold the numbers `sharpe`, `sharpe_m0`, `mdd`, `mdd_m0` and `p_uplift_positive`, and the booleans `passes_sharpe`, `passes_mdd`, `passes_bootstrap` and `passes`, which `src.stats.selection_gate` already writes (S37-4). The verdicts must equal Sharpe ≥ `sharpe_m0` + `selection.sharpe_uplift`, drawdown ≥ `mdd_m0` − `selection.mdd_tolerance`, and P ≥ `bootstrap_threshold(name)`, which is `selection.bootstrap_prob` (0.80) in round 1 and `round2.selection.bootstrap_prob` (0.90) in round 2. `passes` must be all three. Every evaluated row must share one hurdle (Amendment 9 C4). `selected` must be the first passing candidate in the file's order, else M0\*. `check_gate` also returns `round1_selected`, the first passing round-1 candidate, else M0\*: the primary pre-registered result. The file's `thresholds` key is not read; the check uses `config.yaml`. **Freeze.** `read_gate` refuses a file that lists round 1 only, naming the four missing candidates, so the system cannot be frozen without the round-2 selection. **Run.** `run_models` refuses an evaluated round-2 candidate, naming session 4.2b. With round 2 absent, the models of the run are unchanged (M1, M2, M3, ENS, M0, M0\* for the test gate) |
+| Rationale | C3 makes the extended order the selection rule, so a freeze on the round-1 file would skip round 2. 07 must still read that file, or the pipeline on `main` would stop at 07 until session 4.1 writes the round-2 file. Recomputing the verdicts is how 08 checks that 0.90 was applied to round 2, using only the row keys `selection_gate` already returns |
+| Evidence | Amendment 9 C3: "The candidate order becomes M1, M2, M3, M5, ENS, M6, M7, M8, M9. Round-1 candidates keep the §07 gate. Round-2 candidates must have Sharpe ≥ M0 + 0.15, max drawdown no more than 2 percentage points worse than M0, and paired block bootstrap P(uplift > 0) ≥ 0.90. The first candidate in this order that passes its gate is traded; if none passes, M0* is traded."; C4: "No round-1 setting, cost, signal or sizing rule, or hurdle changes."; `config.yaml` `round2.candidate_order`, `round2.selection.bootstrap_prob: 0.90` (S40-1); S34-3; S37-4; Instruction §1: "08_run_oos.py read_gate: accept the extended candidate order models.candidate_order + round2.candidate_order (Amendment 9 C3), and the round-2 gate threshold round2.selection.bootstrap_prob when validating a gate file. M6–M9 may be absent or evaluated. Do not wire the round-2 OOS refits yet". On the real file of S37-9 (`outputs/metrics/selection_gate.json`, 6 Nov 2026), `check_gate` gives names [M1, M2, M3, M5, ENS], `complete` false, `selected` M0\* and `round1_selected` M0\*, so every recorded verdict follows from its numbers; `read_gate` refuses it as round 1 only. Tests in `tests/test_run_oos_script.py`: `test_the_candidate_order_and_the_thresholds_come_from_both_config_sections`, `test_read_gate_accepts_both_rounds_with_round_2_absent`, `test_read_gate_refuses_a_gate_file_of_round_1_only`, `test_a_round_2_candidate_needs_the_round_2_bootstrap_threshold` (P = 0.85 passes in round 1, fails in round 2), `test_selected_is_the_first_passing_candidate_of_both_rounds`, `test_check_gate_refuses_a_row_that_is_not_a_gate_row` (5 cases), `test_run_models_refuse_an_evaluated_round_2_candidate_until_its_refit_exists`, `test_freeze_refuses_a_gate_file_of_round_1_only`. The test gate `GATE` now holds full rows and the four absent round-2 candidates |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review (the row keys and the order his round-2 selection step must write) |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py`, `tests/test_evaluate_script.py` (the gate of the OOS fixture lists both rounds) |
+| Amendment | No: implements Amendment 9 C3 |
+
+### S42-2 · `07_evaluate.py`: round 1 and round 2 as two sections of the In-Sample table
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | How does the In-Sample evaluation tell round-1 from round-2 output folders, present the two rounds, and label round 1's verdict? |
+| Options considered | Round of a folder: (a) by name patterns of both rounds (chosen); (b) by a field of `summary.json` (none exists yet); (c) by the candidate lists of `config.yaml` only (misses the fixed names). Other names: (d) stop (chosen); (e) count them as round 1. Layout: (f) one `is_models.csv` with `round`, `section` and `role` columns, rows ordered round 1 then round 2, and a printed view in two sections (chosen); (g) two files (would change the file the slides and the zip read). Verdict: (h) from the gate file, checked by 08's `check_gate` (chosen); (i) M0\* written into the code |
+| Decision | (a), (d), (f) and (h). **Names** (`model_round`). Round 1: `M0`, `M0_star`, `M1`, `M2`, `M3`, `M5`, `ENS` and the fixed names `M1_a<v>`, `M2_a<v>`, `M3_d<v>`, `M0_L<v>` (S31-10). Round 2: `M6`, `M7`, `M8`, `M9` and `M6_a<v>`, `M7_a<v>_h<v>`, `M8_d<v>_h<v>`. Here `<v>` is digits with at most one inner dot (`0.1`, `10`), as the names of S32-9. Any other backtest folder stops 07 before it reads any backtest. **Rows.** Round 1, then round 2. Within a round: the hurdle M0, the candidates in their order, the fallback M0\*, then the fixed names, alphabetically. **Columns added** in front of the S32-7 columns, which are unchanged: `round`, `section`, `role` (hurdle, candidate, fallback, fixed configuration), `gate_status`, `gate_passes`, `gate_bootstrap_prob` (the threshold of the row's round), and `verdict`. **Verdict.** When `outputs/metrics/selection_gate.json` exists, it is checked by `check_gate` (S42-1); a file that breaks the rule stops 07 before anything is written. `round1_selected` is labelled "primary pre-registered result (round-1 gate, §07)". Once the file lists round 2, its `selected` is labelled "traded (first passing candidate of both rounds, Amendment 9 C3)". Both labels go on one row when they name the same model. Without the file the column is empty and the printout says so. **Printout.** Two sections, each with its bootstrap threshold, then the labelled rows |
+| Rationale | Amendment 9 C3 requires round 1's verdict to stay the primary result and both rounds to be reported. One table with section columns keeps one file for the slides and the zip. Deriving the verdict from the checked gate file, not from code, keeps it right whatever the gate gives |
+| Evidence | Amendment 9 C3: "Round 1's verdict (M0*, S37-9) is reported as the primary pre-registered result, and every candidate of both rounds appears in the OOS scorecard."; preamble of Amendment 9: "Round 2 is therefore a response to In-Sample results, and the report says so."; Instruction §2: "07_evaluate.py and make_submission.py: accept the round-2 output folders (names M6, M7, M8, M9 and the fixed names M6_a*, M7_a*_h*, M8_d*_h*, with their dots) and present round 1 and round 2 as separate sections of the In-Sample table, with round 1's verdict (M0*, S37-9) labelled as the primary pre-registered result."; S32-7; S32-9 (dotted names). Real In-Sample run (`07_evaluate.py`, 6 Nov 2026): 17 round-1 rows with the Sharpes, drawdowns and turnover of S32-11; round 2 "(no output yet)"; "M0_star: primary pre-registered result (round-1 gate, §07)". Tests in `tests/test_evaluate_script.py`: `test_model_round_follows_the_folder_names_of_both_rounds` (23 names), `test_the_round_2_rungs_of_the_name_patterns_are_round2_candidate_order`, `test_the_table_holds_round_1_then_round_2_with_round_1s_verdict_primary`, `test_a_round_1_gate_file_labels_only_the_primary_result`, `test_without_a_gate_file_the_sections_say_so`, `test_a_gate_file_that_breaks_the_rule_stops_the_evaluation`, `test_a_backtest_folder_of_neither_round_is_refused`. The round-2 folders of the tests are backtested by 06 with 05's `spec_for` stubbed for round-2 names only, since 05 has no round-2 spec before session 4.1 |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: reports Amendment 9 C3 |
+
+### S42-3 · `make_submission.py`: round-2 output folders and their identity
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Round-2 folders sit where round-1 folders do, so S35-3 already ships them and checks their `used.yaml`. But the round-2 settings live in `round2:`, which is in no `used.yaml` (S40-1). How does the build keep a stale round-2 output out of the zip? |
+| Options considered | (a) `check_used` only, as in S35-3; it cannot see a change of `round2:`; (b) for each round-2 model folder, also compare the `spec_hash` of its `summary.json` files with the one 05's `spec_for` gives under the current config, as 06 does for its inputs (S32-10) (chosen); (c) the same check for round-1 folders as well (not in this pull request: S35-3 is unchanged for round 1) |
+| Decision | (b). `round2_identity` lists every model named by a settings file `outputs/walkforward/<name>/used.yaml`, `outputs/backtests/<name>/used.yaml` or `outputs/diagnostics/shift/<name>/used.yaml` (`output_model`) that `07_evaluate.py: model_round` puts in round 2. For each one, `outputs/walkforward/<name>/summary.json`, and `outputs/backtests/<name>/summary.json` if that folder ships, must be in the zip and hold `06_backtest.py: expected_spec_hash(name, cfg)`. A missing summary, another hash, or a name 05 has no spec for is a problem, listed with the others of S35-2 and S35-3, and the build stops writing nothing. Before session 4.1, any round-2 folder therefore stops the build, because 05 has no round-2 spec. The shift-check summary holds no `spec_hash` (S32-3), so a shift folder is covered by its model's walk-forward summary |
+| Rationale | S35-3 exists so that no stale result enters the zip. For round-2 outputs, the only identity that holds the round-2 settings is the trial's `spec_hash` |
+| Evidence | S35-3: "a stale output stops the build"; S40-1: "`round2:` is in neither identity" (the `spec_hash` sections of `walkforward_settings` and the `used.yaml` of 05 and 06); S32-10; Instruction §2 (quoted in S42-2). Tests in `tests/test_make_submission.py`: `test_round_2_folders_ship_when_their_identity_is_current`, `test_output_model_names_the_model_of_a_model_folder`, `test_a_round_2_setting_change_stops_the_build_although_every_used_yaml_matches` (a change of `round2.smoothing.half_life_weeks`: no `check_used` error, eight `spec_hash` problems, nothing written), `test_a_round_2_folder_without_its_summary_or_spec_is_refused`. Open point for both humans: `tuning:` is also outside every `used.yaml` (S31-2), so (c) would close the same gap for round 1 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `tests/test_make_submission.py` |
+| Amendment | No |
+
+### S42-4 · `docs/methods.md`: the methods of Mattia's modules
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Which methods sections does Mattia add, and where? |
+| Options considered | (a) append to the end of the file, under the S21-12 rule, without editing earlier sections (chosen); (b) rewrite the Phase 2.1 section |
+| Decision | (a). Two subsections complete "Engine and ledger accounting (Phase 2.1)": "Signals, sizing and the hedge" and "The weekly return". New sections follow: "Metrics and the risk-free rate"; "In-Sample evaluation, placebo and the one-week-shift check"; "The Out-of-Sample run, the freeze and the rerun rule"; "Packaging"; "One-command In-Sample pipeline". Each rule cites the amendment or decision that set it. The sections state methods only: no result is added beyond the ledger figures already in the file |
+| Rationale | Each method is written by the person who implements it (S21-12), and the evidence for each choice is in the decision it cites |
+| Evidence | S21-12: "other phases append their own sections and do not edit earlier ones"; Instruction §3: "docs/methods.md: append or complete the sections for my modules, citing decisions and amendments: the engine and ledger (from S21), the metrics and the risk-free rate, the evaluation, placebo and shift check (S32), the OOS run, freeze and rerun rule (S34, Amendment 8), packaging (S35) and run_all.py (S39). Plain, exact, no results that are not committed yet." |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `docs/methods.md` |
+| Amendment | No |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).

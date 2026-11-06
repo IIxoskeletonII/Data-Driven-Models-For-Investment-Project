@@ -10,7 +10,9 @@ even if they were tracked or placed inside one of the three data folders, and so
 The course instructions require the raw data, the processed data and the results in project/ (S35-1): raw vendor data
 stays out of the public repository only. The build stops, writing nothing, if a file is a .env file or holds a key-like
 string, if a tracked file has uncommitted changes, if README.md, pyproject.toml, uv.lock or config.yaml is missing, if
-the presentation is missing or not a PDF (S35-5), or if any output was built with another config.yaml (S35-2, S35-3). It prints a manifest:
+the presentation is missing or not a PDF (S35-5), or if any output was built with another config.yaml (S35-2, S35-3),
+including a round-2 output (M6 to M9 and their fixed names) whose spec_hash is not the current one (S42-3). It prints a
+manifest:
 SHA-256 and size of every entry, the number of files, the total size and the zip's size and SHA-256 (S35-4).
 
 Usage:  uv run python make_submission.py [--presentation presentation.pdf] [--out group_7.zip] [--manifest PATH]
@@ -197,7 +199,7 @@ def expected_settings(path: str, cfg: dict, root: Path) -> tuple[dict, str] | No
 
 def stale_outputs(root: Path, files: list[str], cfg: dict) -> list[str]:
     """`path: reason` for every settings file that fails check_used against the current config, or that no writer is
-    known for (S35-3)."""
+    known for (S35-3), and for every round-2 model folder whose spec_hash is not the current one (S42-3)."""
     from src.config import check_used
 
     problems = []
@@ -211,6 +213,50 @@ def stale_outputs(root: Path, files: list[str], cfg: dict) -> list[str]:
             check_used(settings, root / path, writer)
         except (ValueError, FileNotFoundError, KeyError) as error:
             problems.append(f"{path}: {error}")
+    return problems + round2_identity(root, files, cfg)
+
+
+def output_model(path: str) -> str | None:
+    """The model of a settings file outputs/walkforward/<name>/used.yaml, outputs/backtests/<name>/used.yaml or
+    outputs/diagnostics/shift/<name>/used.yaml; None for any other path."""
+    parts = path.split("/")
+    if parts[-1] != "used.yaml":
+        return None
+    if len(parts) == 4 and parts[0] == "outputs" and parts[1] in ("walkforward", "backtests"):
+        return parts[2]
+    if len(parts) == 5 and parts[:3] == ["outputs", "diagnostics", "shift"]:
+        return parts[3]
+    return None
+
+
+def round2_identity(root: Path, files: list[str], cfg: dict) -> list[str]:
+    """`path: reason` for the round-2 model folders of the zip (07_evaluate.py: model_round, S42-2) whose trial identity
+    is not the current one (S42-3). The round-2 settings live in config.yaml's round2: section, outside every used.yaml
+    (S40-1), so check_used cannot see a change of them; as 06 does for its inputs (S32-10), the summary.json of the
+    model's walk-forward folder, and of its backtest folder if it ships, must hold the spec_hash that 05's spec_for gives
+    under the current config (06_backtest.py: expected_spec_hash). A name 05 has no spec for cannot be checked."""
+    import json
+
+    model_round = _script("07_evaluate.py").model_round
+    names = sorted({name for path in settings_files(files)
+                    if (name := output_model(path)) is not None and model_round(name) == 2})
+    problems = []
+    for name in names:
+        try:
+            expected = _script("06_backtest.py").expected_spec_hash(name, cfg)
+        except SystemExit as error:
+            problems.append(f"outputs/walkforward/{name}/: {error}")
+            continue
+        summaries = [f"outputs/walkforward/{name}/summary.json"]
+        summaries += [f"outputs/backtests/{name}/summary.json"] if f"outputs/backtests/{name}/used.yaml" in files else []
+        for summary in summaries:
+            if summary not in files:
+                problems.append(f"{summary}: missing, so the round-2 output {name} cannot be checked (S42-3)")
+                continue
+            recorded = json.loads((root / summary).read_text(encoding="utf-8")).get("spec_hash")
+            if recorded != expected:
+                problems.append(f"{summary}: spec_hash {str(recorded)[:12]}…, config.yaml gives {expected[:12]}… "
+                                "(a round-2 setting changed since the output was built, S42-3)")
     return problems
 
 

@@ -156,6 +156,120 @@ def test_evaluate_needs_a_backtest(script, tmp_path, monkeypatch):
         script.evaluate(load_config())
 
 
+# ---------------------------------------------------------------- round 1 and round 2 (Amendment 9, S42-2)
+
+ROUND2_FOLDERS = ("M7", "M7_a0.1_h2", "M8_d2_h4", "M6_a10")
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("M0", 1), ("M0_star", 1), ("M5", 1), ("ENS", 1), ("M1_a0.1", 1), ("M2_a10", 1), ("M3_d2", 1), ("M0_L13", 1),
+    ("M6", 2), ("M9", 2), ("M6_a0.1", 2), ("M6_a10", 2), ("M7_a0.1_h2", 2), ("M7_a1_h4", 2), ("M8_d3_h2", 2),
+    ("M10", None), ("M6_d2", None), ("M7_a0.1", None), ("M8_d2", None), ("M9_a1_h2", None), ("M7_a0..1_h2", None),
+    ("agent_c01", None), ("synthetic", None)])
+def test_model_round_follows_the_folder_names_of_both_rounds(script, name, expected):
+    assert script.model_round(name) == expected
+
+
+def test_the_round_2_rungs_of_the_name_patterns_are_round2_candidate_order(script):
+    assert [n for n in ("M6", "M7", "M8", "M9") if script.model_round(n) == 2] == \
+        load_config()["round2"]["candidate_order"]
+
+
+@pytest.fixture
+def with_round2(script, layout, monkeypatch):
+    """The layout plus M0_star and four round-2 folders (copies of M0's scores), backtested by 06. 05 has no spec for a
+    round-2 name before session 4.1, so its spec_for is stubbed for them; everything else is the real path."""
+    cfg, root = layout["cfg"], layout["root"]
+    s05 = script.bt._walkforward_script()
+    real = s05.spec_for
+    monkeypatch.setattr(s05, "spec_for", lambda name, c: {"rung": name, "round": 2, "synthetic": True}
+                        if script.model_round(name) == 2 else real(name, c))
+    source = root / "outputs" / "walkforward" / "M0"
+    for name in ("M0_star",) + ROUND2_FOLDERS:
+        folder = root / "outputs" / "walkforward" / name
+        folder.mkdir(parents=True)
+        for file in ("scores.csv", "used.yaml"):
+            (folder / file).write_bytes((source / file).read_bytes())
+        digest = spec_hash(s05.spec_for(name, cfg), cfg)
+        (folder / "summary.json").write_text(json.dumps({"name": name, "spec_hash": digest}), encoding="utf-8")
+        script.bt.run_model(cfg, name)
+    return layout
+
+
+def write_gate(root, gate) -> None:
+    path = root / "outputs" / "metrics" / "selection_gate.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(gate), encoding="utf-8")
+
+
+def test_the_table_holds_round_1_then_round_2_with_round_1s_verdict_primary(script, with_round2):
+    """Round 1 fails (M0* traded in round 1, the primary pre-registered result); M7 passes the round-2 gate."""
+    cfg, root = with_round2["cfg"], with_round2["root"]
+    helpers = _oos_helpers()
+    round1 = [helpers.gate_row(c["name"], False) if c["status"] == "evaluated" else c for c in helpers.GATE["candidates"][:5]]
+    gate = {"selected": "M7", "candidates": round1 + [{"name": "M6", "status": "absent"}, helpers.gate_row("M7", True),
+                                                      helpers.gate_row("M8", False), {"name": "M9", "status": "absent"}]}
+    write_gate(root, gate)
+    table = script.evaluate(cfg)
+    assert list(table.index) == ["M0", "M0_star", "M0_L13", "M7", "M6_a10", "M7_a0.1_h2", "M8_d2_h4"]
+    assert table["round"].tolist() == [1, 1, 1, 2, 2, 2, 2]
+    assert table["role"].tolist() == ["hurdle", "fallback", "fixed configuration", "candidate"] + 3 * ["fixed configuration"]
+    assert table.loc["M0", "section"] == script.SECTIONS[1] and table.loc["M7", "section"] == script.SECTIONS[2]
+    assert table.loc["M0_star", "verdict"] == script.PRIMARY
+    assert table.loc["M7", "verdict"] == script.TRADED
+    assert table.loc[["M0", "M0_L13", "M6_a10"], "verdict"].fillna("").tolist() == ["", "", ""]
+    assert table.loc["M7", "gate_bootstrap_prob"] == 0.90 and bool(table.loc["M7", "gate_passes"]) is True
+    assert table.loc["M7", "gate_status"] == "evaluated" and np.isnan(table.loc["M0", "gate_bootstrap_prob"])
+    m7 = script._read_json(root / "outputs" / "backtests" / "M7" / "summary.json")
+    assert table.loc["M7", "net_sharpe_rf_tbill"] == pytest.approx(m7["net_sharpe_rf_tbill"], rel=1e-12)
+    on_disk = pd.read_csv(root / "outputs" / "metrics" / "is_models.csv", index_col="model")
+    assert list(on_disk.index) == list(table.index) and on_disk["round"].tolist() == [1, 1, 1, 2, 2, 2, 2]
+    text = script.sections_text(table, cfg)
+    assert text.index(script.SECTIONS[1]) < text.index("M0_L13") < text.index(script.SECTIONS[2]) < text.index("M8_d2_h4")
+    assert "= 0.8" in text and "= 0.9" in text
+    assert f"M0_star: {script.PRIMARY}" in text and f"M7: {script.TRADED}" in text
+    assert (root / "outputs" / "plots" / "M7_a0.1_h2_equity.png").exists()
+
+
+def test_a_round_1_gate_file_labels_only_the_primary_result(script, with_round2):
+    """The file of S37-9 (round 1 only): M0* is the primary pre-registered result; nothing is labelled traded yet."""
+    helpers = _oos_helpers()
+    round1 = [helpers.gate_row(c["name"], False) if c["status"] == "evaluated" else c for c in helpers.GATE["candidates"][:5]]
+    write_gate(with_round2["root"], {"selected": "M0_star", "candidates": round1})
+    table = script.evaluate(with_round2["cfg"])
+    assert table.loc["M0_star", "verdict"] == script.PRIMARY
+    assert (table["verdict"].fillna("") == script.TRADED).sum() == 0
+    assert table.loc["M7", "gate_status"] != table.loc["M7", "gate_status"]  # NaN: M7 is not in a round-1 file
+
+
+def test_without_a_gate_file_the_sections_say_so(script, layout):
+    table = script.evaluate(layout["cfg"])
+    assert table["round"].tolist() == [1, 1] and table["verdict"].fillna("").tolist() == ["", ""]
+    text = script.sections_text(table, layout["cfg"])
+    assert "(no output yet)" in text and "selection_gate.json not found" in text
+
+
+def test_a_gate_file_that_breaks_the_rule_stops_the_evaluation(script, with_round2):
+    helpers = _oos_helpers()
+    lenient = helpers.gate_row("M7", True) | {"p_uplift_positive": 0.85}  # passes 0.80, not the round-2 0.90
+    gate = {"selected": "M7", "candidates": [helpers.gate_row(c["name"], False) if c["status"] == "evaluated" else c
+                                             for c in helpers.GATE["candidates"][:5]]
+            + [{"name": "M6", "status": "absent"}, lenient, {"name": "M8", "status": "absent"},
+               {"name": "M9", "status": "absent"}]}
+    write_gate(with_round2["root"], gate)
+    with pytest.raises(SystemExit, match="do not follow from its numbers"):
+        script.evaluate(with_round2["cfg"])
+    assert not (with_round2["root"] / "outputs" / "metrics" / "is_models.csv").exists()
+
+
+def test_a_backtest_folder_of_neither_round_is_refused(script, layout):
+    folder = layout["root"] / "outputs" / "backtests" / "M10"
+    folder.mkdir()
+    (folder / "summary.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="M10/ is not a model of round 1 or round 2"):
+        script.evaluate(layout["cfg"])
+
+
 # ---------------------------------------------------------------- --period OOS (decisions S34-8 to S34-11)
 #
 # A light synthetic project (M0 and M0* only; every candidate absent, M0* selected) is built, frozen and run once by
@@ -217,7 +331,7 @@ def oos_layout(script, synthetic_market, tmp_path_factory, monkeypatch):
         helpers = _oos_helpers()
         root = tmp_path_factory.mktemp("oos_evaluate") / "project"
         root.mkdir()
-        order = load_config()["models"]["candidate_order"]
+        order = load_config()["models"]["candidate_order"] + load_config()["round2"]["candidate_order"]  # S42-1
         gate = {"selected": "M0_star", "candidates": [{"name": name, "status": "absent"} for name in order]}
         cfg = helpers.build_project(root, synthetic_market, walkforwards=("M0", "M0_star"), gate_content=gate)
         bias = add_agent_trials(helpers, root, cfg)

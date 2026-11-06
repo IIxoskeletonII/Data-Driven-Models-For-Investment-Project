@@ -557,15 +557,20 @@ def test_diagnostics_stop_before_any_oos_return(script, model_inputs, synthetic_
 
 def test_expected_spec_hash_is_the_trial_log_hash_of_05s_spec(script, walkforward):
     cfg = load_config()
-    names = list(walkforward.RUNGS) + walkforward.fixed_names(cfg)
-    assert len(names) == 17
+    names = list(walkforward.RUNGS) + walkforward.fixed_names(cfg)  # read from 05: round 1, and round 2 once it exists
+    assert len(set(names)) == len(names)
+    round2 = tuple(cfg["round2"]["candidate_order"])
+    round1 = [name for name in names if not name.startswith(round2)]
+    assert len(round1) == 17  # the 6 rungs and 11 fixed values of round 1 (S31-10)
+    assert all(name in round2 or name.startswith(tuple(f"{r}_" for r in round2)) for name in names if name not in round1)
     hashes = {name: script.expected_spec_hash(name, cfg) for name in names}
     for name in names:
         assert hashes[name] == spec_hash(walkforward.spec_for(name, cfg), cfg)
-    # every rung and fixed grid value of the current config.yaml is a row of the committed trial log (S31-7: 16 rows;
-    # M0_L26 is M0's row, S31-6)
+    # every rung and fixed grid value of the current config.yaml is a row of the committed trial log (S31-7: 16 rows
+    # in round 1); M0_L26 is M0's row (S31-6), and it is the only name that shares a row
     assert hashes["M0_L26"] == hashes["M0"]
-    assert len(set(hashes.values())) == 16
+    assert len({hashes[name] for name in round1}) == 16
+    assert len(set(hashes.values())) == len(names) - 1
     assert set(hashes.values()) <= logged_spec_hashes(ROOT / "docs" / "trial_log.csv")
 
 
