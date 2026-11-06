@@ -4,8 +4,9 @@
 #
 # The commit is rejected when:
 #   (a) a staged path is a local assistant settings or instructions file;
-#   (b) an added line contains a forbidden attribution word
-#       (docs/ai_tools_used.md and uv.lock are exempt);
+#   (b) an added line contains a co-author trailer, or names the agent lab's model vendor outside the files where
+#       that model is the research object (allow_re below; decision S40-0). docs/ai_tools_used.md and uv.lock are
+#       exempt from (b);
 #   (c) a staged file lives under data/raw/ (licensed vendor data, never committed).
 #
 # The forbidden words are assembled from fragments, so this file does not match check (b).
@@ -14,7 +15,10 @@ w1="cla""ude"
 w2="anthro""pic"
 w3="co-auth""ored-by"
 path_re="(^|/)\.${w1}(/|\$)|(^|/)${w1}(\.local)?\.md\$|(^|/)\.mcp\.json\$"
-word_re="${w1}|${w2}|${w3}"
+trailer_re="${w3}"
+vendor_re="${w1}|${w2}"
+# Files where the agent lab's model is the research object (S40-0 (c)); tests/test_hooks_policy.py holds the same list.
+allow_re='^(docs/preregistration[.]md|docs/decisions[.]md|docs/ai_tools_used[.]md|config[.]yaml|pyproject[.]toml|uv[.]lock|src/agents/.+|agent_lab/.+|tests/test_agents[^/]*[.]py|tests/test_vault_server[.]py|tests/test_planted_signal[.]py)$'
 
 status=0
 staged=$(git diff --cached --name-only --diff-filter=d)
@@ -30,8 +34,10 @@ fi
 # (b) forbidden words in added lines
 hits=$(git diff --cached -U0 --no-color --no-ext-diff --diff-filter=d -- . \
         ':(exclude)docs/ai_tools_used.md' ':(exclude)uv.lock' |
-    awk -v re="$word_re" '/^\+\+\+ /{file = substr($0, 7); next}
-        /^\+/ && tolower(substr($0, 2)) ~ re {print file ": " substr($0, 2)}')
+    awk -v trailer="$trailer_re" -v vendor="$vendor_re" -v allow="$allow_re" '
+        /^\+\+\+ / {file = substr($0, 7); allowed = (file ~ allow); next}
+        /^\+/ {line = tolower(substr($0, 2))
+               if (line ~ trailer || (!allowed && line ~ vendor)) print file ": " substr($0, 2)}')
 if [ -n "$hits" ]; then
     echo "pre-commit: added lines contain a forbidden attribution word:" >&2
     printf '%s\n' "$hits" | sed 's/^/    /' >&2
