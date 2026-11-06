@@ -63,6 +63,27 @@ def git(root: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout
 
 
+def init_repo(root: Path) -> None:
+    """git init with automatic housekeeping off (S38-3): a commit may otherwise start git's background auto-maintenance,
+    which creates and deletes lock files under .git/ while copy_repo copies the folder. The settings live in .git/config,
+    so every copy inherits them."""
+    git(root, "init", "-q")
+    git(root, "config", "gc.auto", "0")
+    git(root, "config", "maintenance.auto", "false")
+
+
+def _git_locks(folder: str, names: list[str]) -> set[str]:
+    """copytree ignore: transient *.lock files inside .git/ (S38-3); FROZEN.lock in the working tree is copied."""
+    inside_git = ".git" in Path(folder).parts
+    return {name for name in names if inside_git and name.endswith(".lock")}
+
+
+def copy_repo(source: Path, target: Path) -> Path:
+    """Copy a test project (working tree, git-ignored data/ and outputs/, and .git/) without git's lock files."""
+    shutil.copytree(source, target, ignore=_git_locks)
+    return target
+
+
 def commit(root: Path, message: str) -> None:
     git(root, "add", "-A")
     git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
@@ -118,7 +139,7 @@ def build_project(root: Path, market, walkforwards=WALKFORWARDS, gate_content=No
     gate.parent.mkdir(parents=True, exist_ok=True)
     gate.write_text(json.dumps(GATE if gate_content is None else gate_content), encoding="utf-8")
 
-    git(root, "init", "-q")
+    init_repo(root)
     commit(root, "chore: synthetic project")
     return cfg
 
@@ -138,9 +159,7 @@ def project(synthetic_market, tmp_path_factory) -> dict:
 
 
 def copy_project(project: dict, tmp_path: Path) -> Path:
-    target = tmp_path / "project"
-    shutil.copytree(project["root"], target)
-    return target
+    return copy_repo(project["root"], tmp_path / "project")
 
 
 @pytest.fixture
@@ -148,7 +167,7 @@ def ran(script, project, tmp_path_factory) -> dict:
     """A copy of the project frozen, signed (lock and decisions committed) and run once (read-only, built once)."""
     if not _RAN:
         root = tmp_path_factory.mktemp("oos_ran") / "project"
-        shutil.copytree(project["root"], root)
+        copy_repo(project["root"], root)
         lock = script.freeze(root)
         with open(root / "docs" / "decisions.md", "a", encoding="utf-8", newline="\n") as f:
             f.write("\nGate 3 signatures (synthetic test)\n")
@@ -180,6 +199,27 @@ def test_oos_log_check_accepts_zero_or_one_entry_and_refuses_two(script):
 def test_oos_log_check_refuses_a_malformed_log(script, text):
     with pytest.raises(ValueError):
         script.check_oos_log_text(text)
+
+
+def test_copy_repo_skips_git_lock_files_and_keeps_frozen_lock(tmp_path):
+    """S38-3: a *.lock inside .git/ (git's transient maintenance and index locks) is not copied; FROZEN.lock is."""
+    source = tmp_path / "source"
+    (source / ".git" / "objects").mkdir(parents=True)
+    (source / ".git" / "objects" / "maintenance.lock").write_text("", encoding="utf-8")
+    (source / ".git" / "index.lock").write_text("", encoding="utf-8")
+    (source / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (source / "FROZEN.lock").write_text("{}", encoding="utf-8")
+    (source / "outputs").mkdir()
+    (source / "outputs" / "x.lock").write_text("kept", encoding="utf-8")
+    target = copy_repo(source, tmp_path / "target")
+    assert sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file()) == [
+        ".git/config", "FROZEN.lock", "outputs/x.lock"]
+
+
+def test_project_copies_keep_automatic_git_housekeeping_off(project, tmp_path):
+    root = copy_project(project, tmp_path)
+    assert git(root, "config", "--get", "gc.auto").strip() == "0"
+    assert git(root, "config", "--get", "maintenance.auto").strip() == "false"
 
 
 def test_text_sha256_reads_crlf_as_lf(script, tmp_path):
@@ -507,9 +547,7 @@ def commit_log(root: Path) -> None:
 
 
 def ran_copy(ran: dict, tmp_path: Path) -> Path:
-    target = tmp_path / "project"
-    shutil.copytree(ran["root"], target)
-    return target
+    return copy_repo(ran["root"], tmp_path / "project")
 
 
 def log_entries(root: Path) -> list[dict]:
@@ -618,7 +656,7 @@ def reran(script, ran, tmp_path_factory) -> dict:
     built once)."""
     if not _RERAN:
         root = tmp_path_factory.mktemp("oos_reran") / "project"
-        shutil.copytree(ran["root"], root)
+        copy_repo(ran["root"], root)
         before = tree_hashes(root / "outputs" / "oos", script)
         commit_log(root)
         fix = make_fix(root)
@@ -659,8 +697,7 @@ def test_a_rerun_writes_its_own_folders_and_leaves_the_run_of_record_untouched(s
 
 
 def test_a_decision_allows_one_rerun_and_a_later_rerun_may_follow_an_earlier_fix(script, reran, tmp_path):
-    root = tmp_path / "project"
-    shutil.copytree(reran["root"], root)
+    root = copy_repo(reran["root"], tmp_path / "project")
     commit_log(root)
     with pytest.raises(SystemExit, match="already holds the rerun of decision S99-1"):
         script.run_oos(root, rerun="S99-1")
