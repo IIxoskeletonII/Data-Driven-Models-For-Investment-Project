@@ -131,3 +131,197 @@ Scope beyond the pre-registration: §09 asks for the ledger on three In-Sample y
 no-cost check at 1e-6; the Level A check with costs and borrow at 1e-10, in all three cost scenarios, is ours
 (Amendment 3 C2, S21-9). The settings are in the `ledger:` section of `config.yaml`; `06_backtest.py --ledger-years`
 replays them and refuses any return realised after the In-Sample end (S21-14).
+
+### Signals, sizing and the hedge (`src/sizing.py`)
+
+Each Friday t, the 9 sector scores (known after the close) are sorted in descending order. Exact ties are broken
+alphabetically, so the earlier ticker ranks higher. Ranks 1 and 2 get +1, the two lowest ranks get −1, and the rest get 0
+(§09; `signals_from_scores`).
+
+The core weight is 0.25 × signal, so the core is 50% long and 50% short. In the k = 1 and k = 3 sensitivity runs it is
+0.5 / k per name (Amendment 2 C4). With β̂ the BETA52 of week t, read through the vault (S23-4):
+
+    β_c = Σ_i 0.25 · s_i · β̂_i,     h = clip(−β_c / β̂_IVV, −0.5, 0.5)
+    h = 0 (IVV signal 0) if |h| / (1 + |h|) < 0.02          (Amendment 2 C2, S21-1)
+    w_i = 0.25 · s_i / (1 + |h|),    w_IVV = h / (1 + |h|),    Σ|w| = 1
+
+The IVV signal is the sign of h. Residual beta (β_c + h · β̂_IVV) / (1 + |h|) is non-zero only when the cap binds
+(|β_c / β̂_IVV| > 0.5) or the dead-band sets h to 0. Net exposure is h / (1 + |h|). Both are reported every week
+(`target_weights`).
+
+**Missing inputs** (§09 step 5, Amendment 2 C3, S21-2). A week can trade only if it has all 9 sector scores and all 10
+BETA52 (the 9 sectors and IVV, held or not). A zero or non-finite IVV beta counts as missing, because the hedge is
+undefined there. A week that misses any of them keeps last week's signals, target weights, hedge, residual beta, net
+exposure and cap flag. The engine rebalances the drifted weights back to those targets, so turnover from drift is still
+charged. The event is logged (logger `src.sizing`, level WARNING) with the week and the missing fields. Before the first
+fully valid week the book is flat. Its first week is entered from cash.
+
+### The weekly return (`src/backtest.py`)
+
+`forward_returns` gives R_fwd[t] = O(t+2) / O(t+1) − 1 on the adjusted opens, the realisation date (the open of week
+t + 2) and the period: In-Sample if that date is on or before 2019-12-27, Out-of-Sample otherwise (contract 7). `run`
+then computes, for the target weights w of week t:
+
+    gross_t    = Σ_i w_{t,i} · R_fwd_{t,i}
+    w_pre_t    = w_{t−1} · (1 + R_fwd_{t−1}) / (1 + net_{t−1})        (Amendment 3 C2, S21-9; 0 before the first week)
+    turnover_t = Σ_i |w_{t,i} − w_pre_{t,i}|
+    costs_t    = c · turnover_t,       c = cost in bps / 10,000
+    borrow_t   = b · 7/365 · Σ_{i: w<0} |w_{t,i}|
+    net_t      = gross_t − costs_t − borrow_t
+
+No interest is credited on cash or short collateral (§09). The three cost scenarios pair `costs.bps` and `costs.borrow`
+by position: 5 bps with 1%, 10 bps with 2% (the baseline) and 20 bps with 5% (S23-7). The book is one continuous series
+over both periods (Amendment 2 C5). The first Out-of-Sample trade is costed from the drifted In-Sample positions, while the
+reported behaviour statistics restart from flat in each period (S21-13). The engine never computes signals and never
+reads files. `06_backtest.py` stops before the engine runs if any real-data forward return is realised after
+2019-12-27, whether `FROZEN.lock` exists or not (S21-14).
+
+## Metrics and the risk-free rate (`src/metrics.py`)
+
+The definitions are those of the course skeleton's `docs/metrics.md`, on simple weekly returns with P = 52 periods per
+year (§11). Annualised return is (Π(1 + r))^(52/T) − 1. Volatility is the sample standard deviation × √52. Max drawdown
+is min_t E_t / max_{τ≤t} E_τ − 1, with the starting capital as the first peak. Ratios with a zero denominator are NaN.
+
+- **Risk-free rate** (S21-4). The weekly T-bill return is DGS3MO / 100 · 7/365, the day count of the borrow charge. The
+  rate of week t is the last FRED observation dated on or before the session before the last session of week t
+  (Amendment 1), so it is known after Friday close t.
+- **Sharpe, three conventions** (§09, S21-5). Headline: (annualised return − rf_annual) / volatility, with rf_annual =
+  (Π(1 + rf))^(52/T) − 1 over the same weeks (`period_average_rf`). Zero-cost long/short: annualised return /
+  volatility. Textbook √52 · mean / std, for information only. The headline Sharpe is also reported with the
+  skeleton's constant 2% (§11). The §07 gate and the shift check use the headline Sharpe with the weekly T-bill (Amendment 6 C1, S32-9).
+- **Other ratios.** Sortino uses the same rf over the downside root mean square of all weeks × √52. Jensen alpha uses
+  the mean weekly rf: (r̄ − rf_w − β(m̄ − rf_w)) · 52, which equals the skeleton formula for a constant rate.
+- **Behaviour** (S21-6). The skeleton's signal statistics use N = 10 traded columns (9 sectors and IVV). Net and gross
+  exposure and the turnover of the target weights, Σ|w_t − w_{t−1}|, are reported alongside. The charged turnover is
+  the drifted-weight turnover of the engine.
+- **Per period** (Amendment 2 C5). `period_metrics` computes every metric separately on the In-Sample and Out-of-Sample
+  weeks of one book, with the equity rebased to 100 and the behaviour statistics restarted at the first week of each
+  period.
+
+## In-Sample evaluation, placebo and the one-week-shift check (`06_backtest.py`, `07_evaluate.py`)
+
+- **Backtests.** `06_backtest.py --model NAME` or `--all` backtests any folder of `outputs/walkforward/` with a
+  `scores.csv` (S32-1). Names may hold single inner dots, such as `M1_a0.1` (S32-9). Scores are refused if their
+  `used.yaml` fails `check_used`, or if `summary.json` holds a `spec_hash` other than the one 05's spec gives under the
+  current `config.yaml` (S32-10). Each backtest writes `weekly.csv`: the baseline book's returns, costs, borrow,
+  turnover, residual beta, net, long and short exposure, the T-bill and the stress-scenario returns (S23-10, S32-2). No
+  per-ticker series is written.
+- **One-week-shift check** (§12, S32-3, S32-9). The delayed book gives week t the scores of week t − 1 and keeps the
+  hedge rule, sized with week t's BETA52. Both books are compared on their common weeks at baseline costs. The verdict
+  is FAIL only if the delayed book has the higher headline Sharpe and the paired block bootstrap (5,000 resamples, mean
+  block 4 weeks, seed 42, T-bill Sharpe) gives P(delayed > base) ≥ `selection.bootstrap_prob` (0.80). Otherwise it is
+  PASS. A FAIL is investigated, never fixed by changing a setting.
+- **Placebo** (§11, S32-4). 1,000 books, book i (0-based) with standard normal sector scores drawn with seed 42 +
+  1,000,000 + i, go through the same sizing, hedge, costs and engine on the scored weeks of the reference model, M0. The statistic is the
+  headline net Sharpe. A model's percentile is 100 · (#{placebo < model} + ½ · #{placebo = model}) / 1,000, on the same
+  weeks. Random books are redrawn every week, so they trade far more than a model. The percentile of the gross zero-cost
+  Sharpe is therefore reported alongside.
+- **Not trials** (S32-5). The delayed books and the placebo books get no row in `docs/trial_log.csv`. They are
+  diagnostics of configurations that already have one.
+- **`07_evaluate.py`** (S32-7). It reads every backtest folder, the shift checks and the placebo after `check_used`.
+  It stops, writing nothing, if any weekly row is not In-Sample. SPY (never traded) and the equal-weight basket (1/9 of
+  each sector's forward return, rebalanced weekly, no cost) come from the raw prices cut at the In-Sample end. It writes
+  `outputs/metrics/is_models.csv` (one row per model, baseline costs, with the rank IC of `src.stats.rank_ic` and the
+  placebo percentile), `is_benchmarks.csv`, `shift_check.csv`, `placebo.csv` and the plots.
+- **Plots** (S32-6). Equity and drawdown points are dated by the realisation date. Each period starts at 100 on the
+  execution date of its first week, on a log axis. Each rung has a fixed colour, and a fixed configuration uses its
+  rung's colour, dashed. The cost bridge shows the arithmetic mean weekly return × 52 (gross, − costs, − borrow, = net),
+  so the steps add up exactly. Every HTML plot has a fixed div id, so a rerun writes identical files (S39-5).
+- **Two rounds** (Amendment 9, S42-2). `is_models.csv` lists round 1 (the pre-registered ladder: M0, the candidates of
+  `models.candidate_order`, M0\* and the fixed names `M1_a*`, `M2_a*`, `M3_d*`, `M0_L*`) and then round 2 (M6 to M9 and
+  the fixed names `M6_a*`, `M7_a*_h*`, `M8_d*_h*`) as two sections. Columns `round`, `section` and `role` (hurdle,
+  candidate, fallback or fixed configuration) mark them. Any other folder name stops the evaluation. When
+  `outputs/metrics/selection_gate.json` exists, it is checked as in `08_run_oos.py` (S42-1). The candidates' rows then
+  carry the gate status, the pass verdict and the bootstrap threshold of their round (0.80 or 0.90). The `verdict` column
+  labels round 1's selection (the first passing round-1 candidate, else M0\*) as the primary pre-registered result
+  (Amendment 9 C3). Once the gate file holds round 2, it also labels the model traded under the order of both rounds.
+
+The §07 selection gate itself is applied by `05_train_walkforward.py --select` (S37-4), not by `07_evaluate.py`.
+
+## The Out-of-Sample run, the freeze and the rerun rule (`08_run_oos.py`)
+
+- **The gate file** (S34-3, S42-1). `outputs/metrics/selection_gate.json` must list the candidates of
+  `models.candidate_order` followed by `round2.candidate_order` (Amendment 9 C3), each `evaluated` or `absent`. Every
+  evaluated row must hold its Sharpe, drawdown and P(uplift > 0), M0's Sharpe and drawdown, and the four verdicts. The
+  verdicts must follow from those numbers: Sharpe ≥ M0's + 0.15, drawdown at most 2 points worse than M0's, and P ≥ 0.80
+  in round 1 or ≥ 0.90 in round 2 (`round2.selection.bootstrap_prob`). Every row must share one hurdle, and `selected`
+  must be the first passing candidate in the order, else M0\*. A file that lists round 1 only (the file of S37-9) is
+  refused by the freeze. An evaluated round-2 candidate is refused until its Out-of-Sample refit exists (session 4.2b).
+- **`--freeze`** (S34-3). It refuses, writing nothing, if the working tree is not clean (untracked files count), if
+  `FROZEN.lock` or an access-log entry already exists, or if the gate file or any artefact is missing, built with
+  another config, stale by `spec_hash`, or absent from the trial log. `FROZEN.lock` records the code commit, the SHA-256
+  of `config.yaml` and `docs/trial_log.csv`, the trial count, the split and data end, the selected model, the models of
+  the run with their spec hashes, the grid value chosen at the last In-Sample refit of each tuned rung (Amendment 6 C2),
+  and the SHA-256 of every In-Sample table, `features_config.yaml`, the gate file and the walk-forward files of every
+  model. Text files are hashed with CRLF read as LF. Only `FROZEN.lock` and `docs/decisions.md` (the signatures) may
+  change after the freeze.
+- **The run of record** (S34-4). It refuses unless the lock parses, the tree is clean, the frozen commit is an ancestor of
+  HEAD, only the allowed files changed since the freeze, every recorded hash matches, and
+  `outputs/oos_access_log.json` has no entry. It then writes the single log entry (time, commit, HEAD, lock hash,
+  selected model, data end) before the vault is unlocked, so every access is logged even if a later step fails.
+- **Tables** (S34-5, S38-1). The full-range tables are rebuilt through 03's unlock path into `data/processed/oos/`, so
+  the frozen In-Sample tables stay byte-identical. The forward returns are built first, with the period boundary at
+  2019-12-27, the truncation at `data.end` and the lock path. The builder itself refuses without `FROZEN.lock`. Every
+  model input is read through the unlocked vault.
+- **Refits** (§07, Amendment 6 C2, S34-6). The quarterly refits continue with `src.labels.walk_forward_folds`,
+  extended to `data.end`, from the 2019 Q4 refit to the last week with a realised label. Every fit asserts the purge. The models are the
+  selected one, every evaluated candidate, M0 and M0\* (ENS adds its members). Each tuned rung keeps its frozen grid
+  value, and only its parameters are refitted. The In-Sample weeks keep their frozen scores. The 2019 Q4 refit's
+  In-Sample weeks are compared with them (max |difference| and identity of the ±1 signals, tolerance 1e-12; S34-2). A
+  difference is reported, not a reason to stop.
+- **Books** (Amendment 2 C5, S34-7). One continuous book per model in the three cost scenarios, from prices and DGS3MO
+  cut at `data.end`. Its baseline In-Sample returns are checked against the frozen `outputs/backtests/<model>/weekly.csv`.
+  Outputs go under `outputs/oos/`: per model `scores.csv`, `weekly.csv`, `metrics.csv`, `summary.json` and `used.yaml`,
+  plus `run.json`.
+- **Rerun** (§10 step 4, Amendment 8 C1, S36-1). A rerun is allowed only after a decision with the fields `Bug`,
+  `Fix commit` and `Fix files`. Before any Out-of-Sample access, `--rerun ID` checks the following: the run of record is
+  logged for the current lock; no entry names the decision yet; the fix commit comes after the freeze and is an
+  ancestor of HEAD; it changes exactly the Fix files; and those name no config, trial log, lock or artefact. It then
+  appends one entry naming the decision and writes to `data/processed/oos_reruns/<ID>/` and `outputs/oos_reruns/<ID>/`,
+  so the run of record stays untouched. `tests/test_oos_access_log.py` (CI) fails if the log holds more than one entry
+  plus one per recorded rerun decision, or names a decision twice.
+- **`07_evaluate.py --period OOS`** (S34-8 to S34-11, S38-2). It runs only if `FROZEN.lock` exists and the log holds
+  exactly one entry for it. It writes per-period metrics, benchmarks and plots. The market-neutral tests (S34-9) are:
+  the OLS beta to SPY with a Newey–West interval; the correlation; the mean in SPY-down weeks and months, with a
+  stationary-bootstrap interval (block 4 weeks, or 1 month); and the mean weekly return, the share of positive rolling
+  52-week windows and the return of each calendar year. The bonus is claimed only if all pass, for the selected model
+  only. The secondary bonus compares the headline Sharpe and drawdown with SPY, with the Ledoit–Wolf test (S34-10). The
+  DSR and PBO use the trial matrix declared by `outputs/metrics/selection_bias.json`, rebuilt from its sources and
+  checked against its In-Sample values within 1e-12 (S38-2).
+
+## Packaging (`make_submission.py`)
+
+- **Files** (S2-3, S35-1 to S35-3). `project/` holds exactly `git ls-files` + `data/raw/**` + `data/processed/**` +
+  `outputs/**`, never a walk of the folder. Assistant and tool settings files and synthetic outputs are left out and
+  listed. The course requires the raw data, the processed data and the results in the zip. The raw vendor data stays out
+  of the public repository only.
+- **Refusals** (S35-2, S35-5). The build stops, writing nothing and listing every problem, if: a `.env` file is present;
+  any file holds a key-like string (the test suite's fake sentinel aside); a tracked file has uncommitted changes;
+  `README.md`, `pyproject.toml`, `uv.lock` or `config.yaml` is missing; or the presentation is not a PDF with a `%PDF-`
+  header.
+- **Stale outputs** (S35-3, S42-3). Every settings file is checked with `check_used` against what its writer saves under
+  the current `config.yaml`, and a settings file without a known writer stops the build. The round-2 settings live in
+  `round2:`, outside every `used.yaml` (S40-1). So for each round-2 model folder, the `summary.json` of its walk-forward
+  folder, and of its backtest folder when that ships, must also hold the `spec_hash` that 05's spec gives under the
+  current config.
+- **Zip** (S35-4). Entries are sorted, deflated, dated 1980-01-01 and given mode 0644, so the same files give the same
+  bytes. The slides are stored at the root as `presentation.pdf`. The manifest lists every entry's SHA-256 and size,
+  the file count, the total size, and the zip's size and SHA-256.
+
+## One-command In-Sample pipeline (`run_all.py`)
+
+- **Steps** (S39-2). In order: `01_download_data.py` (verify only; it refuses to start without
+  `data/raw/manifest.json`, so it never downloads), `03_build_features.py`, `05_train_walkforward.py` for every rung and
+  fixed name of 05 (read from 05 at run time), `06_backtest.py --all`, the shift check of every rung, the placebo,
+  `05 --agent-returns`, `05 --select`, `07_evaluate.py`, and last `06_backtest.py --ledger-years`. It never runs
+  `04_agent_lab.py` (agent results replay from the committed caches), `08_run_oos.py`, `00_smoke_test_data.py` or
+  `02_validate_data.py`.
+- **Stops.** The first step that exits with a non-zero code stops the run. A table of every step (status, seconds,
+  note) is printed at every stop and at the end.
+- **After the freeze** (S39-3). With `FROZEN.lock` present, it runs only with `--after-freeze`, which skips
+  `--agent-returns` and `--select` (their outputs are frozen).
+- **Clean tree** (S39-4). In a git checkout it refuses a dirty tree, and fails if the run changed the tree. Outside one
+  (the submission zip), it says that the check is skipped.
+- **Identical outputs** (S39-5). Every step runs with `PYTHONHASHSEED` = `config.seed`. Two runs on one machine give
+  byte-identical files under `data/processed/` and `outputs/`, except the append-only access logs. Between machines,
+  reproduction is judged by tolerance and identity of the signals, never by file hashes (S34-2).

@@ -2036,6 +2036,119 @@ is computed or seen.
 | Files affected | `config.yaml` (new `round2:` section only), `tests/test_round2_config.py`, `docs/decisions.md` |
 | Amendment | Implements Amendment 9 (commit `c8999b0`). No further amendment |
 
+## 2026-11-06 · Session 3.9: `run_all.py`, the one-command In-Sample pipeline (Gate 5)
+
+Evidence-standard format. "Instruction" quotes the session 3.9 prompt (6 Nov 2026). "Answer" quotes the options Mattia
+chose that day for three questions the session asked before any code was written. When this entry was written,
+`FROZEN.lock` did not exist, `outputs/oos_access_log.json` had no entry, and no Out-of-Sample value had been computed or
+seen. `run_all.py` reads and writes In-Sample data only. "Approved by" lists the approvals given so far; Eliya approves
+through the review of the pull request from branch `feat/3.9-run-all`.
+
+### S39-1 · Ownership of `run_all.py` moves to Mattia
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | `run_all.py` is Eliya's file (S2-7). Who builds it for Gate 5? |
+| Options considered | (a) Eliya; (b) Mattia, calling only the pipeline's command lines and the public names of Eliya's files, and editing none of them (chosen) |
+| Decision | (b). Mattia owns `run_all.py` and its test file `tests/test_run_all.py`. `run_all.py` runs each script as a process with its documented options. The only name it reads from Eliya's code is `05_train_walkforward.py`'s `RUNGS` and `fixed_names(cfg)`, which it loads by path and only reads. No file of Eliya's is changed |
+| Rationale | Eliya carries Amendment 9 and the round-2 lab; Mattia owns the engine, the evaluation and the packaging that `run_all.py` drives |
+| Evidence | Instruction: "Session 3.9 — run_all.py, the one-command pipeline for Gate 5 (owner: Mattia, by decision S39-1: ownership moves from Eliya, who approves through this PR's review)."; S2-7; S34-1 (the same pattern for `08_run_oos.py`) |
+| Proposed by | Eliya Allam and Mattia Cervelli (session 3.9 instruction) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No: ownership, not specification |
+
+### S39-2 · The steps, their order, and what `run_all.py` never runs
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Which commands does `run_all.py` run, in which order, and how does it stop? The instruction's list starts at 03 and omits four steps that a run from the raw snapshot needs, or that produce reported outputs |
+| Options considered | (a) the instruction's list only (03, 05 for every configuration, 06 `--all` and the shift checks, 05 `--select`, 07); (b) (a) plus 01 offline, 05 `--agent-returns` and 06 `--placebo` (Answer 2, recommended); (c) (b) plus 06 `--ledger-years` as the last step (chosen, Answer 2) |
+| Decision | (c). The steps, each run as `python <script> <options>` from the project root, in order: `01_download_data.py`; `03_build_features.py`; `05_train_walkforward.py --model R` for every R of 05's `RUNGS`, then `--fixed F` for every F of 05's `fixed_names(cfg)` (read from 05 when `run_all.py` runs, so a round-2 rung added to 05 is included with no change here); `06_backtest.py --all`; `06_backtest.py --shift-check` with every rung of `RUNGS`; `06_backtest.py --placebo` (M0, S32-8); `05_train_walkforward.py --agent-returns`; `05_train_walkforward.py --select`; `07_evaluate.py`; `06_backtest.py --ledger-years`. The four additions and their reasons: 01 without `--refresh` verifies `data/raw/` and rebuilds `data/processed/daily_*.csv`, which 03 reads. `run_all.py` refuses before the first step if `data/raw/manifest.json` is missing, so 01 can never download. `--agent-returns` writes the agent folders without which `--select` stops (S37-7); it re-scores through the sealed vault and calls no LLM (S37-6). The placebo is read by 07's In-Sample table. The ledger reconciliation is the engine's correctness evidence (Gate 2) and runs last: a failure there leaves every earlier result written and is reported in the summary. **Never run:** `04_agent_lab.py` (agent results replay from the committed caches under `agent_lab/`), `08_run_oos.py` (the single Out-of-Sample run, by hand), and `00_smoke_test_data.py` and `02_validate_data.py` (they are not part of the In-Sample results chain; 02 rewrites `docs/qa_report.md`). A step list naming 04 or 08 is refused. **Stop and summary:** the first step that exits with a code other than 0 stops the run, with a message naming the step and its exit code. Before every stop and at the end, `run_all.py` prints a table of every step (`ok`, `FAILED`, `skipped` or `not run`, seconds, note) and the total time. Its own lines are flushed, so in a log file each step's header comes before that step's output (test `test_the_headers_and_the_summary_keep_their_place_when_stdout_is_a_file`) |
+| Rationale | (a) would fail at `--select` on a fresh run (no agent folders) and could not start from the raw snapshot (no `daily_close.csv`). The placebo and the ledger are outputs the submission ships (S35-3) |
+| Evidence | Instruction: "run_all.py runs the full In-Sample pipeline from the raw snapshot, in order: 03_build_features.py; 05_train_walkforward.py for every rung and fixed configuration that has a spec in 05 (it reads the list from 05, so round-2 rungs are included automatically once they exist); 06_backtest.py --all and the shift checks; 05 --select; 07_evaluate.py. It never calls 08_run_oos.py or 04_agent_lab.py (agent results replay from their committed caches). It stops at the first failure with the step's name, prints a summary table of what ran and its time"; Answer 2: "All four, with 06 --ledger-years as the last step: it is the engine's correctness evidence (Gate 2), and a failure there must not block the main results; report it in the summary."; `01_download_data.py` docstring ("Raw data is downloaded only if data/raw/ does not exist (or with --refresh)"); `03_build_features.py: load_inputs` (reads `data/processed/daily_close.csv`); S37-7 ("a walk-forward agent row without its folder stops the run (run `--agent-returns` first)"); S37-6; S32-8, S32-11 (the shift checks of every rung and the placebo on M0); `07_evaluate.py: read_placebo`; tests `test_the_pipeline_runs_every_05_configuration_in_order_and_never_04_or_08`, `test_a_rung_added_to_05_is_run_and_shift_checked`, `test_run_steps_refuses_a_step_that_is_never_run`, `test_preflight_refuses_without_the_raw_snapshot`, `test_it_stops_at_the_first_failure_naming_the_step_and_prints_the_summary`, `test_the_last_step_failing_leaves_the_earlier_outputs` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026 (Answer 2); Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No: deviates from the instruction's step list, not from the pre-registration |
+
+### S39-3 · `run_all.py` after the freeze: the `--after-freeze` flag
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | At Gate 5 `FROZEN.lock` exists. Once it does, `05 --agent-returns` and `05 --select` refuse to run (S37-8 point 2). A rerun of 03 and 05 also rewrites frozen artefacts, and on another machine those can differ in the last bits (ridge scores, S34-2). What does `run_all.py` do when the lock exists? |
+| Options considered | (a) refuse unless `--after-freeze` is passed; with it, skip the two frozen steps and rerun the rest (chosen, Answer 1); (b) always skip the two steps with a notice; (c) refuse after the freeze |
+| Decision | (a). Without the flag, `run_all.py` refuses before the first step when `FROZEN.lock` exists. With the flag and no lock, it also refuses. With the flag and the lock, `--agent-returns` and `--select` are shown as `skipped` (their committed and frozen outputs are used) and every other step runs |
+| Rationale | Nobody can rewrite frozen artefacts by accident, and the graders can still reproduce every In-Sample result after Gate 4 |
+| Evidence | S37-8 (2): "`--select` and `--agent-returns` stop when `FROZEN.lock` exists (`refuse_after_freeze`)"; S34-2; S34-3; Answer 1: "Opt-in flag (Recommended)"; tests `test_preflight_needs_the_flag_after_the_freeze_and_the_lock_with_the_flag`, `test_frozen_steps_are_skipped_after_the_freeze_and_every_step_gets_the_hash_seed` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026 (Answer 1); Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No |
+
+### S39-4 · The clean-tree rule, inside and outside a git checkout
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | How does `run_all.py` refuse a dirty tree, given that the submission zip has no `.git` folder? |
+| Options considered | (a) inside a git work tree, refuse a dirty tree and fail if the run changed the tree; outside one, say that the check is skipped and run (chosen, Answer 3); (b) always require git |
+| Decision | (a). Inside a git work tree, `run_all.py` refuses before the first step if `git status --porcelain` lists any path (untracked files count; git-ignored ones do not, as in S34-3). After the last step it runs the same check again, and fails, naming the first path, if the run changed the tree, since a reproduction must leave it unchanged. A new trial row written by 05 for a new spec is the expected case of such a change, and it must be committed on purpose. Outside a git work tree, or with no git installed, it prints "not a git checkout: the clean-tree check is skipped" and runs |
+| Rationale | The results must come from a committed state of the code and the trial log. The graders' zip must still run |
+| Evidence | Instruction: "and refuses a dirty tree"; Answer 3: "Skip check, say so (Rec.)"; S35-4 (the zip holds `project/<path>`, no `.git`); S34-3 (the porcelain rule of `--freeze`); tests `test_a_dirty_tree_is_refused_and_a_run_that_changes_the_tree_fails`, `test_outside_a_git_checkout_the_tree_check_is_skipped_and_said`, `test_git_dirty_is_none_outside_a_work_tree` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026 (Answer 3); Eliya Allam: PR review |
+| Files affected | `run_all.py`, `tests/test_run_all.py` |
+| Amendment | No |
+
+### S39-5 · Two runs give identical outputs: the hash seed, the plot ids and the test
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | What does "running it twice gives identical outputs" cover, and what had to change for it to hold? |
+| Options considered | Plots: (a) give each HTML plot a fixed div id derived from its file name (chosen); (b) leave plotly's random id and compare the HTML files without it. Scope: (c) every file under `data/processed/` and `outputs/`, byte for byte, except the append-only access logs (chosen); (d) a tolerance comparison |
+| Decision | (a) and (c). (1) Plotly writes a random div id into every HTML file, so two runs differed. `src/plots.py: _write_html` now passes `div_id = "plot-<file name>"`, so the HTML is identical across runs; the PNG files already were. (2) Every step gets `PYTHONHASHSEED` = `config.seed` (42) (manual §6). (3) "Identical" means byte-identical files, except for the append-only access logs (`outputs/vault_access_log.jsonl`, and the vault server log that `--agent-returns` writes under `outputs/agent_lab/rescore/`), where each run appends its own timestamped lines by design (contract 15). Across machines, S34-2 still applies: ridge scores can differ at floating-point level, so reproduction between machines is judged by tolerance and signal identity. (4) The test runs a stubbed step list twice: three subprocess steps on the synthetic market in the temporary git project of `tests/test_run_oos_script.py`, namely 03's tables, 05's M0 walk-forward with 06's backtest of it, and an equity chart of `src.plots`. It deletes their outputs before each run and compares the SHA-256 of every output file. The trial log must stay byte-identical and the tree clean |
+| Rationale | A byte comparison is the strongest check on one machine and needs no tolerance. The logs record accesses, not results |
+| Evidence | Instruction: "Running it twice gives identical outputs (a test on the synthetic market with a stubbed step list)."; operating manual §6 ("Fixed seeds (`config.seed`); `PYTHONHASHSEED`"); plotly 7.1.0 `write_html` (`div_id` default: a random UUID; `outputs/plots/M0_equity.html` held `id="7a665fb4-…"`); S34-2; contract 15 (the vault access log); tests `test_two_runs_of_a_stubbed_pipeline_give_identical_outputs`, `test_charts_written_twice_are_byte_identical` |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `run_all.py`, `src/plots.py`, `tests/test_run_all.py`, `tests/test_plots.py` |
+| Amendment | No |
+
+### S39-6 · The README's run section (shared file)
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | What changes in `README.md`, a shared file? |
+| Options considered | (a) only the Quick start: `run_all.py` as the one command, the commands it runs in order, its refusals, and the scripts it does not run (chosen); (b) a wider rewrite |
+| Decision | (a). The Quick start's old list of scripts is replaced. That list included the sentence saying the scripts stop with `NotImplementedError` until their gate, which is no longer true, and a cache path `data/cache/` that does not exist. The new section has `uv sync`, `uv run python run_all.py` and `uv run pytest`, then the commands `run_all.py` runs in order, what it refuses, the `--after-freeze` flag, and the scripts run by hand (00, 02, 04, 08 and `07_evaluate.py --period OOS`). No other section changes |
+| Rationale | One command for the graders, with every step still documented for a step-by-step run |
+| Evidence | Instruction: "Update the README's run section in the same PR, flagged as a shared file."; operating manual §4 (shared files change in small dedicated pull requests; this one is flagged in the pull request); course instructions (p. 4): "a README.md with all the information needed to set up the environment, and the commands required to run the code (scripts or notebooks), in order" |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review (shared file) |
+| Files affected | `README.md` |
+| Amendment | No |
+
+### S39-7 · Rehearsal of the full pipeline on the real In-Sample data
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Does `run_all.py` run the real pipeline end to end, leave the tracked files unchanged, and reproduce the existing outputs? |
+| Options considered | Report the rehearsal as run (chosen) |
+| Decision | Before this branch's first code commit, `run_all.py`'s `pipeline(cfg)` was run with `run_steps` on Mattia's machine (Windows 11, the environment of S34-2), on the real In-Sample data. Only the clean-tree check was bypassed, because the branch's changes were not committed yet; `git status` was checked by hand afterwards. Result: all 26 steps `ok`, 218 s in total (longest: `--agent-returns` 71 s, the placebo 32 s, ENS 23 s). 01 verified the 15 raw files against the manifest and downloaded nothing. No tracked file changed: `data/checksums.json`, `data/checksums_features.json` and `docs/trial_log.csv` are byte-identical, so the run added no trial row. Of the 316 files under `data/processed/` and `outputs/` that existed before the run (the access log aside), 246 are byte-identical; the other 70 are the HTML plots, changed only by the fixed div id of S39-5. New on this machine: the 12 agent folders of S37-6 and `selection_gate.json` and `selection_bias.json`. Both files are byte-identical to Eliya's of S37-9 (SHA-256 `ac7d305b…c2ba` and `6740f1e4…56a5`), so the gate and the diagnostics reproduce across machines. Selected: M0\*; M1, M2, M3 and ENS fail and M5 is absent, as in S37-9. The real-data check that S38-2 left open passes: `07_evaluate.py: in_sample_inference` gives 28 columns (12 agent), 624 weeks, N = 56, DSR 3.15e-5 and PBO 0.2934, equal to `selection_bias.json` within 1e-12. No Out-of-Sample path was touched. No code, setting or result was changed because of these results; the one change after the rehearsal is the flushed output of S39-2, which affects only the order of printed lines |
+| Rationale | A one-command pipeline counts for Gate 5 only if it runs on the real data |
+| Evidence | Rehearsal log and before/after SHA-256 lists (6 Nov 2026, kept locally, not committed: they name output files of licensed data); S37-9; S38-2; S34-2 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `docs/decisions.md` only |
+| Amendment | No |
+
 ## 2026-11-06 · Session 4.1: round-2 rungs M6, M7 and M8 (Amendment 9 C1)
 
 Evidence-standard format. "Instruction" quotes the session 4.1 prompt (6 Nov 2026). These entries were written before
@@ -2163,6 +2276,76 @@ through the review of the pull request from branch `feat/4.1-round2-rungs`.
 | Proposed by | Eliya Allam |
 | Approved by | Eliya Allam (instruction of 6 Nov 2026); Mattia Cervelli: PR review |
 | Files affected | `tests/test_round2_config.py`, `docs/decisions.md` |
+| Amendment | No |
+
+## 2026-11-06 · Session 4.2a: round-2 readiness of 07, 08 and `make_submission.py`; the methods of Mattia's modules
+
+Evidence-standard format. "Instruction" quotes the session 4.2a prompt (6 Nov 2026). Everything below is built and tested
+on synthetic fixtures. Two real In-Sample outputs were read: the gate file of S37-9, through `check_gate` and `read_gate`,
+and the In-Sample backtests, through `07_evaluate.py`. When this entry was written, `FROZEN.lock` did not exist,
+`outputs/oos_access_log.json` had no entry, no Out-of-Sample value had been computed or seen, and no round-2 output
+existed. The round-2 Out-of-Sample refits are not wired here: they need Eliya's hook from session 4.1 (session 4.2b).
+"Approved by" lists the approvals given so far; Eliya approves through the review of the pull request from branch
+`feat/4.2a-round2-ready`.
+
+### S42-1 · `08_run_oos.py`: the gate file of both rounds
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Amendment 9 C3 extends the candidate order to M1, M2, M3, M5, ENS, M6, M7, M8, M9 and sets the round-2 bootstrap threshold to 0.90. How does 08 validate a gate file now, and what does it do with a round-2 candidate before the round-2 Out-of-Sample refits exist? |
+| Options considered | Order: (a) accept only the extended order; (b) accept the round-1 order too, everywhere; (c) validate both forms with one function, `check_gate`, and let only the extended form pass `read_gate`, which `--freeze` uses (chosen). Thresholds: (d) check only `status` and `selected`, as before; (e) recompute every evaluated row's verdicts from its numbers, with its round's threshold, and check that `selected` is the first passing candidate (chosen). Round-2 candidate evaluated: (f) refuse in `run_models` until session 4.2b (chosen); (g) wire the round-2 refits now (excluded by the instruction) |
+| Decision | (c), (e) and (f). **Order.** `candidate_rounds(cfg)` = (`models.candidate_order`, `round2.candidate_order`). A gate file lists either the round-1 candidates only or both rounds in that order, each `evaluated` or `absent`. **Verdicts.** Every evaluated row must hold the numbers `sharpe`, `sharpe_m0`, `mdd`, `mdd_m0` and `p_uplift_positive`, and the booleans `passes_sharpe`, `passes_mdd`, `passes_bootstrap` and `passes`, which `src.stats.selection_gate` already writes (S37-4). The verdicts must equal Sharpe ≥ `sharpe_m0` + `selection.sharpe_uplift`, drawdown ≥ `mdd_m0` − `selection.mdd_tolerance`, and P ≥ `bootstrap_threshold(name)`, which is `selection.bootstrap_prob` (0.80) in round 1 and `round2.selection.bootstrap_prob` (0.90) in round 2. `passes` must be all three. Every evaluated row must share one hurdle (Amendment 9 C4). `selected` must be the first passing candidate in the file's order, else M0\*. `check_gate` also returns `round1_selected`, the first passing round-1 candidate, else M0\*: the primary pre-registered result. The file's `thresholds` key is not read; the check uses `config.yaml`. **Freeze.** `read_gate` refuses a file that lists round 1 only, naming the four missing candidates, so the system cannot be frozen without the round-2 selection. **Run.** `run_models` refuses an evaluated round-2 candidate, naming session 4.2b. With round 2 absent, the models of the run are unchanged (M1, M2, M3, ENS, M0, M0\* for the test gate) |
+| Rationale | C3 makes the extended order the selection rule, so a freeze on the round-1 file would skip round 2. 07 must still read that file, or the pipeline on `main` would stop at 07 until session 4.1 writes the round-2 file. Recomputing the verdicts is how 08 checks that 0.90 was applied to round 2, using only the row keys `selection_gate` already returns |
+| Evidence | Amendment 9 C3: "The candidate order becomes M1, M2, M3, M5, ENS, M6, M7, M8, M9. Round-1 candidates keep the §07 gate. Round-2 candidates must have Sharpe ≥ M0 + 0.15, max drawdown no more than 2 percentage points worse than M0, and paired block bootstrap P(uplift > 0) ≥ 0.90. The first candidate in this order that passes its gate is traded; if none passes, M0* is traded."; C4: "No round-1 setting, cost, signal or sizing rule, or hurdle changes."; `config.yaml` `round2.candidate_order`, `round2.selection.bootstrap_prob: 0.90` (S40-1); S34-3; S37-4; Instruction §1: "08_run_oos.py read_gate: accept the extended candidate order models.candidate_order + round2.candidate_order (Amendment 9 C3), and the round-2 gate threshold round2.selection.bootstrap_prob when validating a gate file. M6–M9 may be absent or evaluated. Do not wire the round-2 OOS refits yet". On the real file of S37-9 (`outputs/metrics/selection_gate.json`, 6 Nov 2026), `check_gate` gives names [M1, M2, M3, M5, ENS], `complete` false, `selected` M0\* and `round1_selected` M0\*, so every recorded verdict follows from its numbers; `read_gate` refuses it as round 1 only. Tests in `tests/test_run_oos_script.py`: `test_the_candidate_order_and_the_thresholds_come_from_both_config_sections`, `test_read_gate_accepts_both_rounds_with_round_2_absent`, `test_read_gate_refuses_a_gate_file_of_round_1_only`, `test_a_round_2_candidate_needs_the_round_2_bootstrap_threshold` (P = 0.85 passes in round 1, fails in round 2), `test_selected_is_the_first_passing_candidate_of_both_rounds`, `test_check_gate_refuses_a_row_that_is_not_a_gate_row` (5 cases), `test_run_models_refuse_an_evaluated_round_2_candidate_until_its_refit_exists`, `test_freeze_refuses_a_gate_file_of_round_1_only`. The test gate `GATE` now holds full rows and the four absent round-2 candidates |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review (the row keys and the order his round-2 selection step must write) |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py`, `tests/test_evaluate_script.py` (the gate of the OOS fixture lists both rounds) |
+| Amendment | No: implements Amendment 9 C3 |
+
+### S42-2 · `07_evaluate.py`: round 1 and round 2 as two sections of the In-Sample table
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | How does the In-Sample evaluation tell round-1 from round-2 output folders, present the two rounds, and label round 1's verdict? |
+| Options considered | Round of a folder: (a) by name patterns of both rounds (chosen); (b) by a field of `summary.json` (none exists yet); (c) by the candidate lists of `config.yaml` only (misses the fixed names). Other names: (d) stop (chosen); (e) count them as round 1. Layout: (f) one `is_models.csv` with `round`, `section` and `role` columns, rows ordered round 1 then round 2, and a printed view in two sections (chosen); (g) two files (would change the file the slides and the zip read). Verdict: (h) from the gate file, checked by 08's `check_gate` (chosen); (i) M0\* written into the code |
+| Decision | (a), (d), (f) and (h). **Names** (`model_round`). Round 1: `M0`, `M0_star`, `M1`, `M2`, `M3`, `M5`, `ENS` and the fixed names `M1_a<v>`, `M2_a<v>`, `M3_d<v>`, `M0_L<v>` (S31-10). Round 2: `M6`, `M7`, `M8`, `M9` and `M6_a<v>`, `M7_a<v>_h<v>`, `M8_d<v>_h<v>`. Here `<v>` is digits with at most one inner dot (`0.1`, `10`), as the names of S32-9. Any other backtest folder stops 07 before it reads any backtest. **Rows.** Round 1, then round 2. Within a round: the hurdle M0, the candidates in their order, the fallback M0\*, then the fixed names, alphabetically. **Columns added** in front of the S32-7 columns, which are unchanged: `round`, `section`, `role` (hurdle, candidate, fallback, fixed configuration), `gate_status`, `gate_passes`, `gate_bootstrap_prob` (the threshold of the row's round), and `verdict`. **Verdict.** When `outputs/metrics/selection_gate.json` exists, it is checked by `check_gate` (S42-1); a file that breaks the rule stops 07 before anything is written. `round1_selected` is labelled "primary pre-registered result (round-1 gate, §07)". Once the file lists round 2, its `selected` is labelled "traded (first passing candidate of both rounds, Amendment 9 C3)". Both labels go on one row when they name the same model. Without the file the column is empty and the printout says so. **Printout.** Two sections, each with its bootstrap threshold, then the labelled rows |
+| Rationale | Amendment 9 C3 requires round 1's verdict to stay the primary result and both rounds to be reported. One table with section columns keeps one file for the slides and the zip. Deriving the verdict from the checked gate file, not from code, keeps it right whatever the gate gives |
+| Evidence | Amendment 9 C3: "Round 1's verdict (M0*, S37-9) is reported as the primary pre-registered result, and every candidate of both rounds appears in the OOS scorecard."; preamble of Amendment 9: "Round 2 is therefore a response to In-Sample results, and the report says so."; Instruction §2: "07_evaluate.py and make_submission.py: accept the round-2 output folders (names M6, M7, M8, M9 and the fixed names M6_a*, M7_a*_h*, M8_d*_h*, with their dots) and present round 1 and round 2 as separate sections of the In-Sample table, with round 1's verdict (M0*, S37-9) labelled as the primary pre-registered result."; S32-7; S32-9 (dotted names). Real In-Sample run (`07_evaluate.py`, 6 Nov 2026): 17 round-1 rows with the Sharpes, drawdowns and turnover of S32-11; round 2 "(no output yet)"; "M0_star: primary pre-registered result (round-1 gate, §07)". Tests in `tests/test_evaluate_script.py`: `test_model_round_follows_the_folder_names_of_both_rounds` (23 names), `test_the_round_2_rungs_of_the_name_patterns_are_round2_candidate_order`, `test_the_table_holds_round_1_then_round_2_with_round_1s_verdict_primary`, `test_a_round_1_gate_file_labels_only_the_primary_result`, `test_without_a_gate_file_the_sections_say_so`, `test_a_gate_file_that_breaks_the_rule_stops_the_evaluation`, `test_a_backtest_folder_of_neither_round_is_refused`. The round-2 folders of the tests are backtested by 06 with 05's `spec_for` stubbed for round-2 names only, since 05 has no round-2 spec before session 4.1 |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `tests/test_evaluate_script.py` |
+| Amendment | No: reports Amendment 9 C3 |
+
+### S42-3 · `make_submission.py`: round-2 output folders and their identity
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Round-2 folders sit where round-1 folders do, so S35-3 already ships them and checks their `used.yaml`. But the round-2 settings live in `round2:`, which is in no `used.yaml` (S40-1). How does the build keep a stale round-2 output out of the zip? |
+| Options considered | (a) `check_used` only, as in S35-3; it cannot see a change of `round2:`; (b) for each round-2 model folder, also compare the `spec_hash` of its `summary.json` files with the one 05's `spec_for` gives under the current config, as 06 does for its inputs (S32-10) (chosen); (c) the same check for round-1 folders as well (not in this pull request: S35-3 is unchanged for round 1) |
+| Decision | (b). `round2_identity` lists every model named by a settings file `outputs/walkforward/<name>/used.yaml`, `outputs/backtests/<name>/used.yaml` or `outputs/diagnostics/shift/<name>/used.yaml` (`output_model`) that `07_evaluate.py: model_round` puts in round 2. For each one, `outputs/walkforward/<name>/summary.json`, and `outputs/backtests/<name>/summary.json` if that folder ships, must be in the zip and hold `06_backtest.py: expected_spec_hash(name, cfg)`. A missing summary, another hash, or a name 05 has no spec for is a problem, listed with the others of S35-2 and S35-3, and the build stops writing nothing. Before session 4.1, any round-2 folder therefore stops the build, because 05 has no round-2 spec. The shift-check summary holds no `spec_hash` (S32-3), so a shift folder is covered by its model's walk-forward summary |
+| Rationale | S35-3 exists so that no stale result enters the zip. For round-2 outputs, the only identity that holds the round-2 settings is the trial's `spec_hash` |
+| Evidence | S35-3: "a stale output stops the build"; S40-1: "`round2:` is in neither identity" (the `spec_hash` sections of `walkforward_settings` and the `used.yaml` of 05 and 06); S32-10; Instruction §2 (quoted in S42-2). Tests in `tests/test_make_submission.py`: `test_round_2_folders_ship_when_their_identity_is_current`, `test_output_model_names_the_model_of_a_model_folder`, `test_a_round_2_setting_change_stops_the_build_although_every_used_yaml_matches` (a change of `round2.smoothing.half_life_weeks`: no `check_used` error, eight `spec_hash` problems, nothing written), `test_a_round_2_folder_without_its_summary_or_spec_is_refused`. Open point for both humans: `tuning:` is also outside every `used.yaml` (S31-2), so (c) would close the same gap for round 1 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `make_submission.py`, `tests/test_make_submission.py` |
+| Amendment | No |
+
+### S42-4 · `docs/methods.md`: the methods of Mattia's modules
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | Which methods sections does Mattia add, and where? |
+| Options considered | (a) append to the end of the file, under the S21-12 rule, without editing earlier sections (chosen); (b) rewrite the Phase 2.1 section |
+| Decision | (a). Two subsections complete "Engine and ledger accounting (Phase 2.1)": "Signals, sizing and the hedge" and "The weekly return". New sections follow: "Metrics and the risk-free rate"; "In-Sample evaluation, placebo and the one-week-shift check"; "The Out-of-Sample run, the freeze and the rerun rule"; "Packaging"; "One-command In-Sample pipeline". Each rule cites the amendment or decision that set it. The sections state methods only: no result is added beyond the ledger figures already in the file |
+| Rationale | Each method is written by the person who implements it (S21-12), and the evidence for each choice is in the decision it cites |
+| Evidence | S21-12: "other phases append their own sections and do not edit earlier ones"; Instruction §3: "docs/methods.md: append or complete the sections for my modules, citing decisions and amendments: the engine and ledger (from S21), the metrics and the risk-free rate, the evaluation, placebo and shift check (S32), the OOS run, freeze and rerun rule (S34, Amendment 8), packaging (S35) and run_all.py (S39). Plain, exact, no results that are not committed yet." |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `docs/methods.md` |
 | Amendment | No |
 
 ## Reviewer sign-offs

@@ -107,3 +107,16 @@ def test_every_chart_writes_html_and_png(tmp_path):
         assert (tmp_path / f"{name}.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     assert (tmp_path / "plotly.min.js").exists()  # written once; the HTML files open offline
     assert 'src="plotly.min.js"' in (tmp_path / "equity.html").read_text(encoding="utf-8")
+
+
+def test_charts_written_twice_are_byte_identical(tmp_path):
+    """S39-5: the HTML div id is fixed by the file name, so a second run of the pipeline gives the same files."""
+    index = _weeks(30)
+    rng = np.random.default_rng(1)
+    returns = pd.DataFrame({"M0": rng.normal(0, 0.01, 30), "SPY": rng.normal(0, 0.02, 30)}, index=index)
+    period, realised = pd.Series("IS", index=index), _realised(index)
+    for run in ("a", "b"):
+        plots.equity_curves(returns, period, realised, tmp_path / run / "equity")
+    for suffix in ("html", "png"):
+        assert (tmp_path / "a" / f"equity.{suffix}").read_bytes() == (tmp_path / "b" / f"equity.{suffix}").read_bytes()
+    assert 'id="plot-equity"' in (tmp_path / "a" / "equity.html").read_text(encoding="utf-8")
