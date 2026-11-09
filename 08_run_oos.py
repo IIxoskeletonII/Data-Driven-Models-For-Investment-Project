@@ -11,6 +11,12 @@ decision S34-1), with the bug-fix rerun of Amendment 8 (decision S36-1).
              the quarterly refits into the Out-of-Sample with each rung's last In-Sample grid value frozen (Amendment 6
              C2) for the selected model and every candidate (§07 step 6), M0 and M0*; backtests one continuous book per
              model across 2019-12-27 (Amendment 2 C5). The first run after the freeze is the run of record.
+             Round 2 (S42-8): an evaluated M6, M7 or M8 is continued with src.models.walkforward_round2 on the same
+             Out-of-Sample folds, at the grid point of its last In-Sample refit (round2_frozen_value, recorded in the lock);
+             the 4-week labels (labels_h4.csv) are rebuilt into data/processed/oos/ and read through the unlocked vault
+             only when the run holds such a model, and --freeze covers labels_h4.csv, scores.csv, used.yaml, summary.json
+             and selection.csv of every such model, refusing with the file's path if one is missing. M9 is refused until
+             session 4.4.
   --rerun ID a rerun to correct a bug found after the run of record (Amendment 8 C1, S36-1): refuses unless the run of
              record is logged and docs/decisions.md holds the rerun decision ID (fields Bug, Fix commit, Fix files), the
              fix commit comes after the freeze and changes exactly the Fix files, and nothing else changed since the
@@ -53,7 +59,16 @@ from src.data import sha256 as file_sha256
 from src.features import features_settings
 from src.labels import label_end_by_week, walk_forward_folds
 from src.metrics import period_metrics, tbill_weekly_returns
-from src.models import ENS_MEMBERS, LadderData, ensemble_scores, grid, walkforward_rung, walkforward_settings
+from src.models import (
+    ENS_MEMBERS,
+    LadderData,
+    ensemble_scores,
+    grid,
+    round2_frozen_value,
+    walkforward_round2,
+    walkforward_rung,
+    walkforward_settings,
+)
 from src.sizing import signals_from_scores, size_book
 from src.vault import Vault, logged_spec_hashes, spec_hash
 
@@ -72,7 +87,9 @@ RERUN_FIELDS = ("Bug", "Fix commit", "Fix files")  # the fields of a rerun decis
 DECISION_ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")  # also a folder name on Windows and macOS
 TABLES = ("features", "market_states", "labels", "momentum_variants", "sizing_betas", "forward_returns")
 WALKFORWARD_FILES = ("scores.csv", "used.yaml", "summary.json", "selection.csv")
-TUNED = ("M1", "M2", "M3", "M0_star")  # rungs whose grid value is frozen (Amendment 6 C2)
+ROUND2_WIRED = ("M6", "M7", "M8")  # round-2 rungs with an Out-of-Sample refit here (S42-8); M9 waits for session 4.4
+TUNED = ("M1", "M2", "M3", "M0_star", *ROUND2_WIRED)  # rungs whose grid value is frozen (Amendment 6 C2, S42-8)
+LABELS_H4 = "labels_h4"  # the 4-week label table of round 2 (S41-1, S42-8)
 FIXED_RUNGS = ("M0", "M0_star")  # always run: the hurdle and the fallback (S34-6)
 REPRODUCTION_TOLERANCE = 1e-12  # S34-2: numeric tolerance, never file hashes
 WEEK_COLUMNS = ["date_open", "date_close"]
@@ -398,16 +415,17 @@ def read_gate(root: Path, cfg: dict) -> dict:
 
 def run_models(gate: dict, cfg: dict) -> list[str]:
     """The models of the OOS run (S34-6): the evaluated candidates in models.candidate_order + round2.candidate_order
-    (the selected among them), then M0 and M0_star; ENS adds its members. An evaluated round-2 candidate is refused:
-    its Out-of-Sample refit needs the round-2 refit hook of 05 (session 4.2b, S42-1)."""
+    (the selected among them), then M0 and M0_star; ENS adds its members. Evaluated M6, M7 and M8 are accepted (their
+    refit is walkforward_round2, S42-8); an evaluated M9 is refused, naming session 4.4 (its rung and refit do not exist
+    yet, S42-1, S42-8); M5 stays refused."""
     first, second = candidate_rounds(cfg)
     evaluated = [c["name"] for c in gate["candidates"] if c["status"] == "evaluated"]
     if "M5" in evaluated:
         raise SystemExit("M5 has no Out-of-Sample refit in 08_run_oos.py yet: its spec and refit hook come with Phase 3.3")
-    round2 = [name for name in evaluated if name in second]
-    if round2:
-        raise SystemExit(f"round-2 candidates {round2} were evaluated, but 08_run_oos.py has no Out-of-Sample refit for "
-                         "round 2 yet: it needs the round-2 refit hook of 05_train_walkforward.py (session 4.2b, S42-1)")
+    unwired = [name for name in evaluated if name in second and name not in ROUND2_WIRED]
+    if unwired:
+        raise SystemExit(f"round-2 candidates {unwired} were evaluated, but 08_run_oos.py has no Out-of-Sample refit for "
+                         "them yet: their rung and refit are built in session 4.4 (S42-1, S42-8)")
     models = list(evaluated)
     if "ENS" in models:
         models += [m for m in ENS_MEMBERS if m not in models]
@@ -446,10 +464,15 @@ def check_walkforward(root: Path, cfg: dict, name: str, trial_hashes: set[str]) 
 
 def frozen_value(root: Path, cfg: dict, rung: str) -> dict:
     """The grid value chosen at the last In-Sample refit of a tuned rung (Amendment 6 C2, S31-14): the last row of
-    outputs/walkforward/<rung>/selection.csv, cast to the grid value of the same number (int 10, float 0.1)."""
+    outputs/walkforward/<rung>/selection.csv, cast to the grid value of the same number (int 10, float 0.1).
+    For M6, M7 and M8 (S42-8) the value is the parameter dict of src.models.round2_frozen_value (a ValueError of the hook
+    becomes a SystemExit naming the file), with the grid's plain int and float types so that the JSON of FROZEN.lock
+    gives them back; `chosen` is the row's tag."""
     path = walkforward_dir(root, rung) / "selection.csv"
     if not path.exists():
         raise SystemExit(f"outputs/walkforward/{rung}/selection.csv not found: the frozen grid value cannot be read")
+    if rung in ROUND2_WIRED:
+        return _round2_frozen(path, cfg, rung)
     table = pd.read_csv(path).sort_values(["test_year", "refit"])
     last = table.iloc[-1]
     last_year = int(cfg["split"]["test_years"][1])
@@ -462,13 +485,45 @@ def frozen_value(root: Path, cfg: dict, rung: str) -> dict:
             "test_start": str(last["test_start"])}
 
 
-def artefact_paths(root: Path, cfg: dict, models: list[str]) -> list[str]:
-    """Repository-relative paths of every artefact the run depends on (S34-3), sorted."""
-    processed = processed_dir(root, cfg)
-    paths = [processed / f"{name}.csv" for name in TABLES] + [processed / "features_config.yaml", Path(root) / GATE_FILE]
+def _round2_frozen(path: Path, cfg: dict, rung: str) -> dict:
+    """frozen_value of a round-2 rung (S42-8): round2_frozen_value on selection.csv, plus the last row's tag, test_year,
+    refit and test_start. The values are Python int and float (never numpy), as the grid holds them."""
+    table = pd.read_csv(path)
+    try:
+        point = round2_frozen_value(rung, table, cfg)
+    except ValueError as error:
+        raise SystemExit(f"{path}: {error} (S42-8)") from None
+    last = table.sort_values(["test_year", "refit"]).iloc[-1]
+    plain = {key: (int(v) if isinstance(v, (int, np.integer)) else float(v)) for key, v in point.items()}
+    return {"value": plain, "chosen": str(last["chosen"]), "test_year": int(last["test_year"]), "refit": int(last["refit"]),
+            "test_start": str(last["test_start"])}
+
+
+def required_walkforward_files(root: Path, models: list[str]) -> list[Path]:
+    """The walk-forward files every model of the run needs (S42-8): scores.csv, used.yaml and summary.json, and
+    selection.csv for a model in TUNED."""
+    paths = []
     for name in models:
         folder = walkforward_dir(root, name)
-        paths += [folder / f for f in WALKFORWARD_FILES if f != "selection.csv" or (folder / f).exists()]
+        paths += [folder / f for f in WALKFORWARD_FILES if f != "selection.csv" or name in TUNED]
+    return paths
+
+
+def check_walkforward_files(root: Path, models: list[str]) -> None:
+    """SystemExit "artefact not found: <path>" for the first required walk-forward file that is missing (S42-8)."""
+    missing = [p for p in required_walkforward_files(root, models) if not p.exists()]
+    if missing:
+        raise SystemExit(f"artefact not found: {missing[0]}")
+
+
+def artefact_paths(root: Path, cfg: dict, models: list[str]) -> list[str]:
+    """Repository-relative paths of every artefact the run depends on (S34-3), sorted. scores.csv, used.yaml and
+    summary.json are required of every model, selection.csv of every model in TUNED (S42-8); labels_h4.csv joins the
+    frozen tables when a round-2 model is in `models`. SystemExit "artefact not found" for the first missing file."""
+    processed = processed_dir(root, cfg)
+    tables = list(TABLES) + ([LABELS_H4] if any(name in ROUND2_WIRED for name in models) else [])
+    paths = [processed / f"{name}.csv" for name in tables] + [processed / "features_config.yaml", Path(root) / GATE_FILE]
+    paths += required_walkforward_files(root, models)
     missing = [p for p in paths if not p.exists()]
     if missing:
         raise SystemExit(f"artefact not found: {missing[0]}")
@@ -490,6 +545,7 @@ def freeze(root: Path = ROOT) -> dict:
     check_used(features_settings(cfg), processed_dir(root, cfg) / "features_config.yaml", "03_build_features.py")
     gate = read_gate(root, cfg)
     models = run_models(gate, cfg)
+    check_walkforward_files(root, models)  # a missing file stops the freeze naming its path (S42-8)
     trial_hashes = logged_spec_hashes(root / TRIAL_LOG)
     hashes = {name: check_walkforward(root, cfg, name, trial_hashes) for name in models}
     frozen = {rung: frozen_value(root, cfg, rung) for rung in TUNED if rung in models}
@@ -646,13 +702,16 @@ def append_entry(root: Path, lock: dict, decision: RerunDecision | None = None) 
 # -- the run: tables, refits and the continuous book (decisions S34-5 to S34-7) -----------------------------------------
 
 
-def rebuild_tables(root: Path, cfg: dict, out_dir: Path | None = None) -> dict:
+def rebuild_tables(root: Path, cfg: dict, out_dir: Path | None = None, *, with_h4: bool = False) -> dict:
     """The full-range tables through 03's unlock path (S34-5), written to out_dir (default data/processed/oos/; a
     rerun's data/processed/oos_reruns/<ID>/, S36-1): the six tables of
     03_build_features.py built from the inputs cut at data.end. The forward returns come from
     build_forward_returns(..., is_end, truncate_at=data.end, lock_path=FROZEN.lock) (S37-2, S38-1): the builder labels
     the period from realised_on against split.in_sample_end (contract 7) and raises OOSAccessError itself unless
-    FROZEN.lock exists. Returns 03's {file: rows, dates, columns, bytes, sha256}."""
+    FROZEN.lock exists. With with_h4 (the run holds a round-2 model, S42-8) the 4-week labels are built too, by
+    build_horizon_labels(..., round2.label.horizon_weeks, truncate_at=data.end, lock_path=FROZEN.lock), and written as
+    labels_h4.csv; without it the tables are exactly those of round 1. Returns 03's {file: rows, dates, columns, bytes,
+    sha256}."""
     s03 = features_script()
     data_dir = Path(root) / cfg["data"]["data_dir"]
     end, is_end = pd.Timestamp(cfg["data"]["end"]), pd.Timestamp(cfg["split"]["in_sample_end"])
@@ -663,6 +722,10 @@ def rebuild_tables(root: Path, cfg: dict, out_dir: Path | None = None) -> dict:
     tables = s03.build_tables(daily_close, vix, fred, cfg)
     tables["labels"] = s03.build_labels(daily_open, daily_close, end)
     tables["forward_returns"] = forward
+    if with_h4:
+        horizon = int(cfg["round2"]["label"]["horizon_weeks"])
+        tables[LABELS_H4] = s03.build_horizon_labels(daily_open, daily_close, is_end, horizon, truncate_at=end,
+                                                     lock_path=lock_path(root))
     out_dir = oos_data_dir(root, cfg) if out_dir is None else Path(out_dir)
     return s03.write_tables(tables, out_dir, is_end, lock_path(root), allow_oos=True)
 
@@ -699,7 +762,10 @@ def oos_folds(data: LadderData, cfg: dict, last_is_week: pd.Timestamp) -> list:
 
 
 def model_recipe(name: str, lock: dict, cfg: dict) -> tuple[str, object]:
-    """(rung, value) of walkforward_rung for a model's OOS refits (Amendment 6 C2, S34-6); ENS is built from members."""
+    """(rung, value) of walkforward_rung for a model's OOS refits (Amendment 6 C2, S34-6); ENS is built from members.
+    Round-2 names have no recipe here: they are refitted by walkforward_round2 (refit_scores, S42-8)."""
+    if name in ROUND2_WIRED:
+        raise SystemExit(f"{name}: a round-2 model is refitted by walkforward_round2, not walkforward_rung (S42-8)")
     if name == "M0":
         return "M0", cfg["models"]["M0"]["feature"]
     if name == "M0_star":
@@ -709,12 +775,16 @@ def model_recipe(name: str, lock: dict, cfg: dict) -> tuple[str, object]:
     raise SystemExit(f"{name}: no Out-of-Sample recipe")
 
 
-def refit_scores(models: list[str], data: LadderData, folds: list, lock: dict, cfg: dict) -> dict[str, pd.DataFrame]:
+def refit_scores(models: list[str], data: LadderData, folds: list, lock: dict, cfg: dict,
+                 labels_h4: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
     """Scores of the refit windows (the 2019 Q4 window included) of every model: walkforward_rung at the frozen values,
-    every fit purged; ENS = ensemble_scores of its members' refit scores."""
+    every fit purged; M6, M7 and M8 by walkforward_round2 on `labels_h4` at the grid point recorded in the lock, purged
+    by the 4-week label_end (S42-8); ENS = ensemble_scores of its members' refit scores."""
     out = {}
     for name in models:
-        if name != "ENS":
+        if name in ROUND2_WIRED:
+            out[name] = walkforward_round2(name, data, labels_h4, folds, cfg, value=lock["frozen_values"][name]["value"])[0]
+        elif name != "ENS":
             rung, value = model_recipe(name, lock, cfg)
             out[name] = walkforward_rung(rung, data, folds, cfg, value=value)[0]
     if "ENS" in models:
@@ -822,7 +892,9 @@ def backtest_book(root: Path, cfg: dict, name: str, scores: pd.DataFrame, market
 
 def run_oos(root: Path = ROOT, rerun: str | None = None) -> dict:
     """The Out-of-Sample run of record (S34-4 to S34-7), or, with rerun = a decision ID, its rerun after a recorded bug
-    fix (Amendment 8 C1, S36-1), written to the rerun's own folders. Returns run.json's content."""
+    fix (Amendment 8 C1, S36-1), written to the rerun's own folders. When the run holds M6, M7 or M8 (S42-8) the 4-week
+    labels are rebuilt into the run's tables folder and read through the unlocked vault (Vault.labels(end, horizon=4)),
+    and these models are refitted by walkforward_round2 on the same folds. Returns run.json's content."""
     root = Path(root)
     lock, cfg, decision = verify_lock(root, rerun)
     tables_dir, out_dir = oos_data_dir(root, cfg, rerun), oos_out_dir(root, rerun)
@@ -840,10 +912,12 @@ def run_oos(root: Path = ROOT, rerun: str | None = None) -> dict:
     entry = append_entry(root, lock, decision)  # every check passed: the access is logged before the vault opens
     vault = Vault(is_end, lock_path=lock_path(root), log_path=root / VAULT_LOG, data_dir=tables_dir, cfg=cfg)
     vault.unlock()
-    tables = rebuild_tables(root, cfg, tables_dir)
+    with_h4 = any(name in ROUND2_WIRED for name in models)
+    tables = rebuild_tables(root, cfg, tables_dir, with_h4=with_h4)
     data = ladder_data(vault, end)
     folds = oos_folds(data, cfg, last_is_week)
-    refits = refit_scores(models, data, folds, lock, cfg)
+    labels_h4 = vault.labels(end, horizon=int(cfg["round2"]["label"]["horizon_weeks"])) if with_h4 else None
+    refits = refit_scores(models, data, folds, lock, cfg, labels_h4)
 
     bt = backtest_script()
     _, sessions, fwd, realised_on, period = bt.read_market(end, is_end, root=root)

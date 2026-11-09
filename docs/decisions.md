@@ -2348,6 +2348,92 @@ existed. The round-2 Out-of-Sample refits are not wired here: they need Eliya's 
 | Files affected | `docs/methods.md` |
 | Amendment | No |
 
+## 2026-11-06 · Session 4.2b: round-2 In-Sample backtests, shift checks and the Out-of-Sample wiring of 08
+
+Evidence-standard format. "Instruction" quotes the session 4.2b prompt (6 Nov 2026). These entries were written on branch
+`feat/4.2b-round2-backtests` from `main` at `986ca6b` (pull requests #24 and #25 merged), before the code that depends on
+them. The round-2 In-Sample backtests and shift checks were run on the real In-Sample data. The Out-of-Sample wiring is
+built and tested on synthetic fixtures only. When these entries were written, `FROZEN.lock` did not exist,
+`outputs/oos_access_log.json` did not exist (no entry), no Out-of-Sample value had been computed or seen, and no round-2
+gate statistic (P(uplift > 0), verdict) had been computed: the round-2 gate is session 4.4's (`05 --select`, 0.90).
+"Approved by" lists the approvals given so far; Eliya approves through the review of the pull request from branch
+`feat/4.2b-round2-backtests`.
+
+### S42-5 · The round-2 In-Sample walk-forwards reproduced on Mattia's machine
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | `outputs/` and `data/processed/` are git-ignored, so the round-2 walk-forwards of S41-7 existed only on Eliya's machine and `06_backtest.py --all` had nothing of round 2 to backtest on Mattia's. Where do the inputs of the round-2 backtests come from, and are they the outputs of S41-7? |
+| Options considered | (a) Rerun Eliya's `03_build_features.py` and `05_train_walkforward.py` unchanged on Mattia's machine and judge the reproduction by S34-2 (chosen); (b) copy Eliya's output folders (not chosen: the course data stay on each machine, and a rerun also tests reproduction); (c) wait for Eliya |
+| Decision | (a). No file of Eliya's was edited. **03.** `03_build_features.py` wrote `labels_h4.csv` with SHA-256 `cd77b1f6e592f3932e45b56e5eb1860bfee8eaaf422fbdb333babe6b5c427009`, equal to S41-7; the other 14 files of `data/processed/` kept their SHA-256, and `data/checksums_features.json` did not change (`git status` clean). **05.** `--model M6, M7, M8` and the 13 `--fixed` round-2 names: each 48 refits, 624 test weeks (2008-01-04 to 2019-12-13), 0 missing scores. All 16 `spec_hash` values equal S41-7, so no trial row was added (`docs/trial_log.csv` unchanged). `scores_sha256`: the 5 LightGBM runs (M8, M8_d2_h2, M8_d2_h4, M8_d3_h2, M8_d3_h4) equal S41-7 byte for byte; the 11 ridge runs (M6, M7 and their 9 fixed values) differ in their bytes, as round 1's ridge runs did in S34-2. The grid points chosen over the 48 refits equal S41-7 for each tuned rung (M6 a10 22, a1 17, a0.1 9; M7 a1_h4 17, a1_h2 10, a10_h2 10, a10_h4 6, a0.1_h2 3, a0.1_h4 2; M8 d2_h4 22, d3_h2 10, d3_h4 8, d2_h2 8), and so do the last-refit choices Amendment 6 C2 freezes (M6 a10, M7 a10_h2, M8 d3_h4). The three `selection.csv` files differ in their bytes from S41-7's SHA-256. Mattia's `scores_sha256` of the ridge runs: M6 `965e9d0f…4700`, M7 `4ee13b08…50f4`, M6_a0.1 `f821d2f6…d882`, M6_a1 `4960ff7f…67e4`, M6_a10 `edbd3a56…b18e`, M7_a0.1_h2 `b53726e1…c7b0`, M7_a0.1_h4 `67cae414…843c`, M7_a1_h2 `4b00424f…24b8`, M7_a1_h4 `cd5462cd…4563`, M7_a10_h2 `ebe8f8b2…f8ac`, M7_a10_h4 `69a11943…40b8`. **Open.** S34-2 judges reproduction by numeric tolerance and identical signals; that comparison needs Eliya's files and is left to the review (Eliya: max \|difference\| of the 11 ridge `scores.csv` and of the three `selection.csv`, and whether the weekly signals are identical) |
+| Rationale | The backtests must read the outputs whose `spec_hash` is in the trial log. A rerun under the unchanged code and config gives them, and the byte-identical tables and LightGBM runs, the equal hashes and the equal choices show it is the same run; only the ridge floating-point bytes remain to be compared numerically |
+| Evidence | S34-2: "Reproduction is judged by numeric tolerance and signal identity, not by file hashes … The cause is a different summation order in the linear-algebra library on another CPU"; S41-7 (hashes and choices); operating manual §6: "Numeric comparisons use tolerances, never file hashes."; Instruction §1.1: "`06_backtest.py --all` already reads every `outputs/walkforward/<model>/` and checks each spec_hash through 05's `spec_for`. Run it." Console output of 6 Nov 2026 |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | none tracked (`data/processed/labels_h4.csv`, `outputs/walkforward/<round-2 name>/`, git-ignored) |
+| Amendment | No |
+
+### S42-6 · The one-week-shift check of round-2 rungs keeps the §12 threshold
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | `06_backtest.py --shift-check` fails a model only if the delayed book has the higher Sharpe and P(delayed > base) ≥ `selection.bootstrap_prob` (0.80, S32-3). Amendment 9 C3 sets 0.90 for the round-2 gate. Which threshold does the shift check of M6, M7 and M8 use? |
+| Options considered | (a) 0.80 for every model, as S32-3 (chosen); (b) 0.90 for round-2 rungs |
+| Decision | (a). The shift check is the §12 leakage check, not the §07 gate; Amendment 9 C3 changes only the gate. 0.80 also fails a leaking model more readily than 0.90 would. No code changes: `shift_check` already runs on any walk-forward folder |
+| Rationale | Keeping the check's threshold makes the round-2 shift checks comparable with round 1's, and the stricter choice for a leakage test is the lower threshold |
+| Evidence | S32-3 (Decision quoted in full there: "FAIL only if the delayed net Sharpe (T-bill) is higher and P(delayed > base) ≥ `selection.bootstrap_prob`"); Amendment 9 C3: "Round-2 candidates must have … paired block bootstrap P(uplift > 0) ≥ 0.90"; C4: "No round-1 setting … changes"; Instruction §1.2: "Shift checks: `06_backtest.py --shift-check M6 M7 M8` (§12, S32-3). The one-week delay must not improve results; report P and the IC, as for round 1." |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | none |
+| Amendment | No |
+
+### S42-7 · Results of the round-2 In-Sample backtests and shift checks
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | What did `06_backtest.py --all`, `--shift-check M6 M7 M8` and `07_evaluate.py` give for round 2, and are round 1's outputs unchanged? |
+| Options considered | None (record of results) |
+| Decision | **Round 1 unchanged.** Before `--all` overwrote them, the 17 round-1 folders of `outputs/backtests/` were copied aside. After the run, `metrics.csv` and `weekly.csv` of all 17 are byte-identical to the copies (max \|difference\| 0, tolerance 1e-12), and so is every `summary.json`. In `outputs/metrics/`, the round-1 rows of `is_models.csv` (17), `shift_check.csv` (6), `is_benchmarks.csv` and `placebo.csv` are identical (max \|difference\| 0); `selection_gate.json` and `selection_bias.json` are untouched. **Round-2 backtests** (`--all`, 33 models; 624 weeks 2008-01-04 to 2019-12-13; baseline 10 bps and 2% borrow; Sharpe = headline with the weekly T-bill, Amendment 6 C1; MDD; mean weekly turnover): M6 −0.9651, −47.04%, 0.7633; M7 −0.6527, −36.66%, 0.3005; M8 −0.8236, −49.83%, 0.3005; M6_a0.1 −0.9568, −47.26%, 0.7582; M6_a1 −0.9568, −47.26%, 0.7582; M6_a10 −0.9641, −47.33%, 0.7681; M7_a0.1_h2 −0.6397, −36.37%, 0.3310; M7_a0.1_h4 −0.6251, −34.17%, 0.2422; M7_a1_h2 −0.6837, −38.10%, 0.3291; M7_a1_h4 −0.6228, −34.08%, 0.2435; M7_a10_h2 −0.6902, −38.21%, 0.3250; M7_a10_h4 −0.6536, −35.50%, 0.2459; M8_d2_h2 −0.8162, −48.21%, 0.3326; M8_d2_h4 −0.7790, −47.19%, 0.2370; M8_d3_h2 −0.9599, −50.95%, 0.3774; M8_d3_h4 −0.7969, −45.79%, 0.2844. Gross Sharpe (zero-cost) of the tuned rungs: M6 −0.0314, M7 −0.1251, M8 −0.3074. Stress cases (5 bps and 1%; 20 bps and 5%), Sharpe: M6 −0.5565, −1.8165; M7 −0.4420, −1.1417; M8 −0.6165, −1.3084. 0 missing-input weeks; cap-binding weeks M6 1, M7 0, M8 0. `spec_hash` of each backtest summary = 05's `spec_for` (S41-7). **Shift checks** (623 common weeks 2008-01-11 to 2019-12-13, baseline costs; base → delayed Sharpe; P(delayed > base); mean weekly rank IC base → delayed, HAC t): M6 −0.9643 → −0.9578, P 0.5128, IC −0.0078 (t −0.45) → −0.0285 (t −1.74), PASS; M7 −0.6638 → −0.9232, P 0.0236, IC −0.0184 (t −1.12) → −0.0332 (t −2.14), PASS; M8 −0.8018 → −0.7426, P 0.7286, IC −0.0019 (t −0.12) → −0.0021 (t −0.13), PASS. For M6 (+0.0065) and M8 (+0.0592) the delayed book's Sharpe is higher, with P below 0.80 (and below 0.90), so S32-3 gives PASS; neither model's base book has a positive rank IC on the 1-week forward return. **07.** `07_evaluate.py` wrote 33 rows (17 round 1, 16 round 2) in the two sections of S42-2; no round-2 gate verdict is computed or printed (`gate_passes` empty in round 2), and round 1's verdict stays "M0_star: primary pre-registered result (round-1 gate, §07)". Round 1's rows are listed above as unchanged. **Not run.** `05 --select` (session 4.4) and the full `run_all.py`: its `--select` step would compute the round-2 gate statistics |
+| Rationale | Figures recorded as results, so the session 4.4 gate and the report cite one source; no choice was made on them |
+| Evidence | Console output of 6 Nov 2026 (`06_backtest.py --all`, `--shift-check M6 M7 M8`, `07_evaluate.py`); `outputs/backtests/<name>/summary.json`, `outputs/diagnostics/shift/M6`, `M7`, `M8/summary.json`, `outputs/metrics/is_models.csv`; Instruction §1: "Record the round-2 In-Sample figures in a decision … Sharpe, MDD and turnover per model and per fixed point, and the shift-check P values. These are results, not choices." |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | none tracked (outputs git-ignored) |
+| Amendment | No |
+
+### S42-8 · `08_run_oos.py`: the Out-of-Sample refits of M6, M7 and M8 and what `--freeze` covers
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | How does 08 continue a round-2 candidate Out-of-Sample with Eliya's hook (S41-6), where do its 4-week labels come from, what does `--freeze` record for it, and what stays refused? |
+| Options considered | Folds: (a) 08's Out-of-Sample folds of S34-6 (round 1's refit rule on the 1-week `label_end`), passed to `walkforward_round2`, which moves `train_end` by the 4-week `label_end` (chosen, as S41-2 and S41-6); (b) folds built on the 4-week `label_end`. 4-week labels: (c) rebuilt by `build_horizon_labels(…, truncate_at=data.end, lock_path=FROZEN.lock)` into the run's tables folder and read through the unlocked vault with `Vault.labels(end, horizon=4)`, only when the run holds a round-2 model (chosen); (d) on every run. "`--freeze` must copy every file round 2 needs": (e) every such file is recorded with its SHA-256 in `FROZEN.lock`'s `artefacts`, which the run checks, and a missing file refuses the freeze (chosen: the lock of S34-3 records hashes and copies nothing, so "copy" is read as "cover"); (f) copy the files to a second folder (no such mechanism exists in S34-3) |
+| Decision | (a), (c) and (e). **Models.** `run_models` accepts evaluated M6, M7 and M8; M9 is refused, naming session 4.4 (its rung and refit do not exist); M5 stays refused. `TUNED` gains M6, M7 and M8. **Frozen value.** At `--freeze`, `src.models.round2_frozen_value(rung, selection, cfg)` on `outputs/walkforward/<rung>/selection.csv` gives the grid point of the last In-Sample refit (the 2019 Q4 refit; `ValueError` from the hook stops the freeze). The lock's `frozen_values[<rung>]` holds `value` (the parameter dict, JSON keeping the grid's int and float types), `chosen` (the tag), `test_year`, `refit` and `test_start` of that row. **Run.** For a round-2 model the run reads the 4-week labels through the unlocked vault and calls `src.models.walkforward_round2(rung, data, labels_h4, folds, cfg, value=frozen)` on the Out-of-Sample folds; the hook asserts the purge by the 4-week `label_end` on every fit and refits only the model's parameters (Amendment 6 C2). The 2019 Q4 reproduction check (S34-2, 1e-12, identical signals), the continuous book (Amendment 2 C5) and every output of S34-7 apply unchanged. **Smoothing across the boundary.** M7 and M8 score week t with the current fit on the features of weeks t − 3H … t (S41-3). For the first Out-of-Sample weeks these lags include In-Sample weeks; every lag is known after Friday close t, and the fit uses only labels with `label_end ≤ purge_end`. A test checks that the scores of each refit window do not change when every input dated after it is replaced. **Freeze.** For every model of the run, `scores.csv`, `used.yaml` and `summary.json` are required, and for every tuned rung (M1, M2, M3, M0\*, M6, M7, M8) `selection.csv` too (it was previously listed only when present); with a round-2 model in the run, `data/processed/labels_h4.csv` joins the frozen tables. A missing file refuses the freeze, naming it, and nothing is written. M9's files join when session 4.4 adds M9 to `TUNED` and its recipe. **Unchanged.** A run whose gate lists no evaluated round-2 candidate builds the same tables and models as before (no `labels_h4` rebuild) |
+| Rationale | (a) keeps the refit dates of both rounds identical, as S41-2 requires In-Sample. (c) computes no 4-week Out-of-Sample label that the run does not use. (e) makes a round-2 output changed after the freeze stop the run, as for round 1 |
+| Evidence | S41-6 (quoted in the instruction of this session): "(1) `src.models.round2_frozen_value(rung, selection, cfg)` … (2) `src.models.walkforward_round2(rung, data, labels_h4, folds, cfg, *, value=frozen)`: on any folds (08's Out-of-Sample folds of S34-6), refits only the model's parameters each quarter on the newly realised 4-week labels, purged by their `label_end` (asserted on every fit) … (3) … `build_horizon_labels(daily_open, daily_close, split.in_sample_end, 4, truncate_at=data.end, lock_path=FROZEN.lock)`, written with `write_tables(…, allow_oos=True)` into 08's `data/processed/oos/` and read through the unlocked vault with `Vault.labels(as_of, horizon=4)`"; S42-1: "`run_models` refuses an evaluated round-2 candidate, naming session 4.2b"; Amendment 6 C2; S34-3, S34-6, S34-7; S41-2, S41-3; Instruction §2: "`--freeze` must copy every file round 2 needs (`scores.csv`, `used.yaml`, `summary.json`, `selection.csv` of M6–M8 and of M9 once it exists) and refuse if one is missing. Remove the S42-1 refusal "until its OOS refit exists" only for rungs now wired. M9 stays refused until 4.4 builds it." |
+| Proposed by | Mattia Cervelli (instruction of 6 Nov 2026) |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review (the use of his hook) |
+| Files affected | `08_run_oos.py`, `tests/test_run_oos_script.py` (the S42-1 refusal test now covers M9 only), `tests/test_run_oos_round2.py` (new) |
+| Amendment | No: implements Amendment 6 C2 and Amendment 9 C1 for the Out-of-Sample run |
+
+### S42-9 · `07_evaluate.py`: one all-models equity plot per round
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-06 |
+| Question | With round 2 filled, `outputs/plots/all_models_equity` holds 33 strategies and 3 benchmarks: the PNG's legend is cut off (matplotlib: "constrained_layout not applied because axes sizes collapsed to zero"), and every round-2 series is drawn in the same fallback red. How are the two rounds plotted? |
+| Options considered | (a) `all_models_equity` keeps round 1's models only, so it is the same plot as before, and a new `round2_models_equity` shows round 2 with M0 (the hurdle) and M0\* (the fallback) for reference; M6, M7, M8 and M9 get their own categorical colours (chosen); (b) one taller plot of 36 series (unreadable); (c) drop the fixed configurations from the plot (round 1's plot would change) |
+| Decision | (a), with the round of each model from `model_round` (S42-2). The colours of M0 to ENS and M0\* do not change; M6 `#8b5a2b`, M7 `#11a8c8`, M8 `#8fb800`, M9 `#b0178f`. **Legend height.** Round 1's plot alone holds 17 strategies and 3 benchmarks (20 legend entries), and in its PNG the last entries (SPY, Equal weight) were already cut off before this session. The PNG of every line chart is therefore made taller when its legend needs it: height max(4.5, 0.27 × entries + 0.8) inches, so a chart of up to 13 series keeps the old height. Round 1's `all_models_equity` keeps the same series and colours; its PNG is taller, and its title (PNG and HTML) now reads "every round-1 model". No metric changes (`is_models.csv` identical before and after) |
+| Rationale | Keeps round 1's figure as it was and gives the slides a readable round-2 figure, in line with the two sections of S42-2 |
+| Evidence | Console warning of `07_evaluate.py` on 6 Nov 2026 (`src/plots.py:139`); `outputs/plots/all_models_equity.png` of that run; S42-2; S32-6 ("a variant of a rung takes its rung's colour with a dashed line") |
+| Proposed by | Mattia Cervelli |
+| Approved by | Mattia Cervelli, 6 Nov 2026; Eliya Allam: PR review |
+| Files affected | `07_evaluate.py`, `src/plots.py`, `tests/test_evaluate_script.py`, `tests/test_plots.py` |
+| Amendment | No |
+
 ## 2026-11-06 · Session 4.3: round-2 agent lab on M7 (Amendment 9 C2)
 
 Evidence-standard format. "Instruction" quotes the session 4.3 prompt (6 Nov 2026). These entries were written on branch

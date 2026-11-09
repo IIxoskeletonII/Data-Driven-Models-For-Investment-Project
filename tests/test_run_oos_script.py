@@ -352,11 +352,83 @@ def test_check_gate_refuses_a_row_that_is_not_a_gate_row(script, edit, expected)
         script.check_gate(gate, load_config())
 
 
-def test_run_models_refuse_an_evaluated_round_2_candidate_until_its_refit_exists(script):
+def test_run_models_accept_m6_to_m8_and_refuse_m9_until_session_4_4(script):
+    """S42-8 (replaces the S42-1 refusal): M6, M7 and M8 have an Out-of-Sample refit; M9 does not."""
     cfg = load_config()
     assert script.run_models(GATE, cfg) == ["M1", "M2", "M3", "ENS", "M0", "M0_star"]  # round 2 absent: unchanged
-    with pytest.raises(SystemExit, match="round-2 candidates \\['M6'\\] were evaluated.*session 4.2b"):
-        script.run_models(with_round2({"M6": gate_row("M6", False)}, "M2"), cfg)
+    for name in ("M6", "M7", "M8"):
+        models = script.run_models(with_round2({name: gate_row(name, False)}, "M2"), cfg)
+        assert models == ["M1", "M2", "M3", "ENS", name, "M0", "M0_star"]
+    with pytest.raises(SystemExit, match=r"round-2 candidates \['M9'\] were evaluated.*session 4.4"):
+        script.run_models(with_round2({"M9": gate_row("M9", False)}, "M2"), cfg)
+    with pytest.raises(SystemExit, match="M5 has no Out-of-Sample refit"):
+        script.run_models(with_round2({}, "M2") | {"candidates": [gate_row("M5", False) if c["name"] == "M5" else c
+                                                                    for c in GATE["candidates"]]}, cfg)
+
+
+def selection_table(rung: str, rows: list[tuple]) -> pd.DataFrame:
+    """A selection.csv with the S41-4 columns; rows = (test_year, refit, test_start, point dict)."""
+    from src.models import round2_tag
+    keys = list(rows[0][3])
+    return pd.DataFrame([{"test_year": year, "refit": refit, "test_start": start, "chosen": round2_tag(rung, point),
+                          **{f"chosen_{key}": point[key] for key in keys}} for year, refit, start, point in rows])
+
+
+def test_frozen_value_of_a_round_2_rung_is_the_last_row_with_plain_types(script, tmp_path):
+    cfg = load_config()
+    last_year = int(cfg["split"]["test_years"][1])
+    rows = [(last_year, 4, "2019-10-04", {"alpha": 10, "half_life_weeks": 4}),
+            (last_year - 1, 4, "2018-10-05", {"alpha": 1, "half_life_weeks": 2}),
+            (last_year, 3, "2019-07-05", {"alpha": 0.1, "half_life_weeks": 2})]  # unsorted: the last by (year, refit)
+    folder = tmp_path / "outputs" / "walkforward" / "M7"
+    folder.mkdir(parents=True)
+    selection_table("M7", rows).to_csv(folder / "selection.csv", index=False)
+    frozen = script.frozen_value(tmp_path, cfg, "M7")
+    assert frozen["value"] == {"alpha": 10, "half_life_weeks": 4}
+    assert (frozen["test_year"], frozen["refit"], frozen["test_start"]) == (last_year, 4, "2019-10-04")
+    assert all(type(v) is int for v in frozen["value"].values())
+    rows[0] = (last_year, 4, "2019-10-04", {"alpha": 0.1, "half_life_weeks": 4})
+    selection_table("M7", rows).to_csv(folder / "selection.csv", index=False)
+    again = script.frozen_value(tmp_path, cfg, "M7")
+    assert type(again["value"]["alpha"]) is float and again["value"]["alpha"] == 0.1
+    assert isinstance(again["chosen"], str)
+    roundtrip = json.loads(json.dumps(again))  # the lock is JSON: the grid's types survive
+    assert type(roundtrip["value"]["alpha"]) is float and type(roundtrip["value"]["half_life_weeks"]) is int
+    from src.models import round2_grid
+    assert roundtrip["value"] in round2_grid("M7", cfg)
+
+
+def test_frozen_value_of_a_round_2_rung_refuses_a_stale_or_unknown_row(script, tmp_path):
+    cfg = load_config()
+    folder = tmp_path / "outputs" / "walkforward" / "M6"
+    folder.mkdir(parents=True)
+    old = selection_table("M6", [(int(cfg["split"]["test_years"][1]) - 1, 4, "2018-10-05", {"alpha": 1})])
+    old.to_csv(folder / "selection.csv", index=False)
+    with pytest.raises(SystemExit, match="selection.csv.*not the last In-Sample test year"):
+        script.frozen_value(tmp_path, cfg, "M6")
+
+
+def test_artefact_paths_refuses_a_tuned_rung_without_selection_csv(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    cfg = project["cfg"]
+    models = ["M1", "M0", "M0_star"]
+    assert "outputs/walkforward/M1/selection.csv" in script.artefact_paths(root, cfg, models)
+    (root / "outputs" / "walkforward" / "M1" / "selection.csv").unlink()
+    with pytest.raises(SystemExit, match="artefact not found: .*selection.csv"):
+        script.artefact_paths(root, cfg, models)
+
+
+def test_freeze_names_a_missing_walk_forward_file_and_writes_nothing(script, project, tmp_path):
+    root = copy_project(project, tmp_path)
+    (root / "outputs" / "walkforward" / "M2" / "summary.json").unlink()
+    with pytest.raises(SystemExit, match="artefact not found: .*summary.json"):
+        script.freeze(root)
+    assert not (root / "FROZEN.lock").exists()
+
+
+def test_rebuild_tables_without_with_h4_writes_no_four_week_labels(script, ran):
+    assert "labels_h4.csv" not in ran["report"]["tables"]
+    assert not (ran["root"] / "data" / "processed" / "oos" / "labels_h4.csv").exists()
 
 
 def test_freeze_refuses_a_gate_file_of_round_1_only(script, project, tmp_path):

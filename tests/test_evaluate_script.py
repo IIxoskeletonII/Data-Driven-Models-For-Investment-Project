@@ -523,3 +523,33 @@ def test_down_market_mean_hand_case(script):
     assert out["lower"] == pytest.approx(0.01) and out["upper"] == pytest.approx(0.01)  # r is 0.01 in every down week
     none = script.down_market_mean(r, m.abs() + 0.001, n_resamples=10, block=2, seed=1, confidence=0.95)
     assert np.isnan(none["mean"]) and none["n_down"] == 0
+
+
+def _spy_equity_curves(script, monkeypatch) -> dict:
+    """{plot file stem: series names} of every equity_curves call of an evaluation."""
+    seen, real = {}, script.plots.equity_curves
+
+    def spy(returns, period, realised_on, path, **kwargs):
+        seen[path.name] = list(returns.columns)
+        return real(returns, period, realised_on, path, **kwargs)
+
+    monkeypatch.setattr(script.plots, "equity_curves", spy)
+    return seen
+
+
+def test_round_2_models_have_their_own_equity_plot_and_round_1s_plot_keeps_round_1(script, with_round2, monkeypatch):
+    """S42-9: all_models_equity holds round-1 series only; round2_models_equity the round-2 ones with M0 and M0*."""
+    seen = _spy_equity_curves(script, monkeypatch)
+    script.evaluate(with_round2["cfg"])
+    comparators = ["T-bill", "SPY", "Equal weight"]
+    assert seen["all_models_equity"] == ["M0", "M0_star", "M0_L13"] + comparators
+    assert seen["round2_models_equity"] == ["M0", "M0_star", "M7", "M6_a10", "M7_a0.1_h2", "M8_d2_h4"] + comparators
+    plots_dir = with_round2["root"] / "outputs" / "plots"
+    assert (plots_dir / "round2_models_equity.png").exists() and (plots_dir / "all_models_equity.png").exists()
+
+
+def test_without_round_2_backtests_no_round_2_plot_is_written(script, layout, monkeypatch):
+    seen = _spy_equity_curves(script, monkeypatch)
+    script.evaluate(layout["cfg"])
+    assert "round2_models_equity" not in seen and seen["all_models_equity"] == ["M0", "M0_L13", "T-bill", "SPY", "Equal weight"]
+    assert not (layout["root"] / "outputs" / "plots" / "round2_models_equity.png").exists()

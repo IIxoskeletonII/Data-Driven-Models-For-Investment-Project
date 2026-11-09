@@ -22,7 +22,7 @@ from src.contracts import BacktestResult
 
 # categorical slots in fixed order, one per rung (colour follows the entity, never its rank)
 RUNG_COLORS = {"M0": "#2a78d6", "M1": "#eb6834", "M2": "#1baf7a", "M3": "#eda100", "M5": "#e87ba4", "ENS": "#008300",
-               "M0_star": "#6250d6"}
+               "M0_star": "#6250d6", "M6": "#8b5a2b", "M7": "#11a8c8", "M8": "#8fb800", "M9": "#b0178f"}  # M6 to M9: S42-9
 OTHER_COLOR = "#e34948"
 BENCHMARK_COLORS = {"T-bill": "#9a9992", "SPY": "#5f5e58", "Equal weight": "#b9b8b0"}
 TEXT, MUTED, GRID = "#0b0b0b", "#52514e", "#e6e5e0"
@@ -120,7 +120,8 @@ def _line_chart(curves: dict[str, pd.DataFrame], path: Path, title: str, *, log_
         fig.update_yaxes(type="log" if log_y else "linear", tickformat=".0%" if percent else None, row=1, col=col)
     _write_html(fig, html, title)
 
-    figure, axes = _new_figure(len(names))
+    entries = max(len(curves[name].columns) for name in names)
+    figure, axes = _new_figure(len(names), height=max(4.5, 0.27 * entries + 0.8))  # a long legend must fit (S42-9)
     for ax, name in zip(axes, names, strict=True):
         for series in curves[name].columns:
             color, dash = series_style(series)
