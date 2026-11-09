@@ -1,0 +1,18 @@
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "cd523edd3d453736", "result": "ok", "tool": "get_features"}
+{"argument_hash": "dd95f93cdf9d94fc", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "44eb1dbcb5d7e455", "reason": "passed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "eff6374880d46f38", "reason": "rejected at redundancy", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "b0416e122b49ef61", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "6d070fa505679c3e", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "44136fa355b3678a", "result": "ok", "tool": "get_trial_history"}
+{"argument_hash": "040e0fd15739e14e", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "da1bcbf2fef1c150", "reason": "passed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "37bc45622a03a8ec", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "260b780d409248db", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "94cd76e0cff2d428", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
+{"argument_hash": "2890c892d6f36ba6", "reason": "failed the \u00a707 gate against the base rung", "result": "ok", "tool": "run_walkforward"}
