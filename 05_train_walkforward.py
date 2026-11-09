@@ -26,8 +26,9 @@ Session 3.7 (decisions S37-4 to S37-7), In-Sample only:
                    walk-forward, checks it reproduces its row, and writes outputs/agent_lab/walkforward/agent_cNN/
                    weekly.csv (realised_on, period, net, rf) and summary.json; adds no trial row.
   --select         reads the In-Sample baseline backtests of 06_backtest.py (outputs/backtests/<name>/), refusing stale
-                   ones as 06 does, applies the §07 gate (src.stats.selection_gate, headline Sharpe with the weekly
-                   T-bill, M5 absent) and writes outputs/metrics/selection_gate.json (read by 08_run_oos.py --freeze);
+                   ones as 06 does, applies the §07 gate of both rounds (src.stats.selection_gate rounds=2, headline
+                   Sharpe with the weekly T-bill, P >= 0.80 in round 1 and >= 0.90 in round 2, M5 and M9 absent;
+                   Amendment 9 C3, S44-1) and writes outputs/metrics/selection_gate.json (read by 08_run_oos.py --freeze);
                    fills is_sharpe and is_mdd of the human rows of docs/trial_log.csv; writes the Deflated Sharpe Ratio
                    and PBO by CSCV to outputs/metrics/selection_bias.json.
 """
@@ -247,8 +248,11 @@ def run(name: str, cfg: dict, *, data_dir: Path, out_dir: Path, trial_path: Path
 
 # -- the §07 selection gate, the trial metrics and the selection-bias diagnostics (decisions S37-4 to S37-7) -------------
 
-GATE_MODELS = ("M0", "M1", "M2", "M3", "ENS")  # the hurdle, then the candidates that exist (S37-4)
-ABSENT = ("M5",)  # no agent feature survived the lab, so M5 does not exist (S33-19, S37-1)
+ROUND1_GATE_MODELS = ("M0", "M1", "M2", "M3", "ENS")  # the hurdle, then the round-1 candidates that exist (S37-4)
+ROUND1_ABSENT = ("M5",)  # no agent feature survived the lab, so M5 does not exist (S33-19, S37-1)
+GATE_MODELS = (*ROUND1_GATE_MODELS, "M6", "M7", "M8")  # with the round-2 candidates that exist (Amendment 9 C3, S44-1)
+ABSENT = (*ROUND1_ABSENT, "M9")  # the round-2 planted test failed, so no round-2 agent feature and no M9 (S43-9, S44-1)
+GATE_ROUNDS = (1, 2)  # gate_result and select: rounds=1 is the gate of S37-4 alone, rounds=2 the gate of both rounds
 GATE_FILE = "outputs/metrics/selection_gate.json"  # read by 08_run_oos.py --freeze (S34-3)
 BIAS_FILE = "outputs/metrics/selection_bias.json"
 AGENT_DIR = "outputs/agent_lab/walkforward"
@@ -260,6 +264,9 @@ RF_TOLERANCE = 1e-12  # the five backtests must carry the same weekly T-bill (S3
 REPRODUCTION_TOLERANCE = 1e-9  # re-scored agent candidate against its trial row (S37-6, S34-2)
 FALLBACK_STATEMENT = ("No candidate passed the §07 gate, so M0* is traded: the ML models failed to beat the baseline "
                       "(pre-registration §07 step 5).")
+ROUND1_LABEL = "Round 1 (primary pre-registered result, §07): "
+BOTH_LABEL = "Both rounds (Amendment 9 C3): "
+BOTH_FALLBACK = "no candidate of either round passed its gate, so M0* is traded."
 RF_SOURCE = ("rf column of outputs/backtests/M0/weekly.csv: the weekly FRED 3-month T-bill return written by "
              "06_backtest.py (src.metrics.tbill_weekly_returns, DGS3MO lagged one session); Amendment 6 C1")
 
@@ -395,12 +402,21 @@ def checked_backtest(name: str, cfg: dict, root: Path) -> pd.DataFrame:
     return weekly
 
 
-def _gate_frames(cfg: dict, root: Path) -> dict[str, pd.DataFrame]:
-    """Checked weekly.csv of M0 and of each candidate of models.candidate_order that is not absent, on one weekly index
-    and one rf."""
-    names = ["M0", *(name for name in cfg["models"]["candidate_order"] if name not in ABSENT)]
-    if tuple(names) != GATE_MODELS:
-        raise SystemExit(f"refused: the gate models {names} differ from {list(GATE_MODELS)} of decision S37-4")
+def _gate_spec(rounds: int) -> tuple[tuple, tuple]:
+    """(gate models, absent candidates) of a gate: round 1 alone (S37-4) or both rounds (S44-1)."""
+    if rounds not in GATE_ROUNDS:
+        raise ValueError(f"rounds must be one of {GATE_ROUNDS}, got {rounds!r}")
+    return (ROUND1_GATE_MODELS, ROUND1_ABSENT) if rounds == 1 else (GATE_MODELS, ABSENT)
+
+
+def _gate_frames(cfg: dict, root: Path, rounds: int = 2) -> dict[str, pd.DataFrame]:
+    """Checked weekly.csv of M0 and of each candidate of models.candidate_order (with round2.candidate_order when
+    rounds=2) that is not absent, on one weekly index and one rf."""
+    models, absent = _gate_spec(rounds)
+    order = list(cfg["models"]["candidate_order"]) + (list(cfg["round2"]["candidate_order"]) if rounds == 2 else [])
+    names = ["M0", *(name for name in order if name not in absent)]
+    if tuple(names) != models:
+        raise SystemExit(f"refused: the gate models {names} differ from {list(models)} of decisions S37-4 and S44-1")
     frames = {name: checked_backtest(name, cfg, root) for name in names}
     m0 = frames["M0"]
     for name, frame in frames.items():
@@ -414,9 +430,10 @@ def _gate_frames(cfg: dict, root: Path) -> dict[str, pd.DataFrame]:
     return frames
 
 
-def gate_inputs(cfg: dict, root: Path) -> tuple[dict[str, pd.Series], pd.Series, pd.Series]:
-    """(candidate name → weekly net returns, M0's weekly net returns, weekly T-bill rf) for src.stats.selection_gate."""
-    return _gate_series(_gate_frames(cfg, root))
+def gate_inputs(cfg: dict, root: Path, rounds: int = 1) -> tuple[dict[str, pd.Series], pd.Series, pd.Series]:
+    """(candidate name → weekly net returns, M0's weekly net returns, weekly T-bill rf) for src.stats.selection_gate;
+    rounds=1 (the default, as before) gives the round-1 candidates, rounds=2 adds M6, M7 and M8 (S44-1)."""
+    return _gate_series(_gate_frames(cfg, root, rounds))
 
 
 def _gate_series(frames: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.Series], pd.Series, pd.Series]:
@@ -424,22 +441,54 @@ def _gate_series(frames: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.Series],
     return results, frames["M0"]["net"].astype(np.float64).rename("M0"), frames["M0"]["rf"].astype(np.float64).rename("rf")
 
 
-def gate_result(cfg: dict, root: Path) -> dict:
-    """Content of outputs/metrics/selection_gate.json (S37-4): the §07 rule on the In-Sample backtests, headline Sharpe
-    with the weekly T-bill (Amendment 6 C1), M5 absent."""
+def _round1_statement(selected: str) -> str:
+    return (FALLBACK_STATEMENT if selected == stats.FALLBACK else
+            f"{selected} is the first candidate to pass all three tests of the §07 gate and is traded "
+            "(pre-registration §07 step 4).")
+
+
+def gate_result(cfg: dict, root: Path, rounds: int = 2) -> dict:
+    """Content of outputs/metrics/selection_gate.json: the §07 rule on the In-Sample backtests, headline Sharpe with the
+    weekly T-bill (Amendment 6 C1). rounds=1: the gate of S37-4 alone, M5 absent, exactly as before. rounds=2 (S44-1,
+    Amendment 9 C3): both rounds in one order, M5 and M9 absent, each round's bootstrap threshold; the file adds
+    round1_selected (the primary pre-registered result), thresholds_round2 and a statement of both results."""
     root = Path(root)
-    frames = _gate_frames(cfg, root)
+    _, absent = _gate_spec(rounds)
+    frames = _gate_frames(cfg, root, rounds)
     results, m0, rf = _gate_series(frames)
-    gate = stats.selection_gate(results, m0, cfg, rf=rf, absent=ABSENT)
+    gate = stats.selection_gate(results, m0, cfg, rf=rf, absent=absent, rounds=rounds)
     closes, realised = _closes(m0.index), pd.DatetimeIndex(frames["M0"]["realised_on"])
     fallback = gate["selected"] == stats.FALLBACK
-    statement = (FALLBACK_STATEMENT if fallback else
-                 f"{gate['selected']} is the first candidate to pass all three tests of the §07 gate and is traded "
-                 "(pre-registration §07 step 4).")
+    if rounds == 1:
+        statement = _round1_statement(gate["selected"])
+    else:
+        first = gate["round1_selected"]
+        if first != stats.FALLBACK:
+            verdict = (f"{first} is the first round-1 candidate to pass all three tests of the §07 gate "
+                       "(pre-registration §07 step 4).")
+        elif fallback:
+            verdict = FALLBACK_STATEMENT
+        else:  # only a round-2 candidate passed: round 1's verdict is M0*, but M0* is not what is traded
+            verdict = ("No round-1 candidate passed the §07 gate, so round 1's verdict is M0* (pre-registration §07 "
+                       "step 5).")
+        round1 = ROUND1_LABEL + verdict
+        order = ", ".join([*cfg["models"]["candidate_order"], *cfg["round2"]["candidate_order"]])
+        both = BOTH_LABEL + (BOTH_FALLBACK if fallback else
+                             f"{gate['selected']} is the first candidate in the order {order} to pass its gate and is "
+                             "traded.")
+        statement = f"{round1} {both}"
     inputs = {name: {"spec_hash": spec_hash(spec_for(name, cfg), cfg),
                      "weekly_sha256": sha256(root / "outputs" / "backtests" / name / "weekly.csv")} for name in frames}
+    extra = {} if rounds == 1 else {
+        "round1_selected": gate["round1_selected"],
+        "thresholds_round2": {"bootstrap_prob": cfg["round2"]["selection"]["bootstrap_prob"]},
+        "rule": ("pre-registration §07 steps 1 to 5 and Amendment 9 C3: models.candidate_order then "
+                 "round2.candidate_order against M0, P(uplift > 0) >= selection.bootstrap_prob in round 1 and "
+                 ">= round2.selection.bootstrap_prob in round 2; headline Sharpe of Amendment 6 C1; M5 and M9 absent "
+                 "(S33-19, S43-9, S44-1)"),
+    }
     return {
-        "selected": gate["selected"], "candidates": gate["candidates"], "absent": list(ABSENT),
+        "selected": gate["selected"], "candidates": gate["candidates"], "absent": list(absent),
         "m0": {"sharpe": sharpe_ratio(m0, rf), "sharpe_zero_cost": sharpe_ratio(m0, 0.0), "mdd": max_drawdown(m0)},
         "thresholds": dict(cfg["selection"]), "seed": int(cfg["seed"]),
         "weeks": len(m0), "first_week": closes.min().strftime(DATE_FORMAT), "last_week": closes.max().strftime(DATE_FORMAT),
@@ -448,6 +497,7 @@ def gate_result(cfg: dict, root: Path) -> dict:
         "rf_tbill_annual": _read_json(root / "outputs" / "backtests" / "M0" / "summary.json").get("rf_tbill_annual"),
         "inputs": inputs, "fallback": fallback, "statement": statement,
         "rule": "pre-registration §07 steps 1 to 5; headline Sharpe of Amendment 6 C1; M5 absent (S33-19, S37-1)",
+        **extra,
     }
 
 
@@ -666,13 +716,14 @@ def selection_bias(cfg: dict, root: Path, selected: str) -> dict:
     }
 
 
-def select(cfg: dict, root: Path) -> dict:
-    """--select: the gate (S37-4), the trial metrics (S37-5) and the diagnostics (S37-7). Every check runs and every
-    output is built first; the three texts go to temporary files next to their targets, which then replace the targets
-    (os.replace), so a failed write leaves the old files in place. Refused once FROZEN.lock exists (S37-8)."""
+def select(cfg: dict, root: Path, rounds: int = 2) -> dict:
+    """--select: the gate (S37-4; both rounds when rounds=2, the default, S44-1), the trial metrics (S37-5, S44-2) and
+    the diagnostics (S37-7, S44-2). Every check runs and every output is built first; the three texts go to temporary
+    files next to their targets, which then replace the targets (os.replace), so a failed write leaves the old files in
+    place. Refused once FROZEN.lock exists (S37-8)."""
     root = Path(root)
     refuse_after_freeze(root)
-    gate = gate_result(cfg, root)
+    gate = gate_result(cfg, root, rounds)
     log_text, filled = trial_log_with_metrics(cfg, root)
     bias = selection_bias(cfg, root, gate["selected"])
     trial_path = root / TRIAL_LOG
@@ -706,9 +757,12 @@ def print_selection(result: dict) -> None:
         if c["status"] == "absent":
             print(f"  {c['name']:4} absent")
             continue
+        threshold = f" >= {c['bootstrap_threshold']:.2f}" if "bootstrap_threshold" in c else ""
         print(f"  {c['name']:4} Sharpe {c['sharpe']:.3f} ({_verdict(c['passes_sharpe'])}), MDD {c['mdd']:.2%} "
-              f"({_verdict(c['passes_mdd'])}), P(uplift > 0) {c['p_uplift_positive']:.3f} "
+              f"({_verdict(c['passes_mdd'])}), P(uplift > 0) {c['p_uplift_positive']:.3f}{threshold} "
               f"({_verdict(c['passes_bootstrap'])}) -> {'PASS' if c['passes'] else 'FAIL'}")
+    if "round1_selected" in gate:
+        print(f"Primary pre-registered result (round 1): {gate['round1_selected']}")
     print(f"Selected: {gate['selected']}. {gate['statement'].replace('§', 'section ')}")
     print(f"DSR {bias['dsr']['value']:.4f} (N = {bias['dsr']['n_trials']}); PBO {bias['pbo']['value']:.4f} "
           f"({bias['matrix']['weeks']} weeks x {len(bias['matrix']['columns'])} configurations, "
