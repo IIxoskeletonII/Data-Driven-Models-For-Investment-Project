@@ -118,6 +118,69 @@ def skeptic_messages(hypothesis: dict, spec: dict, checks: dict, metrics: dict, 
                                         f"In-Sample walk-forward against the base rung: {_json(shown)}\n\n{task}"}]
 
 
+# -- round 2 (Amendment 9 C2; decisions S43-2, S43-4, S43-5): round 1's wording with the base rung M7 described as it is,
+# the native format (system text apart; the Hypothesis user message append-only: a cached stable block, one block per
+# earlier candidate of the run, then the task) and the Coder repair. Every round-1 function and text above is unchanged.
+
+CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}  # S43-2: the 1-hour breakpoint after the stable prefix
+
+LAB_BRIEF_ROUND2 = (
+    "You are a quantitative researcher in a small research lab. The lab studies a weekly strategy that ranks 9 "
+    "anonymised US sector ETFs (codes A1 to A9) after each Friday close; the top 2 are bought and the bottom 2 sold the "
+    "next Monday, with a market hedge. A model (the base rung) already ranks them on six features: MOM26_1 (26-week "
+    "momentum skipping the last week), MOM52_4 (12-1 month momentum), REV1 (last week's return), VOL13 (13-week daily "
+    "volatility), DD13 (drawdown from the 13-week high) and BETA52 (52-week market beta), each z-scored across the 9 "
+    "sectors every Friday, plus pre-registered products of some of them with market states. The base rung is trained "
+    "on each sector's return over the next 4 weeks relative to the average of the 9, and each week's score is a "
+    "weighted average of its scores of the current and recent weeks, so the book trades less. Your job is to propose "
+    "ONE new feature with an economic mechanism that could improve the cross-sectional ranking beyond these six. "
+    "Features are computed only from past weekly prices, so they cannot use the future. You never trade and you never "
+    "see raw prices. Always answer with one JSON object."
+)
+
+
+def candidate_block(k: int, history_line: dict, trials_logged: list[dict]) -> str:
+    """The text block of this run's earlier candidate k in the round-2 Hypothesis prompt (S43-5): its history_lines entry
+    and the trial rows (trial_summaries) this run logged since the previous block. Rendered once and reused unchanged in
+    every later Hypothesis call, so the prompt grows by appending only and each call reads the previous prefix from the
+    prompt cache (S43-2)."""
+    return f"Candidate {k} of this run: " + _json({"candidate": history_line, "trials_logged": list(trials_logged)})
+
+
+def hypothesis_messages_round2(features_summary: dict, snapshot_trials: list[dict] = (),
+                               candidate_blocks: list[str] = ()) -> list[dict]:
+    """The round-2 Hypothesis prompt (S43-5): system LAB_BRIEF_ROUND2; the user message is append-only: the stable block
+    (grammar, feature summaries, the trial history of the run's snapshot) with a 1-hour cache breakpoint, one block per
+    earlier candidate of this run in order (candidate_block; the last one carries the second breakpoint), then the task."""
+    task = ("Above: this run's earlier candidates, each with the trial rows it logged.\n\nPropose one new feature idea. "
+            "Use the summaries above only as context; do not repeat an earlier candidate or a close variant of one. "
+            "Answer with the JSON object {\"mechanism\": str (why the feature should predict relative returns across "
+            "sectors over the next weeks), \"rationale\": str (why it is not already captured by the six features), "
+            "\"feature_idea\": str (how to compute it from weekly closes, the S&P 500 and the market states)}.")
+    stable = (f"{DSL_GRAMMAR}\n\nFeature summaries at the end of the research sample (anonymised): "
+              f"{_json(features_summary)}\n\nTrial history (every trial logged before this run: the model ladder and "
+              f"earlier proposals): {_json(list(snapshot_trials))}")
+    content = [{"type": "text", "text": stable, "cache_control": dict(CACHE_CONTROL)}]
+    blocks = list(candidate_blocks)
+    for position, text in enumerate(blocks, start=1):
+        block = {"type": "text", "text": str(text)}
+        if position == len(blocks):
+            block["cache_control"] = dict(CACHE_CONTROL)
+        content.append(block)
+    content.append({"type": "text", "text": task})
+    return [{"role": "system", "content": LAB_BRIEF_ROUND2}, {"role": "user", "content": content}]
+
+
+def coder_repair_messages(hypothesis: dict, previous_answer: str, error: str) -> list[dict]:
+    """The Coder's one repair (S43-4): the feature idea, its previous answer and the Validator's exact error."""
+    task = ("Correct the spec so that it is valid. Use only the operations listed. Answer with the JSON object "
+            "{\"spec\": {\"name\": str, \"expr\": node}}.")
+    previous = previous_answer if previous_answer else "(empty)"
+    return [{"role": "system", "content": "You translate feature ideas into a JSON feature DSL. " + DSL_GRAMMAR},
+            {"role": "user", "content": f"Feature idea: {_json(hypothesis)}\n\nYour previous answer: {previous}\n\n"
+                                        f"The Validator refused this spec: {error}\n\n{task}"}]
+
+
 RISK_CONCERNS = ("concentration", "mechanism", "instability")  # S33-14: the only grounds of a Risk LLM veto
 
 

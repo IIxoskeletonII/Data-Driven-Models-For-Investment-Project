@@ -120,7 +120,8 @@ def build_market(seed: int, end, kappa: float = KAPPA) -> dict:
 
 def build_data_dir(root: Path, cfg: dict, *, seed: int | None = None, kappa: float = KAPPA) -> dict[str, Path]:
     """Write the planted market's tables to root/processed (features, market states, sizing betas, momentum variants,
-    labels, forward returns, daily_close.csv, features_config.yaml) and root/raw/fred/DGS3MO.csv; returns the paths."""
+    labels, the 4-week labels labels_h4 (S43-6), forward returns, daily_close.csv, features_config.yaml) and
+    root/raw/fred/DGS3MO.csv; returns the paths."""
     from src.agents.vault_server import load_script
 
     script03 = load_script("03_build_features.py")
@@ -131,7 +132,11 @@ def build_data_dir(root: Path, cfg: dict, *, seed: int | None = None, kappa: flo
     tables = script03.build_tables(market["daily_close"], market["vix"], market["fred"], cfg)
     labels = script03.build_labels(market["daily_open"], market["daily_close"], is_end)
     forward = script03.build_forward_returns(market["daily_open"], market["daily_close"], is_end)
-    script03.write_tables({**tables, "labels": labels, "forward_returns": forward}, processed, is_end, root / "FROZEN.lock")
+    # the 4-week labels of the round-2 base rung M7 (Amendment 9 C1, S41-1; S43-6); round 1 never reads them
+    labels_h4 = script03.build_horizon_labels(market["daily_open"], market["daily_close"], is_end,
+                                              int(cfg["round2"]["label"]["horizon_weeks"]))
+    script03.write_tables({**tables, "labels": labels, "forward_returns": forward, script03.LABELS_H4_KEY: labels_h4},
+                          processed, is_end, root / "FROZEN.lock")
     write_csv(market["daily_close"], processed / "daily_close.csv")
     write_csv(market["fred"][["DGS3MO"]], raw / "fred" / "DGS3MO.csv")
     save_used(features_settings(cfg), processed / "features_config.yaml")
