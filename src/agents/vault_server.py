@@ -29,7 +29,7 @@ from src.backtest import run as run_backtest
 from src.config import ROOT, load_config
 from src.contracts import universe
 from src.metrics import performance
-from src.models import tuning_spec
+from src.models import ROUND2_RUNGS, round2_agent_base, round2_spec_settings, tuning_spec
 from src.sizing import size_book
 from src.stats import paired_block_bootstrap, rank_ic
 from src.vault import OOSAccessError, Vault, append_trial, logged_spec_hashes, spec_hash
@@ -45,6 +45,12 @@ FEATURE_WINDOW_WEEKS = 104  # get_features: summaries over the 104 weeks ending 
 RISK_TURNOVER_RATIO_MAX = 1.5  # S33-14 (1): candidate turnover at most 1.5 times the base rung's
 RISK_RESIDUAL_BETA_MAX = 0.10  # S33-14 (2): mean absolute residual beta (D10)
 RISK_ADVERSE_UPLIFT_MIN = 0.0  # S33-14 (3): the adverse-cost Sharpe uplift over the base rung must stay above 0
+ROUND1_BASE_RUNGS = ("M1", "M2", "M3")  # Amendment 7 C1 (round 1)
+
+
+def base_rungs(cfg: dict) -> tuple[str, ...]:
+    """The rungs a lab may extend: M1, M2, M3 (round 1, Amendment 7 C1) and round2.agent_lab.base_rung (M7, S43-3)."""
+    return (*ROUND1_BASE_RUNGS, round2_agent_base(cfg)) if "round2" in cfg else ROUND1_BASE_RUNGS
 
 
 def risk_checks(metrics: Mapping) -> dict:
@@ -104,8 +110,9 @@ class VaultServer:
     """The tools of `ddmi-vault` on one sealed Vault.
 
     cfg: the configuration; vault: a Vault sealed at IN_SAMPLE_END (or at an earlier is_end in tests); base_rung: M1, M2
-    or M3 (Amendment 7 C1, S33-10); base_spec: that rung's trial spec (05_train_walkforward.model_spec), so the base
-    scores reuse its trial row; trial_path: the trial log; server_log: the server's JSONL log.
+    or M3 (Amendment 7 C1, S33-10), or round2.agent_lab.base_rung (M7, the round-2 lab, S43-3); base_spec: that rung's
+    trial spec (05_train_walkforward.model_spec), so the base scores reuse its trial row; trial_path: the trial log;
+    server_log: the server's JSONL log.
     """
 
     def __init__(self, cfg: dict, vault: Vault, base_rung: str, base_spec: Mapping, *, trial_path: Path,
@@ -115,8 +122,9 @@ class VaultServer:
                                  f"hard-coded In-Sample end {IN_SAMPLE_END} (§08)")
         if vault.is_end > pd.Timestamp(IN_SAMPLE_END):
             raise OOSAccessError(f"{SERVER_NAME}: the vault's is_end is after {IN_SAMPLE_END}")
-        if base_rung not in ("M1", "M2", "M3") or base_spec.get("rung") != base_rung:
-            raise ValueError(f"{SERVER_NAME}: the base rung must be M1, M2 or M3 with its own spec, got {base_rung!r}")
+        if base_rung not in base_rungs(cfg) or base_spec.get("rung") != base_rung:
+            raise ValueError(f"{SERVER_NAME}: the base rung must be one of {list(base_rungs(cfg))} with its own spec, "
+                             f"got {base_rung!r}")
         self.cfg, self.vault, self.base_rung, self.base_spec = cfg, vault, base_rung, dict(base_spec)
         self.trial_path, self.server_log = Path(trial_path), Path(server_log)
         self.end = vault.is_end
@@ -226,10 +234,24 @@ class VaultServer:
 
     # -- run_walkforward (the Validator, S33-6) ---------------------------------------------------------------------------
 
+    @property
+    def round2(self) -> bool:
+        """True when the base rung is a round-2 rung (M7, S43-3)."""
+        return self.base_rung in ROUND2_RUNGS
+
     def candidate_spec(self, feature: Mapping) -> dict:
-        """The trial spec of a candidate (S33-9): the base rung's tuning plus the feature."""
-        return {"rung": self.base_rung, "tuning": tuning_spec(self.cfg), "agent_features": [dict(feature)],
+        """The trial spec of a candidate (S33-9): the base rung's tuning plus the feature; a round-2 base also carries
+        round2_spec_settings(cfg) (S41-5, S43-3)."""
+        spec = {"rung": self.base_rung, "tuning": tuning_spec(self.cfg), "agent_features": [dict(feature)],
                 "author": AGENT_AUTHOR, "kind": "agent", "notes": AGENT_NOTES}
+        if self.round2:
+            spec["round2"] = round2_spec_settings(self.cfg)
+        return spec
+
+    def invalid_spec(self, spec) -> dict:
+        """The trial spec of a proposal that does not parse (S33-9): {"invalid_dsl": spec}; with a round-2 base,
+        {"invalid_dsl": spec, "rung": base_rung} (S43-3)."""
+        return {"invalid_dsl": spec, "rung": self.base_rung} if self.round2 else {"invalid_dsl": spec}
 
     def _row(self, spec: Mapping, notes: dict, sharpe="", mdd="") -> None:
         digest = spec_hash(spec, self.cfg)
@@ -322,15 +344,23 @@ class VaultServer:
                 "base_mean_turnover": base["mean_turnover"], "mean_abs_residual_beta": candidate["mean_abs_residual_beta"],
                 "adverse_net_sharpe": a_c, "adverse_uplift": a_c - a_b, "passed_gate": passed}
 
-    def run_walkforward(self, spec, candidate: int | None = None, cost_usd: float | None = None) -> dict:
+    def run_walkforward(self, spec, candidate: int | None = None, cost_usd: float | None = None, final: bool = True,
+                        attempts: int = 1) -> dict:
         """The Validator (S33-6) on one proposed DSL spec; writes the proposal's trial row (S33-9). Returns stage reached,
-        checks, rounded metrics (when the walk-forward ran) and `passed` (all checks and the gate)."""
+        checks, rounded metrics (when the walk-forward ran) and `passed` (all checks and the gate). final=False (a Coder
+        repair is still allowed, S43-4): an invalid spec writes no trial row and is not part of this run's trials; only
+        the server log records it. attempts > 1 is written into the trial row's notes."""
         notes = {"candidate": candidate, "cost_usd": _round(cost_usd, 6) if cost_usd is not None else None}
+        if int(attempts) > 1:
+            notes["attempts"] = int(attempts)
         result = {"candidate": candidate, "checks": {}, "metrics": None, "passed": False}
         try:
             feature = parse(spec)
         except Exception as error:  # noqa: BLE001 - DSLError or any failure on a malformed proposal (S33-15 (1))
-            invalid = {"invalid_dsl": spec}
+            if not final:
+                self._log("run_walkforward", spec, "refused", f"{type(error).__name__}: {error} (repair allowed)")
+                return {**result, "stage": "invalid_spec", "reason": str(error), "spec_hash": None, "final": False}
+            invalid = self.invalid_spec(spec)
             self._row(invalid, {**notes, "stage": "invalid_spec"})
             self._log("run_walkforward", spec, "refused", f"{type(error).__name__}: {error}")
             self.run_hashes.add(spec_hash(invalid, self.cfg))
@@ -418,8 +448,9 @@ def build_mcp(core: VaultServer):
         return core.get_features(as_of)
 
     @server.tool(name="run_walkforward", description="Validate a DSL feature spec and run the In-Sample walk-forward.")
-    def tool_run_walkforward(spec: Any, candidate: int | None = None, cost_usd: float | None = None) -> dict:
-        return core.run_walkforward(spec, candidate=candidate, cost_usd=cost_usd)
+    def tool_run_walkforward(spec: Any, candidate: int | None = None, cost_usd: float | None = None,
+                             final: bool = True, attempts: int = 1) -> dict:
+        return core.run_walkforward(spec, candidate=candidate, cost_usd=cost_usd, final=final, attempts=attempts)
 
     @server.tool(name="get_trial_history", description="Every trial so far, summary columns only.")
     def tool_get_trial_history() -> dict:
@@ -488,7 +519,7 @@ def real_server(base_rung: str, cfg: dict | None = None, *, run_dir: Path = ROOT
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base-rung", required=True, choices=("M1", "M2", "M3"))
+    parser.add_argument("--base-rung", required=True, choices=(*ROUND1_BASE_RUNGS, "M7"))
     args = parser.parse_args(argv)
     core = real_server(args.base_rung)
     use(core)

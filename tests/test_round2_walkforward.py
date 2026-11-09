@@ -389,8 +389,9 @@ def refused_specs() -> list[dict]:
         {"rung": "M8", "round2": round2, "params": {"max_depth": 4, "half_life_weeks": 2}},
         {"rung": "M8", "round2": round2, "params": {"alpha": 1, "half_life_weeks": 2}},
         {"rung": "M6", "round2": round2, "tuning": {"rule": "something else"}},  # differs from tuning_spec
-        {"rung": "M7", "round2": round2, "params": {"alpha": 1, "half_life_weeks": 2}, "agent_features": [VOL_RATIO]},
-        {"rung": "M7", "round2": round2, "tuning": tuning, "agent_features": [VOL_RATIO]},
+        # agent features belong only to the round-2 lab's base rung M7 (S43-3; M7 + agent features: test_agents_round2_vault)
+        {"rung": "M6", "round2": round2, "params": {"alpha": 1}, "agent_features": [VOL_RATIO]},
+        {"rung": "M8", "round2": round2, "tuning": tuning, "agent_features": [VOL_RATIO]},
         {"rung": "M6", "round2": round2, "params": {"alpha": 1}, "feature": "MOM26_1"},
         {"rung": "M8", "round2": round2, "tuning": tuning, "members": ["M6", "M7"]},
         {"rung": "M1", "round2": round2, "params": {"alpha": 1}},  # a round-1 spec carrying round2

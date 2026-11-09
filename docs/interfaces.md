@@ -401,8 +401,10 @@ class ScoreModel(Protocol):          # src/contracts.py
   P = `{"alpha": λ}` (M6), `{"alpha": λ, "half_life_weeks": H}` (M7), `{"max_depth": d, "half_life_weeks": H}` (M8),
   values of `round2.models.<R>` with their YAML type; `round2` must equal `src.models.round2_spec_settings(cfg)`, the
   score-determining keys `test_weeks`, `label`, `smoothing`, `models`, `tie_order`, `tie_precedence` of the `round2`
-  section (`ROUND2_SCORE_KEYS`; `selection`, `candidate_order` and `agent_lab` are left out); `feature`, `members` and
-  `agent_features` are refused for them, and `round2` is refused in a round-1 spec. `spec_hash` is unchanged, so every
+  section (`ROUND2_SCORE_KEYS`; `selection`, `candidate_order` and `agent_lab` are left out); `feature` and `members` are
+  refused for them, `agent_features` is refused for M6 and M8 and allowed, with the checks of round 1, only for the round-2
+  lab's base rung `round2.agent_lab.base_rung` (M7; `src.models.round2_agent_base(cfg)`; S43-3), whose design then gains
+  `AG<k>` and its in-fold state products exactly as above, and `round2` is refused in a round-1 spec. `spec_hash` is unchanged, so every
   round-1 hash is unchanged. `src.models`: `ROUND2_RUNGS = ("M6", "M7", "M8")`; `round2_grid(rung, cfg)` (grid points as
   parameter dicts, config order: first parameter outer, H inner); `round2_tie_order(rung, cfg)` (the same points in the
   tie order of S41-4); `round2_tag(rung, point)` (`a0.1`, `a10_h4`, `d2_h2`); `smoothing_weights(half_life, lags_per_half_life)`
@@ -417,7 +419,14 @@ class ScoreModel(Protocol):          # src/contracts.py
   columns, one `sharpe_<tag>` per grid point, `chosen` (the tag) and `chosen_<parameter>` per parameter (S41-4).
 - Agents reach the vault only through the MCP server `ddmi-vault` (`src/agents/vault_server.py`, protocol section 08)
   with three tools, `get_features(as_of)`, `run_walkforward(spec)` and `get_trial_history()`, which wrap the methods above,
-  show sectors as anonymised codes A1 … A9 and return summary metrics, never price series.
+  show sectors as anonymised codes A1 … A9 and return summary metrics, never price series. Round 2 (S43-3, S43-4): the
+  server's base rung may be M1, M2, M3 or `round2.agent_lab.base_rung` (M7); with M7 a candidate spec is
+  `{"rung": "M7", "round2": round2_spec_settings(cfg), "tuning": tuning_spec(cfg), "agent_features": [F], "author":
+  "agent lab", "kind": "agent", "notes": "agent lab candidate"}` and an unparseable proposal is hashed as
+  `{"invalid_dsl": P, "rung": "M7"}` (round 1 keeps `{"invalid_dsl": P}`). `run_walkforward(spec, candidate=None,
+  cost_usd=None, final=True, attempts=1)`: with `final=False` an invalid spec writes no trial row (only a `refused` server-log
+  line) and returns stage `invalid_spec` with the exact error as `reason` and `"final": False`, so the Coder may repair it
+  once; `attempts > 1` is written into the trial row's notes.
 
 ## Resolved points
 
@@ -471,7 +480,8 @@ may refine in the phase pull request, which the other author reviews.
 | `src/labels.py` | `make_labels`, `walk_forward_folds`; helpers `label_end_by_week`, `assert_purged` | 2.2, Eliya |
 | `src/vault.py` | `OOSAccessError`, `Vault`, `append_trial`; `logged_spec_hashes`, `spec_hash` (2.3a); `Vault.forward_returns`, `Vault.last_selection`, `split_forward_returns` (3.1); `Vault.daily_closes`, `Vault.tbill_weekly` (3.3, S33-4) | 2.2, Eliya |
 | `src/models.py` | `fit_transform_train`, `transform_test`, `M0`, helpers `fit_state_scaling`, `scale_states` (2.2); `walkforward_settings` (2.3a); `RidgeModel`, `LightGBMModel`, `ensemble_scores`, `to_weekly`, `LadderData`, `tuning_spec`, `grid`, `tie_order`, `inner_validation_weeks`, `inner_fold`, `inner_sharpe`, `choose_grid_value`, `walkforward_rung` (3.1, done; `select_m0_star_lookback` replaced by the shared Amendment 5 C1 helpers, S31-10); `agent_design_columns`, `LadderData.agent_columns`, `fit_transform_train(..., *, agent_columns=())` (3.3, S33-4) | Eliya |
-| `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`, `risk_checks` (S33-14); `build_graph`, `run_lab`, `risk_verdict` (S33-14) | 3.3, Eliya (done) |
+| `src/agents/vault_server.py`, `src/agents/graph.py` | `get_features`, `run_walkforward`, `get_trial_history`, `risk_checks` (S33-14); `build_graph`, `run_lab`, `risk_verdict` (S33-14); `base_rungs(cfg)`, `VaultServer.candidate_spec`, `VaultServer.invalid_spec`, `run_walkforward(..., final=True, attempts=1)`, `Lab(..., coder_repairs=0, prompt_round=1)` (4.3, S43-3, S43-4) | 3.3, Eliya (done); round 2 4.3 |
+| `src/agents/llm.py`, `src/agents/prompts.py` | `LLM`, `LLMCache`, `BudgetExceeded`, `ReplayMiss` (S33-1, S33-7); `Round2LLM`, `round2_request`, `round2_call_cost`, `round2_worst_case_cost`, `round2_spend`, `parse_json_round2` (S43-1, S43-2); `hypothesis_messages_round2(features_summary, snapshot_trials, candidate_blocks)`, `candidate_block(k, history_line, trials_logged)`, `coder_repair_messages(hypothesis, previous_answer, error)`, `LAB_BRIEF_ROUND2` (S43-4, S43-5) | 3.3, Eliya; round 2 4.3 |
 | `src/agents/dsl.py` | `DSLError`, `FeatureSpec`, `parse(spec)`, `evaluate(spec, daily_close, cfg=None)` (the asset part on the index of contract 3, known after Friday close t), `state_terms(spec)`; constants `STATES`, `MAX_WINDOW`, `MAX_NODES`, `MAX_DEPTH` (S33-3) | 3.3, Eliya (done) |
 | `src/stats.py` | `paired_block_bootstrap`, `rank_ic`, `deflated_sharpe_ratio`, `pbo_cscv`, `sharpe_difference_test`, `selection_gate`, and the helpers of contract 16 | 3.1, Eliya (done) |
 | `src/plots.py` | `equity_curves(returns, period, realised_on, path)`, `drawdowns(returns, period, realised_on, path)`, `exposures(result, path)` (a `BacktestResult` or a frame with `long_exposure`, `short_exposure`, `net_exposure`, `residual_beta`), `cost_bridge(weekly, path)`, `placebo_histogram(sharpes, marks, path)`; each writes `path`.html and `path`.png (S32-6; with `07_evaluate.py`, S32-7) | 3.2, Mattia (done) |

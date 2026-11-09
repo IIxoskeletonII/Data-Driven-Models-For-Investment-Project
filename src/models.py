@@ -644,6 +644,12 @@ def round2_spec_settings(cfg: dict | None = None) -> dict:
     return {key: section[key] for key in ROUND2_SCORE_KEYS}
 
 
+def round2_agent_base(cfg: dict | None = None) -> str:
+    """The base rung of the round-2 agent lab (round2.agent_lab.base_rung, M7; Amendment 9 C2): the only round-2 rung
+    whose specs and walk-forward take agent features (S43-3)."""
+    return str(_round2_section(_cfg(cfg))["agent_lab"]["base_rung"])
+
+
 def _check_round2_rung(rung: str) -> None:
     if rung not in ROUND2_RUNGS:
         raise ValueError(f"unknown round-2 rung {rung!r}; round-2 rungs {list(ROUND2_RUNGS)}")
@@ -827,14 +833,17 @@ def _round2_fit(rung: str, point: Mapping, data: LadderData, labels_h4: pd.DataF
                 cfg: dict) -> tuple[object, dict]:
     """Fit a round-2 model at a grid point on the purged training rows of `fold` (S41-2, S41-3): rows with date_close in
     [train_start, train_end] and a 4-week label, assert_purged on their 4-week label_end before the fit; M2 design with
-    the in-fold state scaling. Returns (fitted model, design parameters)."""
-    source = data.features[list(cfg["features"]["asset"])]
+    the in-fold state scaling. Agent columns of the round-2 lab's base rung (S43-3) join the source and the design as in
+    round 1 (Amendment 7 C2, S33-4). Returns (fitted model, design parameters)."""
+    agent_names = [str(name) for name, _ in data.agent_columns]
+    source = data.features[list(cfg["features"]["asset"]) + agent_names]
     dates = _closes_of(source)
     train_index = source.index[np.asarray((dates >= fold.train_start) & (dates <= fold.train_end))]
     train_index = train_index[train_index.isin(labels_h4.index)]
     assert_purged(labels_h4.loc[train_index, "label_end"], fold)
     y = labels_h4.loc[train_index, "y"].astype(np.float64)
-    X_train, params = fit_transform_train(data.features.loc[train_index], data.states, True, cfg)
+    X_train, params = fit_transform_train(data.features.loc[train_index], data.states, True, cfg,
+                                          agent_columns=data.agent_columns)
     if rung == "M8":
         m8 = _round2_section(cfg)["models"]["M8"]
         model = RankerModel(int(point["max_depth"]), n_estimators=int(m8["n_estimators"]),
@@ -905,12 +914,15 @@ def walkforward_round2(rung: str, data: LadderData, labels_h4: pd.DataFrame, fol
     (round2_grid dict; at Out-of-Sample refits the frozen point of round2_frozen_value, Amendment 6 C2); None applies
     the Amendment 5 C1 choice at every refit, refused for a fold ending after split.in_sample_end. Returns (scores:
     contract 8 on the test weeks of `folds`, known after Friday close t; selection: one row per refit, None for a
-    fixed point).
+    fixed point). data.agent_columns (S43-3): allowed only for round2_agent_base(cfg) (M7, the round-2 lab's base rung);
+    each agent column and its in-fold state product join the design as in round 1, and the smoothing applies to the
+    scores of that design.
     """
     cfg = _cfg(cfg)
     _check_round2_rung(rung)
-    if data.agent_columns:
-        raise ValueError(f"walkforward_round2: {rung} takes no agent features (M9 is a separate rung, Amendment 9 C2)")
+    if data.agent_columns and rung != round2_agent_base(cfg):
+        raise ValueError(f"walkforward_round2: {rung} takes no agent features; only the round-2 lab's base rung "
+                         f"{round2_agent_base(cfg)} does (Amendment 9 C2, S43-3)")
     validate_labels(labels_h4)
     folds = list(folds)
     if not folds:

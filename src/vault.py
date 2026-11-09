@@ -42,6 +42,7 @@ from src.models import (
     LadderData,
     _round2_point,
     grid,
+    round2_agent_base,
     round2_spec_settings,
     tuning_spec,
     walkforward_round2,
@@ -524,8 +525,8 @@ class Vault:
         used; every fit is purged (assert_purged). Score of week t is known after Friday close t. A tuned rung leaves
         its selection table in `last_selection`. evaluate(scores) -> (In-Sample net Sharpe, max drawdown) fills
         is_sharpe and is_mdd (S22-8); an optional third value replaces the spec's notes in the trial row (S33-4).
-        "agent_features" (M1, M2, M3 only): a list of DSL specs (src.agents.dsl) added to the design as AG1, AG2, ...
-        with their in-fold state products (Amendment 7 C2, S33-4).
+        "agent_features" (M1, M2, M3, and the round-2 lab's base rung M7, S43-3): a list of DSL specs (src.agents.dsl)
+        added to the design as AG1, AG2, ... with their in-fold state products (Amendment 7 C2, S33-4).
         """
         params_json = _spec_json(spec)
         cfg = load_config() if self._cfg is None else self._cfg
@@ -552,13 +553,31 @@ class Vault:
         return scores
 
 
+def _check_agent_features(agent: object) -> None:
+    """Raise ValueError unless `agent` is a non-empty list of distinct DSL specs (S33-4, S33-11)."""
+    if not isinstance(agent, list | tuple) or not agent:
+        raise ValueError("run_walkforward: 'agent_features' must be a non-empty list of DSL specs (S33-4)")
+    if not all(isinstance(feature, Mapping) for feature in agent):
+        raise ValueError("run_walkforward: each agent feature must be a JSON object {name, expr} (S33-11)")
+    forms = [_canonical(canonical_feature(feature)) for feature in agent]  # DSLError (a ValueError) if invalid
+    if len(set(forms)) != len(forms):
+        raise ValueError("run_walkforward: the same agent feature appears twice (S33-11)")
+
+
 def _check_round2_keys(rung: str, spec: Mapping[str, object], cfg: dict) -> None:
     """Raise ValueError unless a round-2 spec (M6, M7, M8) is one of S41-5: "round2" equal to round2_spec_settings(cfg)
     (the score-determining keys of config.yaml's round2 section), exactly one
-    of "params" (a grid point, same types) and "tuning" (= tuning_spec(cfg)); no feature, members or agent_features."""
-    for key in ("feature", "members", "agent_features"):
+    of "params" (a grid point, same types) and "tuning" (= tuning_spec(cfg)); no feature or members. "agent_features"
+    only for the round-2 lab's base rung round2.agent_lab.base_rung (M7), checked as in round 1 (S43-3)."""
+    for key in ("feature", "members"):
         if spec.get(key) is not None:
             raise ValueError(f"run_walkforward: {key!r} does not belong to a spec of the round-2 rung {rung} (S41-5)")
+    agent = spec.get("agent_features")
+    if agent is not None:
+        if rung != round2_agent_base(cfg):
+            raise ValueError(f"run_walkforward: 'agent_features' does not belong to a spec of the round-2 rung {rung}; "
+                             f"only the round-2 lab's base rung {round2_agent_base(cfg)} takes them (S43-3)")
+        _check_agent_features(agent)
     if "round2" not in spec or _canonical(spec["round2"]) != _canonical(round2_spec_settings(cfg)):
         raise ValueError(f"run_walkforward: a {rung} spec must carry 'round2' equal to src.models.round2_spec_settings(cfg), "
                          "the score-determining keys of config.yaml's round2 section (Amendment 9, S41-5)")
@@ -582,13 +601,7 @@ def _check_ladder_keys(rung: str, spec: Mapping[str, object], cfg: dict) -> None
     if agent is not None:
         if rung not in AGENT_RUNGS:
             raise ValueError(f"run_walkforward: 'agent_features' belongs to a spec of {list(AGENT_RUNGS)}, not {rung}")
-        if not isinstance(agent, list | tuple) or not agent:
-            raise ValueError("run_walkforward: 'agent_features' must be a non-empty list of DSL specs (S33-4)")
-        if not all(isinstance(feature, Mapping) for feature in agent):
-            raise ValueError("run_walkforward: each agent feature must be a JSON object {name, expr} (S33-11)")
-        forms = [_canonical(canonical_feature(feature)) for feature in agent]  # DSLError (a ValueError) if invalid
-        if len(set(forms)) != len(forms):
-            raise ValueError("run_walkforward: the same agent feature appears twice (S33-11)")
+        _check_agent_features(agent)
     if spec.get("feature") is not None and rung != "M0":
         raise ValueError(f"run_walkforward: 'feature' belongs to an M0 spec, not {rung}")
     if members is not None and rung != "ENS":

@@ -9,10 +9,17 @@ Validator and neither the Skeptic nor Risk vetoes; an unparseable Skeptic or Ris
 unparseable Coder answer as an invalid spec. Risk (S33-14): the tool's three checks (turnover, residual beta, cost
 sensitivity, each against the base rung) veto deterministically; only if all pass is the Risk LLM asked, and its veto
 counts only for a named concern (concentration, mechanism, instability) that does not rest on Sharpe ratios or costs. Each run writes <run_dir>/candidates.jsonl (one line per proposal).
+
+Round 2 (Amendment 9 C2; S43-4, S43-5): prompt_round=2 uses the round-2 Hypothesis prompt, append-only (the snapshot's
+trials in a cached stable block, then one block per earlier candidate of the run with the trial rows it logged, each
+rendered once); coder_repairs=1 lets the Coder repair an invalid specification once,
+shown the Validator's exact error (Validator -> repair -> Validator), and the record keeps every attempt ("attempts",
+"repaired"). With the defaults (prompt_round=1, coder_repairs=0) the graph and its records are round 1's.
 """
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -36,7 +43,9 @@ class Lab:
     """One lab run: the vault server core (behind its MCP server), the LLM, the limits and the run folder."""
 
     def __init__(self, core: VaultServer, model: LLM, run_dir: Path, *, n_llm: int, injected: list[dict] | None = None,
-                 max_candidates: int | None = None, as_of: str | None = None, cfg: dict | None = None) -> None:
+                 max_candidates: int | None = None, as_of: str | None = None, cfg: dict | None = None,
+                 coder_repairs: int = 0, prompt_round: int = 1,
+                 reserve: Callable[[list[dict]], str | None] | None = None) -> None:
         self.cfg = load_config() if cfg is None else cfg
         self.core, self.llm, self.run_dir = core, model, Path(run_dir)
         self.mcp = build_mcp(core)
@@ -45,7 +54,18 @@ class Lab:
         cap = int(self.cfg["agent_lab"]["max_candidates"]) if max_candidates is None else int(max_candidates)
         if self.n_llm + len(self.injected) > cap:
             raise ValueError(f"{self.n_llm} LLM and {len(self.injected)} injected candidates exceed the cap of {cap}")
+        if prompt_round not in (1, 2) or int(coder_repairs) < 0:
+            raise ValueError(f"prompt_round must be 1 or 2 and coder_repairs >= 0, got {prompt_round}, {coder_repairs}")
         self.as_of = str(self.cfg["split"]["in_sample_end"]) if as_of is None else as_of
+        self.coder_repairs, self.prompt_round = int(coder_repairs), int(prompt_round)
+        # S43-1, round-2 In-Sample run: reserve(messages of the next Hypothesis call) -> a stop reason or None, checked
+        # only at a candidate's start, so an open candidate is never interrupted
+        self.reserve = reserve
+        # round-2 records carry the Coder attempts (S43-4); a round-1 lab writes exactly the records it wrote before
+        self.round2 = self.prompt_round == 2 or self.coder_repairs > 0
+        self._n_stable: int | None = None  # trial rows shown at the first Hypothesis call: the snapshot (S43-5)
+        self._n_seen = 0  # trial rows already placed in the prompt (snapshot plus candidate blocks)
+        self._blocks: list[str] = []  # rendered candidate blocks of the round-2 Hypothesis prompt, append-only
         self._features: dict | None = None
 
     # -- tools -------------------------------------------------------------------------------------------------------------
@@ -72,6 +92,20 @@ class Lab:
             return "inject"
         return "end"
 
+    def _round2_context(self, history: list[dict], trials: list[dict]) -> tuple[list[dict], list[str]]:
+        """The snapshot's trials and the candidate blocks of the round-2 Hypothesis prompt (S43-5). The rows shown at the
+        run's first call are the snapshot; each later row goes to exactly one candidate block, the block of the latest
+        candidate recorded when the row is first seen. A block is rendered once and kept, so the prompt only grows by
+        appending."""
+        if self._n_stable is None:
+            self._n_stable = self._n_seen = len(trials)
+        new = history[len(self._blocks):]
+        for position, line in enumerate(new, start=len(self._blocks) + 1):
+            rows = trials[self._n_seen:] if position == len(history) else []
+            self._n_seen += len(rows)
+            self._blocks.append(prompts.candidate_block(position, line, rows))
+        return trials[:self._n_stable], list(self._blocks)
+
     def _number(self, state: LabState) -> int:
         return len(state.get("records", [])) + 1
 
@@ -81,7 +115,16 @@ class Lab:
         try:
             history = prompts.history_lines(state.get("records", []))
             trials = prompts.trial_summaries(self.tool("get_trial_history", {})["trials"])  # S33-7, S33-15 (4)
-            answer = self.llm.call("hypothesis", prompts.hypothesis_messages(self.features_summary(), history, trials))
+            if self.prompt_round == 2:
+                messages = prompts.hypothesis_messages_round2(self.features_summary(), *self._round2_context(
+                    history, trials))
+            else:
+                messages = prompts.hypothesis_messages(self.features_summary(), history, trials)
+            if self.reserve is not None:
+                reason = self.reserve(messages)
+                if reason:
+                    return {"stopped": str(reason)}
+            answer = self.llm.call("hypothesis", messages)
         except BudgetExceeded as error:
             return {"stopped": str(error)}
         current["cost_usd"] += answer["recorded_cost_usd"]
@@ -95,11 +138,31 @@ class Lab:
         except BudgetExceeded as error:
             return {"stopped": str(error), "current": current}
         current["cost_usd"] += answer["recorded_cost_usd"]
-        parsed = answer["parsed"] or {}
-        spec = parsed.get("spec", parsed if parsed else None)
-        # S33-15 (1): anything but a JSON object is an invalid spec, recorded as such by the Validator
-        current["spec"] = spec if isinstance(spec, dict) else {"unparsed": answer["content"]}
+        current["spec"] = _coder_spec(answer)
+        if self.round2:
+            current.update(coder_content=answer["content"], repairs_left=self.coder_repairs, attempts=[], repaired=False)
         return {"current": current}
+
+    def repair(self, state: LabState) -> LabState:
+        """The Coder's one repair of an invalid specification (S43-4): shown its previous answer and the Validator's exact
+        error. On a budget stop the first spec goes through the Validator as final, so the proposal keeps its trial row."""
+        current = dict(state["current"])
+        current["repairs_left"] = int(current.get("repairs_left", 0)) - 1
+        messages = prompts.coder_repair_messages(current["hypothesis"], current.get("coder_content") or "",
+                                                 str(current.get("validator_reason")))
+        try:
+            answer = self.llm.call("coder_repair", messages)
+        except BudgetExceeded as error:
+            # no repair was made: the first spec, now final, is the proposal's one attempt (its non-final entry dropped)
+            current["repairs_left"], current["attempts"] = 0, list(current.get("attempts", []))[:-1]
+            current = self._validate(current)
+            return {"current": current, "stopped": str(error)}
+        current["cost_usd"] += answer["recorded_cost_usd"]
+        current.update(spec=_coder_spec(answer), coder_content=answer["content"], repaired=True)
+        return {"current": current}
+
+    def after_repair(self, state: LabState) -> str:
+        return "record" if state.get("stopped") else "validator"
 
     def inject(self, state: LabState) -> LabState:
         queue = list(state["injected"])
@@ -109,22 +172,39 @@ class Lab:
         # S33-15: the LLMs see an injected spec like any proposal; its origin stays in `source`, which no prompt shows
         current = {"candidate": self._number(state), "source": item["source"], "hypothesis": {"feature_idea": name},
                    "spec": spec, "cost_usd": 0.0, "review_cost_usd": 0.0}
+        if self.round2:  # an injected spec has no Coder, so no repair (S43-4)
+            current.update(coder_content=None, repairs_left=0, attempts=[], repaired=False)
         return {"current": current, "injected": queue}
 
-    def validator(self, state: LabState) -> LabState:
-        current = dict(state["current"])
+    def _validate(self, current: dict) -> dict:
+        """One Validator call through MCP. Round 2 (S43-4): the call is final unless a Coder repair is still allowed."""
+        current = dict(current)
+        arguments = {"spec": current["spec"], "candidate": current["candidate"], "cost_usd": round(current["cost_usd"], 8)}
+        if self.round2:
+            attempts = list(current.get("attempts", []))
+            arguments.update(final=int(current.get("repairs_left", 0)) <= 0, attempts=len(attempts) + 1)
         try:
-            result = self.tool("run_walkforward", {"spec": current["spec"], "candidate": current["candidate"],
-                                                   "cost_usd": round(current["cost_usd"], 8)})
+            result = self.tool("run_walkforward", arguments)
         except Exception as error:  # noqa: BLE001 - S33-15 (1): a failed tool call rejects the proposal, never the run
             result = {"stage": "tool_error", "passed": False, "reason": f"{type(error).__name__}: {error}"}
         current.update(stage=result["stage"], checks=result.get("checks", {}), metrics=result.get("metrics"),
                        risk_checks=result.get("risk_checks"), passed_validator=bool(result["passed"]),
                        validator_reason=result.get("reason"), spec_hash=result.get("spec_hash"))
-        return {"current": current}
+        if self.round2:
+            current["attempts"] = list(current.get("attempts", [])) + [
+                {"spec": current["spec"], "coder_content": current.get("coder_content"), "stage": result["stage"],
+                 "reason": result.get("reason")}]
+            current["repair_pending"] = result.get("final") is False
+        return current
+
+    def validator(self, state: LabState) -> LabState:
+        return {"current": self._validate(state["current"])}
 
     def after_validator(self, state: LabState) -> str:
-        return "skeptic" if state["current"].get("passed_validator") else "record"
+        current = state["current"]
+        if current.get("repair_pending"):
+            return "repair"
+        return "skeptic" if current.get("passed_validator") else "record"
 
     def skeptic(self, state: LabState) -> LabState:
         current = dict(state["current"])
@@ -164,6 +244,8 @@ class Lab:
         current = dict(state.get("current") or {})
         if not current or "stage" not in current:
             return {}
+        for key in ("repairs_left", "repair_pending"):  # graph bookkeeping, not part of the record
+            current.pop(key, None)
         current["survived"] = bool(current.get("passed_validator") and not current.get("skeptic", {}).get("veto", True)
                                    and not current.get("risk", {}).get("veto", True))
         if current["survived"]:
@@ -175,7 +257,7 @@ class Lab:
 
     def build(self):
         graph = StateGraph(LabState)
-        for name in ("orchestrator", "hypothesis", "coder", "inject", "validator", "skeptic", "risk", "record"):
+        for name in ("orchestrator", "hypothesis", "coder", "inject", "validator", "repair", "skeptic", "risk", "record"):
             graph.add_node(name, getattr(self, name))
         graph.set_entry_point("orchestrator")
         graph.add_conditional_edges("orchestrator", self.route,
@@ -185,7 +267,9 @@ class Lab:
         graph.add_conditional_edges("coder", lambda s: "end" if s.get("stopped") else "validator",
                                     {"validator": "validator", "end": END})
         graph.add_edge("inject", "validator")
-        graph.add_conditional_edges("validator", self.after_validator, {"skeptic": "skeptic", "record": "record"})
+        graph.add_conditional_edges("validator", self.after_validator,
+                                    {"skeptic": "skeptic", "record": "record", "repair": "repair"})
+        graph.add_conditional_edges("repair", self.after_repair, {"validator": "validator", "record": "record"})
         graph.add_conditional_edges("skeptic", self.after_skeptic, {"risk": "risk", "record": "record"})
         graph.add_edge("risk", "record")
         graph.add_edge("record", "orchestrator")
@@ -200,6 +284,14 @@ class Lab:
         with open(self.run_dir / "candidates.jsonl", "w", encoding="utf-8", newline="\n") as handle:
             handle.writelines(json.dumps(record, sort_keys=True, ensure_ascii=False, default=str) + "\n" for record in records)
         return {"records": records, "stopped": state.get("stopped")}
+
+
+def _coder_spec(answer: dict) -> dict:
+    """The spec of a Coder answer: its "spec" object (or the whole object); anything but a JSON object is kept as
+    {"unparsed": <answer>}, an invalid spec recorded as such by the Validator (S33-15 (1))."""
+    parsed = answer["parsed"] or {}
+    spec = parsed.get("spec", parsed if parsed else None)
+    return spec if isinstance(spec, dict) else {"unparsed": answer["content"]}
 
 
 def _verdict(parsed: dict | None, field: str, content: str) -> dict:
