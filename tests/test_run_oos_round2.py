@@ -36,6 +36,7 @@ from tests.test_run_oos_script import (
     git,
     init_repo,
     load,
+    repo_state,
     synthetic_cfg,
 )
 
@@ -150,6 +151,7 @@ def ran(script, project, tmp_path_factory) -> dict:
     freeze and the run recorded (built once, read-only)."""
     if _RAN:
         return _RAN
+    before = repo_state()
     root = tmp_path_factory.mktemp("oos_round2_ran") / "project"
     copy_repo(project["root"], root)
     opened: list[Path] = []
@@ -177,7 +179,7 @@ def ran(script, project, tmp_path_factory) -> dict:
         report = script.run_oos(root)
     finally:
         patches.undo()
-    _RAN.update(root=root, cfg=project["cfg"], lock=lock, report=report, opened=opened, purged=purged)
+    _RAN.update(root=root, cfg=project["cfg"], lock=lock, report=report, opened=opened, purged=purged, repo_state=before)
     return _RAN
 
 
@@ -311,8 +313,7 @@ def test_no_file_of_the_repository_data_folder_is_opened(script, ran):
     assert any(under(p, ran["root"]) for p in ran["opened"])
     inside = [p for p in ran["opened"] if under(p, ROOT / "data")]
     assert inside == []
-    assert not (ROOT / "FROZEN.lock").exists()
-    assert not (ROOT / "outputs" / "oos_access_log.json").exists()
+    assert repo_state() == ran["repo_state"]  # each file identical, or still absent (S45-1)
 
 
 # ---------------------------------------------------------------- e. the access log
