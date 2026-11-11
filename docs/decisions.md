@@ -2663,6 +2663,7 @@ No result counts until its reviewer signs it here (protocol section 14).
 | Date | Deliverable | Owner | Reviewer | Result |
 | --- | --- | --- | --- | --- |
 | 2026-11-03 | Gate 2 core (S22-10): engine hand cases and ledger reconciliation (PR #5); features, labels, folds and vault (PRs #6, #7, #8); M0 In-Sample walk-forward reproduced with byte-identical scores (`scores_sha256` `7078b900…96a8`, PR #9); M0 baseline net Sharpe −0.771 (T-bill rf), max drawdown −48.0% | Eliya Allam, Mattia Cervelli | Mattia Cervelli (M0 reproduction); Eliya Allam and Mattia Cervelli (sign-off) | Passed on 3 Nov 2026; hard stop not triggered (S31-11) |
+| 2026-11-11 | Gate 3 freeze: FROZEN.lock (selected M0_star, 72 trials, code commit 9931631450e8) | Eliya Allam | The five members, full names as signed in this PR's comments | Signed in the comments of this PR |
 
 ## Teaching-team check (protocol section 15)
 
