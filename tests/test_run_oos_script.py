@@ -176,10 +176,19 @@ def copy_project(project: dict, tmp_path: Path) -> Path:
     return copy_repo(project["root"], tmp_path / "project")
 
 
+REPO_FILES = ("FROZEN.lock", "outputs/oos_access_log.json")  # files of the real repository a synthetic run must not write
+
+
+def repo_state(root: Path = ROOT) -> dict[str, bytes | None]:
+    """The bytes of each of REPO_FILES in the real repository, None for a file that does not exist (S45-1)."""
+    return {name: (root / name).read_bytes() if (root / name).exists() else None for name in REPO_FILES}
+
+
 @pytest.fixture
 def ran(script, project, tmp_path_factory) -> dict:
     """A copy of the project frozen, signed (lock and decisions committed) and run once (read-only, built once)."""
     if not _RAN:
+        before = repo_state()
         root = tmp_path_factory.mktemp("oos_ran") / "project"
         copy_repo(project["root"], root)
         lock = script.freeze(root)
@@ -187,7 +196,7 @@ def ran(script, project, tmp_path_factory) -> dict:
             f.write("\nGate 3 signatures (synthetic test)\n")
         commit(root, "docs: sign the freeze")
         report = script.run_oos(root)
-        _RAN.update(root=root, cfg=project["cfg"], lock=lock, report=report)
+        _RAN.update(root=root, cfg=project["cfg"], lock=lock, report=report, repo_state=before)
     return _RAN
 
 
@@ -687,8 +696,7 @@ def test_one_continuous_book_across_the_boundary(script, ran):
 
 
 def test_the_run_does_not_touch_the_repository(script, ran):
-    assert not (ROOT / "FROZEN.lock").exists()
-    assert not (ROOT / "outputs" / "oos_access_log.json").exists()
+    assert repo_state() == ran["repo_state"]  # each file identical, or still absent (S45-1)
 
 
 def test_run_refuses_a_lock_that_is_not_json(script, project, tmp_path):

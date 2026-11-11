@@ -2634,6 +2634,28 @@ approvals given so far; Mattia approves through the review of the pull request f
 | Files affected | `docs/decisions.md`, `docs/trial_log.csv` (rows 57 to 72, metric cells only) |
 | Amendment | No |
 
+## 2026-11-11 · Session 4.5: Gate 3 freeze and the Out-of-Sample run
+
+Evidence-standard format. "Instruction" quotes Eliya's instructions of 11 Nov 2026. This entry was written on branch
+`fix/4.5-freeze-tests` from `main` at `28192b5` (PR #28 merged). When it was written, `FROZEN.lock` did not exist,
+`outputs/oos_access_log.json` did not exist, and no Out-of-Sample value had been computed or seen. "Approved by" lists the
+approvals given so far; Mattia approves through the review of the pull request from branch `fix/4.5-freeze-tests`.
+
+### S45-1 · The first Gate 3 freeze is discarded; two tests of 08 stop assuming that the real lock and access log do not exist
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-11 |
+| Question | The real freeze made two tests of 08 fail, so it could not be committed with a green suite. What happens to that lock, and how do the tests keep checking that a synthetic run leaves the real repository untouched once the lock and, after Gate 4, the access log are committed? |
+| Options considered | (a) discard the uncommitted lock, change the two tests to compare each real file before and after the synthetic run, merge, then freeze again on the new `main` (chosen); (b) commit the lock with the two tests failing (refused: CI must be green to merge, and a failing test is never accepted as is); (c) change the tests on the freeze branch (refused: `verify_lock` refuses every file changed after the frozen commit other than `FROZEN.lock` and `docs/decisions.md`, so the run of record would stop); (d) delete the two assertions (refused: weakens the tests) |
+| Decision | (a). **The discarded freeze.** On 11 Nov 2026 `08_run_oos.py --freeze` on clean `main` at `28192b5` wrote `FROZEN.lock` at 13:39:49 UTC (code commit `28192b528f1f`, selected M0_star, models M1, M2, M3, ENS, M6, M7, M8, M0, M0_star, trial count 72, 43 artefacts; the same values as the dry run except the commit). The full suite then gave 2 failed, 2110 passed, 1 skipped: `tests/test_run_oos_script.py::test_the_run_does_not_touch_the_repository` and `tests/test_run_oos_round2.py::test_no_file_of_the_repository_data_folder_is_opened` both stopped at `assert not (ROOT / "FROZEN.lock").exists()`, because they assumed the real repository never holds a lock. The lock was never committed, never signed, and nothing read it: the Out-of-Sample run was not started, `outputs/oos_access_log.json` was never created and no Out-of-Sample value was computed or seen. It was deleted and the uncommitted sign-off row was undone. Gate 3 is done again by a new `--freeze` on `main` after this fix is merged; its lock records the new commit. **The fix.** In both files, for each of `FROZEN.lock` and `outputs/oos_access_log.json` of the real repository, the `ran` fixture records, before the synthetic freeze and run, whether the file exists and its bytes (`repo_state()` in `tests/test_run_oos_script.py`, imported by `tests/test_run_oos_round2.py`), and the two tests assert that both are identical after the run, or still absent. That replaces the four `not ... .exists()` assertions (`tests/test_run_oos_script.py`, lines 690 and 691; `tests/test_run_oos_round2.py`, lines 314 and 315). The access-log assertions are changed too: they would fail once the log is committed with `git add -f` after Gate 4 (`tests/test_oos_access_log.py`). Nothing else changes, in the tests or in 08. **Ownership.** `08_run_oos.py` and both test files are Mattia's (S34-1, S42-8). Mattia agreed by message on 11 Nov 2026 that Eliya changes the two tests, and he reviews the pull request |
+| Rationale | A synthetic run that wrote the real lock or the real access log would change bytes the snapshot recorded, or create a file that did not exist, so the new assertions fail in every case the old ones did. They also hold once both files are legitimately committed. Freezing again after the merge keeps the frozen commit's tree and the tested tree the same |
+| Evidence | Console output of `08_run_oos.py --freeze` (11 Nov 2026): "Saved FROZEN.lock: commit 28192b528f1f, selected M0_star, 43 artefacts, trial count 72."; pytest output of the same day: "2 failed, 2110 passed, 1 skipped", both with `AssertionError` at `assert not (ROOT / "FROZEN.lock").exists()`; `08_run_oos.py` `verify_lock` ("refused: files changed since the freeze", `allowed_after_freeze` = `FROZEN.lock`, `docs/decisions.md`; S34-3, S36-1); `tests/test_oos_access_log.py` docstring: "committed with `git add -f` (outputs/ is git-ignored)"; S34-1; Instruction: "These test files are Mattia's (08 is his, S34-1); he has agreed by message that you fix them and he will review."; "For each of FROZEN.lock and outputs/oos_access_log.json: snapshot existence and bytes before the fake run, assert identical (or still absent) after. Change nothing else." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 11 Nov 2026); Mattia Cervelli (agreement by message, 11 Nov 2026; PR review) |
+| Files affected | `tests/test_run_oos_script.py`, `tests/test_run_oos_round2.py`, `docs/decisions.md` |
+| Amendment | No: changes no rule, threshold or result; the tests check the same property |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
