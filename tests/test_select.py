@@ -6,6 +6,10 @@ with rf the weekly T-bill of M0's weekly.csv, written to outputs/metrics/selecti
 S37-5: is_sharpe and is_mdd of the human trial rows from the backtest summaries (no overwrite, every other byte kept).
 S37-6: weekly returns of the agent candidates that reached the walk-forward, re-scored through the vault server.
 S37-7: DSR and PBO on the matrix of every distinct spec_hash with weekly In-Sample returns (selection_bias.json).
+S44-1: the gate of both rounds is `rounds=2` (tests/test_round2_gate.py); every gate_result and select call here is the
+round-1 gate of S37-4, called with rounds=1, whose gate must behave exactly as before; the trial metrics and the
+diagnostics of select ignore rounds and cover every trial (S44-1), so on this round-1-only fixture select(rounds=1)
+equals the select of S37-4.
 
 Every test builds a fake project root in a temporary folder: docs/trial_log.csv (header src.vault.TRIAL_COLUMNS, rows
 through src.vault.append_trial), outputs/walkforward/<name>/summary.json and outputs/backtests/<name>/{used.yaml,
@@ -359,7 +363,10 @@ def root(tmp_path) -> Path:
 
 
 def test_constants_are_the_ones_of_the_decision_log(script):
-    assert tuple(script.GATE_MODELS) == ("M0", "M1", "M2", "M3", "ENS")
+    assert tuple(script.ROUND1_GATE_MODELS) == ("M0", "M1", "M2", "M3", "ENS")  # S37-4, the gate of rounds=1
+    assert tuple(script.ROUND1_ABSENT) == ("M5",)
+    assert tuple(script.GATE_MODELS) == ("M0", "M1", "M2", "M3", "ENS", "M6", "M7", "M8")  # S44-1
+    assert tuple(script.ABSENT) == ("M5", "M9")  # S33-19, S43-9
     assert script.GATE_FILE == "outputs/metrics/selection_gate.json"
     assert script.BIAS_FILE == "outputs/metrics/selection_bias.json"
     assert script.AGENT_DIR == "outputs/agent_lab/walkforward"
@@ -586,12 +593,12 @@ def expected_gate(root: Path) -> dict:
 
 @pytest.fixture(scope="module")
 def pass_gate(pass_root) -> dict:
-    return s05().gate_result(CFG, pass_root)
+    return s05().gate_result(CFG, pass_root, rounds=1)
 
 
 @pytest.fixture(scope="module")
 def fail_gate(fail_root) -> dict:
-    return s05().gate_result(CFG, fail_root)
+    return s05().gate_result(CFG, fail_root, rounds=1)
 
 
 def test_gate_result_has_the_keys_of_the_decision(pass_gate):
@@ -674,7 +681,7 @@ def test_gate_result_with_no_passing_candidate_is_the_fallback(fail_root, fail_g
 def test_gate_result_selects_the_first_passing_candidate_in_order(script, tmp_path):
     """M2 and ENS pass, M1 does not: the first passing candidate of models.candidate_order is M2."""
     make_root(tmp_path / "p", passing=("M2", "ENS"))
-    gate = script.gate_result(CFG, tmp_path / "p")
+    gate = script.gate_result(CFG, tmp_path / "p", rounds=1)
     assert gate["selected"] == "M2"
     assert gate["fallback"] is False
     assert_close(gate["candidates"], expected_gate(tmp_path / "p")["candidates"], where="candidates")
@@ -683,7 +690,7 @@ def test_gate_result_selects_the_first_passing_candidate_in_order(script, tmp_pa
 def test_gate_result_refuses_a_stale_candidate(script, root):
     write_backtest(root, "ENS", make_nets()["ENS"], digest=digest_of("M1"))
     with pytest.raises(SystemExit):
-        script.gate_result(CFG, root)
+        script.gate_result(CFG, root, rounds=1)
 
 
 # ---------------------------------------------------------------- trial_log_with_metrics (S37-5)
@@ -1142,10 +1149,10 @@ def json_pairs_sorted(text: str) -> bool:
 
 
 def test_select_writes_the_gate_the_diagnostics_and_the_trial_log(script, root):
-    gate = script.gate_result(CFG, root)
+    gate = script.gate_result(CFG, root, rounds=1)
     text, _ = script.trial_log_with_metrics(CFG, root)
     bias = script.selection_bias(CFG, root, gate["selected"])
-    script.select(CFG, root)
+    script.select(CFG, root, rounds=1)
     gate_file, bias_file = root / script.GATE_FILE, root / script.BIAS_FILE
     assert gate_file.exists() and bias_file.exists()
     assert_close(json.loads(gate_file.read_text(encoding="utf-8")), json.loads(json.dumps(gate, default=float)),
@@ -1156,7 +1163,7 @@ def test_select_writes_the_gate_the_diagnostics_and_the_trial_log(script, root):
 
 
 def test_select_files_are_sorted_json_with_lf(script, root):
-    script.select(CFG, root)
+    script.select(CFG, root, rounds=1)
     for name in (script.GATE_FILE, script.BIAS_FILE):
         raw = (root / name).read_bytes()
         assert b"\r" not in raw
@@ -1166,15 +1173,15 @@ def test_select_files_are_sorted_json_with_lf(script, root):
 
 def test_select_is_deterministic_and_rerunnable(script, root):
     """A second run gives the same bytes (no timestamp; the filled cells equal the values, so they are kept)."""
-    script.select(CFG, root)
+    script.select(CFG, root, rounds=1)
     first = [(root / name).read_bytes() for name in (script.GATE_FILE, script.BIAS_FILE, TRIAL_PATH)]
-    script.select(CFG, root)
+    script.select(CFG, root, rounds=1)
     assert [(root / name).read_bytes() for name in (script.GATE_FILE, script.BIAS_FILE, TRIAL_PATH)] == first
 
 
 def test_select_with_no_passing_candidate_records_the_fallback(script, tmp_path):
     make_root(tmp_path / "f", passing=())
-    script.select(CFG, tmp_path / "f")
+    script.select(CFG, tmp_path / "f", rounds=1)
     gate = json.loads((tmp_path / "f" / script.GATE_FILE).read_text(encoding="utf-8"))
     bias = json.loads((tmp_path / "f" / script.BIAS_FILE).read_text(encoding="utf-8"))
     assert gate["selected"] == "M0_star" and gate["fallback"] is True
@@ -1212,7 +1219,7 @@ def test_select_writes_nothing_when_any_check_fails(script, root, breaker):
     gate_file.write_bytes(b"old\n")
     log_before = trial_bytes(root)
     with pytest.raises(SystemExit):
-        script.select(CFG, root)
+        script.select(CFG, root, rounds=1)
     assert gate_file.read_bytes() == b"old\n"
     assert not bias_file.exists()
     assert trial_bytes(root) == log_before
@@ -1221,7 +1228,7 @@ def test_select_writes_nothing_when_any_check_fails(script, root, breaker):
 def test_select_failure_leaves_no_metrics_files_on_a_fresh_root(script, root):
     _break_diagnostics(root)
     with pytest.raises(SystemExit):
-        script.select(CFG, root)
+        script.select(CFG, root, rounds=1)
     assert not (root / script.GATE_FILE).exists()
     assert not (root / script.BIAS_FILE).exists()
 
@@ -1253,7 +1260,7 @@ def test_select_refuses_once_frozen_lock_exists(script, root):
     (root / "FROZEN.lock").write_text("{}\n", encoding="utf-8")
     before = trial_bytes(root)
     with pytest.raises(SystemExit, match="FROZEN.lock"):
-        script.select(CFG, root)
+        script.select(CFG, root, rounds=1)
     assert trial_bytes(root) == before
     assert not (root / script.GATE_FILE).exists() and not (root / script.BIAS_FILE).exists()
 
@@ -1265,7 +1272,7 @@ def test_agent_returns_refuses_once_frozen_lock_exists(script, root):
 
 
 def test_select_leaves_no_temporary_file(script, root):
-    script.select(CFG, root)
+    script.select(CFG, root, rounds=1)
     leftovers = [p for p in root.rglob("*.tmp")]
     assert leftovers == []
 

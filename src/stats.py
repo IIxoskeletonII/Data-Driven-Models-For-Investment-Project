@@ -384,7 +384,7 @@ def sharpe_difference_test(a: pd.Series, b: pd.Series, *, kernel: str = "qs", ba
 
 
 def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | None = None, *,
-                   rf: pd.Series | float, absent: Sequence[str] = ()) -> dict:
+                   rf: pd.Series | float, absent: Sequence[str] = (), rounds: int = 1) -> dict:
     """The §07 selection rule on In-Sample walk-forward weekly net returns (S31-8).
 
     results: candidate name → weekly net returns of the test weeks (same weekly index as m0, the hurdle's). A candidate
@@ -396,13 +396,26 @@ def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | 
     and the zero-cost Sharpe (rf = 0) is reported alongside as information. Every name of models.candidate_order must be in results
     or in `absent` (e.g. M5 without approved agent features). Returns {"selected": the first passing candidate in
     order, else "M0_star", "candidates": one dict per candidate in order}.
+
+    rounds=2 (Amendment 9 C3, S44-1): the order is models.candidate_order followed by round2.candidate_order, against the
+    same hurdle M0 and the same Sharpe and drawdown tests; the bootstrap threshold is selection.bootstrap_prob for a
+    round-1 name and round2.selection.bootstrap_prob for a round-2 name. Every row adds "round" (1 or 2) and every
+    evaluated row "bootstrap_threshold"; the result adds "round1_selected", the first passing round-1 candidate, else
+    "M0_star" (the primary pre-registered result). rounds=1 returns exactly what it returned before.
     """
     cfg = _cfg(cfg)
+    if rounds not in (1, 2):
+        raise ValueError(f"selection_gate: rounds must be 1 or 2, got {rounds!r}")
     gate = cfg["selection"]
-    order = list(cfg["models"]["candidate_order"])
+    first = list(cfg["models"]["candidate_order"])
+    second = list(cfg["round2"]["candidate_order"]) if rounds == 2 else []
+    order = first + second
+    threshold = {name: float(gate["bootstrap_prob"]) for name in first}
+    threshold.update({name: float(cfg["round2"]["selection"]["bootstrap_prob"]) for name in second})
     unknown = sorted(set(results) - set(order))
     if unknown:
-        raise ValueError(f"selection_gate: {unknown} are not candidates of models.candidate_order {order}")
+        where = "models.candidate_order" + (" + round2.candidate_order" if rounds == 2 else "")
+        raise ValueError(f"selection_gate: {unknown} are not candidates of {where} {order}")
     missing = [name for name in order if name not in results and name not in absent]
     if missing:
         raise ValueError(f"selection_gate: no results for {missing}; name a candidate that does not exist in absent=")
@@ -411,10 +424,11 @@ def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | 
             raise ValueError(f"selection_gate: {name} and M0 must share the same weekly index")
     sharpe_m0, mdd_m0 = sharpe_ratio(m0, rf), max_drawdown(m0)
     sharpe_m0_zero_cost = sharpe_ratio(m0, 0.0)
-    candidates, selected = [], None
+    candidates, selected, round1_selected = [], None, None
     for name in order:
+        tag = {"round": 1 if name in first else 2} if rounds == 2 else {}
         if name not in results:
-            candidates.append({"name": name, "status": "absent"})
+            candidates.append({"name": name, "status": "absent", **tag})
             continue
         r = results[name]
         boot = paired_block_bootstrap(r, m0, gate["bootstrap_resamples"], gate["bootstrap_block"], int(cfg["seed"]), rf=rf)
@@ -427,9 +441,16 @@ def selection_gate(results: Mapping[str, pd.Series], m0: pd.Series, cfg: dict | 
                "sharpe_zero_cost": sharpe_ratio(r, 0.0), "sharpe_m0_zero_cost": sharpe_m0_zero_cost,
                "passes_sharpe": bool(sharpe >= sharpe_m0 + gate["sharpe_uplift"]),
                "passes_mdd": bool(mdd >= mdd_m0 - gate["mdd_tolerance"]),
-               "passes_bootstrap": bool(boot["p_uplift_positive"] >= gate["bootstrap_prob"])}
+               "passes_bootstrap": bool(boot["p_uplift_positive"] >= threshold[name])}
         row["passes"] = row["passes_sharpe"] and row["passes_mdd"] and row["passes_bootstrap"]
+        if rounds == 2:
+            row.update(tag, bootstrap_threshold=threshold[name])
         if row["passes"] and selected is None:
             selected = name
+        if row["passes"] and round1_selected is None and name in first:
+            round1_selected = name
         candidates.append(row)
-    return {"selected": selected or FALLBACK, "candidates": candidates}
+    out = {"selected": selected or FALLBACK, "candidates": candidates}
+    if rounds == 2:
+        out["round1_selected"] = round1_selected or FALLBACK
+    return out
