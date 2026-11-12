@@ -1,0 +1,11 @@
+[
+  {
+    "code_commit": "9931631450e845c1a9001bc0be1c65fcba3f5cea",
+    "data_end": "2026-10-16",
+    "head_commit": "2df0b993ffc4df1756e5ffee5672f158ea74580e",
+    "lock_sha256": "d403a86c857c25857d283704b29a68a1b140d4cb023b540186f2b0923831d8cd",
+    "script": "08_run_oos.py",
+    "selected": "M0_star",
+    "utc": "2026-11-12T15:43:32+00:00"
+  }
+]
