@@ -106,8 +106,9 @@ reviewed pull requests with green CI. Run `uv run ruff check .` and `uv run pyte
 
 - **LUISS submission zip.** It contains the raw data in `data/raw/`, so every step reproduces offline:
   `01_download_data.py` finds the archived files, verifies their SHA-256 and does not download anything.
-- **Public repository.** Raw vendor data (Yahoo, Cboe, FRED/Moody's, investing.com) is licensed and is not redistributed here.
+- **Public repository.** Raw vendor data (Yahoo, Cboe, FRED/Moody's) is licensed and is not redistributed here.
   `01_download_data.py` fetches it again and compares it with `data/checksums.json`; any vendor revision is reported, not hidden.
+  The investing.com second-source files used by the QA cross-check are placed by hand (S2-1) and ship only in the LUISS zip.
   See [docs/licensing.md](docs/licensing.md).
 - **CI.** Lint and tests run on Windows, macOS and Linux with a synthetic fixture only: no network, no licensed data.
 
