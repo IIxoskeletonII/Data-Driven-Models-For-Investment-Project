@@ -8,10 +8,36 @@ Each Friday after the close, the system ranks the nine original Select Sector SP
 +1 for the two highest scores, −1 for the two lowest, 0 for the rest. The signals are executed at the next session's open.
 The long and short legs form a dollar-neutral core, an IVV leg hedges the core's estimated market beta, and the whole book is
 scaled to 100% gross exposure with no leverage. The score comes from an AI ladder (ridge, regime interactions, gradient
-boosting, an ensemble and agent-proposed features). Each rung is tested against a matched momentum rule with a single
+boosting, an ensemble, agent-proposed features and, in a second pre-registered round, cost-aware models). Each rung is tested against a matched momentum rule with a single
 pre-registered selection gate, using walk-forward validation inside the In-Sample period and one Out-of-Sample run.
 The hypotheses, the split, the benchmarks, the gate and the tests are pre-registered in
 [docs/preregistration.md](docs/preregistration.md) before any strategy result.
+
+## Results
+
+The pre-registered process ran to the end: In-Sample walk-forward selection (2003–2019, 624 test weeks), a signed freeze,
+and one Out-of-Sample run (30 Dec 2019 to 16 Oct 2026, 355 weeks). All figures are net of 10 bps per trade and 2% a year
+short borrow, with the Sharpe ratio measured against the T-bill.
+
+- **Selection.** No candidate of either round passed the gate (Sharpe ≥ M0 + 0.15, drawdown no more than 2 points worse,
+  bootstrap P(uplift > 0) ≥ 0.80 in round 1 and ≥ 0.90 in round 2), so the pre-registered fallback **M0\*** is traded
+  ([decisions S37-9, S44-3](docs/decisions.md)). The agent lab produced no approved feature, so M5 and M9 are absent.
+- **Out-of-Sample.** M0\* returned −3.9% a year (net Sharpe −0.77, maximum drawdown −42.5%); SPY returned +15.4% a year
+  (Sharpe 0.66). No model was positive net of costs ([decision S45-2](docs/decisions.md)).
+
+| | In-Sample net Sharpe | Out-of-Sample net Sharpe | Out-of-Sample gross return | Costs + borrow | Turnover / week |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| M0\* (traded) | −0.63 | −0.77 | −0.55% a year | −3.0% a year | 0.39 |
+| M7 (closest round-2 candidate) | −0.65 | −0.78 | −0.10% a year | −2.8% a year | 0.34 |
+| M1, M2, M3, ENS (round 1) | −0.99 to −1.42 | −1.17 to −1.53 | −1.1% to +1.0% a year | −6.8% to −7.6% a year | 1.12 to 1.26 |
+
+**How to read it.** Before costs every model is close to zero in both periods; trading costs and borrow make every book
+negative, and the ranking of the models follows their turnover. Round 2 (Amendment 9) was a disclosed, pre-registered
+response to that diagnosis: it cut turnover by about 73% and narrowed the loss, but left no positive edge. The traded
+model's Out-of-Sample Sharpe (−0.77) is close to its In-Sample estimate (−0.63), and its cost structure is nearly
+identical in both periods: the In-Sample evaluation described the strategy correctly, with no overfitting decay. The book
+was market-neutral as designed (beta to SPY −0.04, correlation −0.08) but not profitable, so no bonus is claimed. The
+deflated Sharpe ratio over all 72 trials is 2e-5 In-Sample and 0.005 Out-of-Sample.
 
 ## Quick start
 
@@ -32,10 +58,10 @@ one:
 ```bash
 uv run python 01_download_data.py          # verify data/raw/ against its checksums, rebuild data/processed/ (offline)
 uv run python 03_build_features.py         # features, market states, labels, forward returns (In-Sample)
-uv run python 05_train_walkforward.py --model M0   # walk-forward of each rung (M0, M1, M2, M3, ENS, M0_star) ...
+uv run python 05_train_walkforward.py --model M0   # walk-forward of each rung (M0 to M3, ENS, M0_star, M6 to M8) ...
 uv run python 05_train_walkforward.py --fixed M1_a1  # ... and of each fixed grid value (the list is read from 05)
 uv run python 06_backtest.py --all         # In-Sample backtest of every walk-forward
-uv run python 06_backtest.py --shift-check M0 M1 M2 M3 ENS M0_star   # one-week-shift leakage check
+uv run python 06_backtest.py --shift-check M0 M1 M2 M3 ENS M0_star M6 M7 M8   # one-week-shift leakage check
 uv run python 06_backtest.py --placebo     # placebo books
 uv run python 05_train_walkforward.py --agent-returns   # agent candidates re-scored through the sealed vault
 uv run python 05_train_walkforward.py --select          # selection gate, trial metrics, DSR and PBO
@@ -80,8 +106,9 @@ reviewed pull requests with green CI. Run `uv run ruff check .` and `uv run pyte
 
 - **LUISS submission zip.** It contains the raw data in `data/raw/`, so every step reproduces offline:
   `01_download_data.py` finds the archived files, verifies their SHA-256 and does not download anything.
-- **Public repository.** Raw vendor data (Yahoo, Cboe, FRED/Moody's, Stooq) is licensed and is not redistributed here.
+- **Public repository.** Raw vendor data (Yahoo, Cboe, FRED/Moody's) is licensed and is not redistributed here.
   `01_download_data.py` fetches it again and compares it with `data/checksums.json`; any vendor revision is reported, not hidden.
+  The investing.com second-source files used by the QA cross-check are placed by hand (S2-1) and ship only in the LUISS zip.
   See [docs/licensing.md](docs/licensing.md).
 - **CI.** Lint and tests run on Windows, macOS and Linux with a synthetic fixture only: no network, no licensed data.
 
@@ -120,11 +147,11 @@ uv run python make_submission.py --presentation PATH/TO/slides.pdf   # writes gr
 | `data/processed/` | Daily and weekly tables derived from the raw data: local and in the LUISS zip only |
 | `data/qa/` | QA tables (returns and counts, no price levels) |
 | `data/checksums.json` | SHA-256 and metadata of every raw and processed file |
-| `outputs/` | Models, signals, backtests, metrics and plots (later gates) |
+| `outputs/` | Walk-forward scores, backtests, metrics, plots and the Out-of-Sample run: local and in the LUISS zip (only the access log is committed) |
 | `docs/` | Pre-registration, decisions, QA report, methods, data dictionary, licensing, composition breaks, trial log, primer, contributions |
 | `tools/` | Repository git hooks and their installer |
 
 ## Team
 
-Group 7: Eliya Allam, Simone, Chiara, Mattia, Giuseppe. Owners and reviewers of each workstream are listed in
+Group 7: Eliya Allam, Chiara Baldoni, Simone Cavallaro, Giuseppe Catrambone, Mattia Cervelli. Owners and reviewers of each workstream are listed in
 [docs/contribution_statement.md](docs/contribution_statement.md).
