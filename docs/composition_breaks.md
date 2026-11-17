@@ -1,19 +1,19 @@
 # Composition breaks
 
-> **Draft — owner: Simone, to review and finalise.** Facts observed in the archived data are marked *(data)*; facts about
-> index and fund events are marked *(to verify)* against the issuer's and S&P Dow Jones Indices' notices before this
-> draft is finalised and committed from the owner's account.
-
-The universe is fixed (the nine original Select Sector SPDR ETFs), but the holdings behind two of them changed when GICS
-was revised. Protocol section 04: composition breaks are logged here and analysed on In-Sample only. Both breaks below fall
-inside the In-Sample period (through 27 Dec 2019).
+The universe is fixed (the nine original Select Sector SPDR ETFs), but the holdings behind three of them changed when the
+GICS sector classification was revised. Protocol section 04: composition breaks are logged here. Both breaks fall inside
+the In-Sample period (through 27 Dec 2019). Facts observed in our archived data are marked *(data)*; facts about index and
+fund events cite their source.
 
 ## 2016: Real Estate becomes a GICS sector (XLF)
 
-- *(to verify)* GICS moved equity REITs and real-estate management companies out of Financials into a new Real Estate
-  sector in 2016. The Real Estate Select Sector SPDR (XLRE), launched in October 2015, is excluded from our universe for
-  history length (protocol section 04).
-- *(to verify)* XLF removed its real-estate holdings in September 2016 by distributing XLRE shares to XLF shareholders.
+- In September 2016 real estate companies and REITs left the Financials sector and became the eleventh GICS sector; the
+  S&P indices rebalanced on 16 September 2016 ([etf.com](https://www.etf.com/sections/features-and-news/what-new-real-estate-sector-means-etfs)).
+- The Real Estate Select Sector SPDR (XLRE) has an inception date of 7 October 2015 and listed on NYSE Arca on
+  8 October 2015 ([SSGA](https://www.ssga.com/us/en/individual/etfs/funds/real-estate-select-sector-spdr-fund-xlre)). It is
+  excluded from our universe for history length (protocol section 04).
+- XLF removed its real estate holdings by distributing its XLRE shares to XLF shareholders in a one-time, in-kind payout of
+  nearly a fifth of the fund's assets, rather than by selling them ([etf.com](https://www.etf.com/node/95901.md)).
 - *(data)* Yahoo books this event for XLF as a **split factor of 1.231 on 2016-09-19**, not as a dividend. A regular cash
   dividend of 0.092608 per share has its ex-date on 2016-09-16.
 - *(data)* Because Yahoo treats the distribution as a split, its Close and Adj Close before 2016-09-19 are divided by 1.231:
@@ -26,21 +26,22 @@ inside the In-Sample period (through 27 Dec 2019).
 
 ## 2018: Communication Services replaces Telecommunication Services (XLK, XLY)
 
-- *(to verify)* GICS broadened Telecommunication Services into Communication Services in September 2018, moving large
-  internet and media companies out of Information Technology and Consumer Discretionary. The Communication Services
-  Select Sector SPDR (XLC), launched in June 2018, is excluded from our universe for history length (protocol section 04).
-- *(to verify)* XLK and XLY sold the affected holdings at the index rebalance; there was no in-kind distribution.
+- GICS expanded Telecommunication Services into Communication Services, adding companies from Information Technology
+  (including Alphabet and Facebook) and the media industry group from Consumer Discretionary; the change took effect after
+  the close of 28 September 2018 ([ETF Database](https://etfdb.com/news/2018/09/25/impact-of-biggest-gics-changes-on-etf-investors/)).
+- The Communication Services Select Sector SPDR (XLC) launched on NYSE Arca in June 2018. XLK and XLY were rebalanced to
+  the reconstituted sectors after the close of 21 September 2018, with no action required from existing shareholders
+  ([ETF Strategy](https://www.etfstrategy.com/ssga-launches-communication-services-select-sector-spdr-etf-xlc-based-on-new-gics-communication-services-sector-47483/)).
+  XLC is excluded from our universe for history length (protocol section 04).
 - *(data)* No split factor, unusual distribution or adjustment step appears in 2018 for any ticker: the only Yahoo split
   factors in the snapshot are XLF on 2016-09-19 (1.231) and the 2:1 splits of XLB, XLE, XLK, XLU and XLY on 2025-12-05.
 - Effect on the strategy: XLK and XLY change character in late 2018 (XLK loses part of its internet exposure, XLY its media
   exposure), inside the In-Sample period.
 
-## In-Sample analysis (to do)
+## Treatment and limitation
 
-To be defined and run by the owner on In-Sample data only, e.g. whether the features of XLF, XLK and XLY behave differently
-before and after each break.
-
-## Sources (to complete)
-
-- Select Sector SPDR Trust notices on the 2016 XLF distribution and the 2018 sector changes
-- S&P Dow Jones Indices / MSCI, GICS structure changes of 2016 and 2018
+- No adjustment is made to the strategy: each ETF is traded as it was at each date, which is what an investor could have
+  held. The features are computed from the ETFs' own adjusted prices, so they reflect the composition of the time.
+- A separate before-and-after comparison of XLF's, XLK's and XLY's features around each break was not run. This is
+  recorded as a limitation: both breaks are a small share of the 624 In-Sample test weeks, and the traded model (M0\*)
+  uses only price momentum, which the breaks do not distort beyond the change in holdings itself.
