@@ -310,9 +310,7 @@ Table: `data/qa/weekly_counts.csv` (7 rows).
 
 ## Reviewer sign-off (Simone)
 
-To be completed by the workstream A owner (protocol section 14).
-
-- Review of the flagged daily moves above 10%:
-- Interpretation of the second-source reconciliation:
-- PASS/FAIL confirmation of each gate:
-- Signed (name, date):
+- Review of the flagged daily moves above 10%: reviewed all 85 close-to-close and 73 open-to-open moves. Every one falls in a known market event: the 2008–09 financial crisis (most of them, especially XLF), the March 2020 COVID crash, the 2000–2002 technology sell-off, the 9 November 2020 vaccine announcement (XLE +14.3%) and the 9 April 2025 tariff-pause rally (SPY +10.5%). 84 of the 85 close moves have the same sign as SPY that day, and 80 of 85 are confirmed by the second source within 1.5 percentage points; the other 5 are all on 2020-03-16, where the investing.com files contain extra non-trading-day rows (S47-1). No move is split-like. No data error found.
+- Interpretation of the second-source reconciliation: 219 of 220 comparisons agree within 10 bps. The one failure (XLE, 2006-01-18, 43.2 bps) is most likely a one-day close print error in the investing.com file, which breaks the stable price ratio to Yahoo on that day only (S47-1). The Yahoo data are accepted; the effect is at most one week's XLE return in 2006, In-Sample only, and no result changes.
+- PASS/FAIL confirmation of each gate: every gate passes except the second-source check, which fails on 1 of 220 comparisons for the reason above; the data are accepted for use.
+- Signed: Simone Cavallaro, 17 November 2026
