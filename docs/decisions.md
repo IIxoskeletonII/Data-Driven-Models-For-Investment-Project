@@ -2671,6 +2671,27 @@ approvals given so far; Mattia approves through the review of the pull request f
 | Files affected | `docs/decisions.md`, `outputs/oos_access_log.json` (committed with `git add -f`, S34-4) |
 | Amendment | No |
 
+## 2026-11-15 · Session 4.7: second-source data QA
+
+Evidence-standard format. "Instruction" quotes Eliya's instructions of 15 Nov 2026. This entry was written on branch
+`data/4.7-second-source` from `main` at `1a4eaca`, after the Out-of-Sample run of record (S45-2). No price level appears in
+it: only returns and ratios between the two sources.
+
+### S47-1 · Result of the second-source check against investing.com: FAIL on 1 of 220 comparisons
+
+| Field | Content |
+| --- | --- |
+| Date | 2026-11-15 |
+| Question | What did the QA gate "20 sampled dates checked against the second source" (protocol section 04, S2-1) give once the 11 investing.com files were placed, and how is its single mismatch interpreted? |
+| Options considered | (a) keep the result exactly as computed and record the mismatch with its evidence and interpretation (chosen); (b) widen `qa.second_source_tol`, drop the date or edit the file until the gate passes (refused: hard rule 8, "Never weaken a test or a threshold to make it pass"); (c) wait for a third source before recording (not chosen: the result is recorded now, and the interpretation is stated as not provable without one) |
+| Decision | (a). **Files.** Simone's investing.com daily exports (Historical Data), downloaded on 15 Nov 2026, were copied unchanged into the git-ignored `data/raw/second_source/` as `<TICKER>.csv` for the 11 tradables; their SHA-256 values are listed in `docs/qa_report.md`. The first exports of XLU, XLV, XLY, IVV and SPY were in the Italian locale (Italian headers, DD.MM.YYYY dates, decimal commas), which `src/validate.py: read_second_source` does not read (S2-1 documents the English export), so Simone downloaded those five again in English; the files used have the English header, MM/DD/YYYY dates and decimal points. **Result.** `02_validate_data.py`: FAIL, "11/11 tickers; second-source close matches Yahoo's split_only series; max \|return difference\| 0.4319% over 220 comparisons"; 219 of the 220 close-to-close comparisons are within the 10 bps limit (`qa.second_source_tol`). **The one mismatch.** XLE, 2006-01-18: Yahoo −0.8264%, investing.com −1.2583%, a difference of 43.2 bps against the 10 bps limit. The next largest differences are XLU 6.9 bps and XLB 6.5 bps. **Ratio evidence.** From 2006-01-12 to 2006-01-24 the investing.com XLE close is about 0.971 × Yahoo's on every session (0.9709 to 0.9711) except the close of 2006-01-18, at 0.9667; the same day's open (0.9710) and the next session's close (0.9708) are back at about 0.971. **Interpretation.** Most likely a one-day close print error in the second source; this cannot be proven without a third source. Information only: the investing.com files also hold 6 to 30 rows per ticker on dates that are not equity sessions (mostly weekends, 2020-02-17 to 2025-12-25) with a flat price, about 2 × Yahoo's for the five tickers split on 2025-12-05; the gate compares returns only on dates present in both sources, so these rows do not enter it, but they produce the about −56% second-source returns shown next to the moves of 2020-03-16 for XLB, XLE, XLK, XLU and XLY in the big-move table. **Impact.** At most one week's XLE return in 2006, In-Sample only, and only if the Yahoo close were the wrong one; nothing Out-of-Sample. The second source is read only by `02_validate_data.py` and feeds no feature, model or result, so the frozen system (`FROZEN.lock`) and every result are unchanged: after the run, `data/processed/` and `outputs/` were byte-identical, and `config.yaml`, `docs/trial_log.csv` and the 43 artefacts of `FROZEN.lock` matched its hashes. **No change.** No threshold, date, file or line of code was changed (hard rule 8) |
+| Rationale | The gate is reported exactly as computed; the evidence shows a single isolated close in one source, and the record lets the reviewer sign the "Interpretation of the second-source reconciliation" line of `docs/qa_report.md` from it |
+| Evidence | Console output of `uv run python 02_validate_data.py` (15 Nov 2026): "[FAIL] 20 sampled dates checked against the second source - 11/11 tickers; second-source close matches Yahoo's split_only series; max \|return difference\| 0.4319% over 220 comparisons"; `data/qa/second_source.csv` (the 220 comparisons, returns only); `docs/qa_report.md`, section "Second source" (files and SHA-256, e.g. `XLE.csv` `765dc84d…f58e`); `config.yaml` `qa.second_source_tol: 0.001`, `qa.second_source_dates: 20`; S2-1; manual §3.8; Instruction: "Keep the gate result exactly as computed (FAIL, 219/220)." |
+| Proposed by | Eliya Allam |
+| Approved by | Eliya Allam (instruction of 15 Nov 2026); Mattia Cervelli: PR review |
+| Files affected | `docs/qa_report.md`, `data/qa/gates.csv`, `data/qa/second_source.csv` (new), `data/qa/big_moves_close.csv`, `data/qa/big_moves_open.csv`, `data/qa/corporate_action_windows.csv`, `data/qa/raw_file_order.csv`, `docs/decisions.md` |
+| Amendment | No: changes no rule, threshold or result |
+
 ## Reviewer sign-offs
 
 No result counts until its reviewer signs it here (protocol section 14).
