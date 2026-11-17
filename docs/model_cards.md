@@ -1,6 +1,6 @@
 # Model cards
 
-All models use the same weekly decision clock, universe, labels, walk-forward folds, execution rule and baseline cost assumptions. Results are intentionally blank until the relevant gate has run. [prereg §05, §07, §09, §10]
+All models use the same weekly decision clock, universe, labels, walk-forward folds, execution rule and baseline cost assumptions. In-Sample figures come from the walk-forward backtests (624 test weeks, 2008-01-04 to 2019-12-13; `docs/decisions.md` S37-9, S42-7, S44-3) and Out-of-Sample figures from the single run of record (355 weeks, first return realised 2019-12-30, data to 2026-10-16; S45-2). All figures are net of baseline costs (10 bps per trade, 2% a year borrow), with the headline Sharpe ratio using the weekly T-bill rate (Amendment 6 C1). P(uplift > 0) is the paired block bootstrap against M0 used by the gate (5,000 resamples, block 4). [prereg §05, §07, §09, §10]
 
 ## M0 — momentum hurdle
 
@@ -38,10 +38,12 @@ M0 uses one momentum horizon, so it does not model other asset characteristics o
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −0.7714 | −47.98% | 0.40 | Reference | — | — | — |
+| Out-of-Sample | −0.7662 | −42.50% | 0.39 | — | −0.1053 | −3.91% | −0.037 |
+
+M0 is the hurdle, not a candidate. Its Out-of-Sample book is identical to M0\*'s, because M0\*'s frozen lookback is 26 weeks (S45-2).
 
 ## M1 — ridge multi-feature ranking
 
@@ -79,10 +81,12 @@ An additive ridge model may miss nonlinear or regime-conditional effects, and `B
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −1.2856 | −58.46% | 1.19 | 0.100 | — | — | — |
+| Out-of-Sample | −1.1740 | −40.12% | 1.21 | — | +0.0907 | −6.45% | +0.028 |
+
+Gate (round 1): fails all three tests (S37-9). Frozen grid value λ = 10.
 
 ## M2 — ridge with pre-registered interactions
 
@@ -120,10 +124,12 @@ Only timestamp-valid inputs and labels passing the cutoff are used. Market-state
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −0.9865 | −49.11% | 1.12 | 0.267 | — | — | — |
+| Out-of-Sample | −1.3773 | −51.70% | 1.12 | — | −0.1799 | −7.94% | +0.020 |
+
+Gate (round 1): passes the drawdown test only (S37-9). In-Sample it earned a headline Sharpe of +0.12 before costs and −0.99 after, at 1.12 turnover a week: the cost diagnosis behind round 2 (Amendment 9). Frozen grid value λ = 1.
 
 ## M3 — deterministic LightGBM
 
@@ -161,10 +167,12 @@ The model has nonlinear capacity but a small nine-sector cross-section, and regi
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −1.4169 | −61.34% | 1.19 | 0.028 | — | — | — |
+| Out-of-Sample | −1.1943 | −46.97% | 1.19 | — | +0.0061 | −6.91% | +0.052 |
+
+Gate (round 1): fails all three tests (S37-9). Frozen grid value: depth 3.
 
 ## M5 — best rung plus approved agent features
 
@@ -174,7 +182,7 @@ M5 tests whether human-approved features proposed through the bounded research l
 
 ### Inputs
 
-M5 inherits the inputs of the best preceding rung and adds only approved agent features that are expressible in the feature DSL and pass leakage tests. The exact final feature names are `TBD (Gate 3)` because no trial result is recorded in this template. [prereg §06, §08]
+M5 inherits the inputs of the best preceding rung and adds only approved agent features that are expressible in the feature DSL and pass leakage tests. No feature survived the lab, so M5 has no added features and is absent (S33-19). [prereg §06, §08]
 
 ### Preprocessing
 
@@ -202,10 +210,7 @@ Agent background knowledge cannot be eliminated; it is disclosed, bounded to In-
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+M5 is **absent**. The round-1 lab (DeepSeek, USD 0.16) proposed 40 features: 24 invalid, 4 redundant, 12 failed the Validator or the reviewers, 0 survived, so no feature reached the human gate (S33-19). Every proposal is a row of the trial log and counts in the deflated Sharpe ratio.
 
 ## ENS — equal-weight rank ensemble
 
@@ -243,10 +248,12 @@ Equal weighting can dilute a genuinely stronger component and inherits the estim
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −1.1917 | −58.21% | 1.24 | 0.131 | — | — | — |
+| Out-of-Sample | −1.5286 | −50.81% | 1.26 | — | −0.1609 | −8.43% | +0.063 |
+
+Gate (round 1): fails all three tests (S37-9). ENS averages the ranks of M1, M2 and M3, since M5 is absent (Amendment 7 C3).
 
 ## M0* — optimised momentum fallback
 
@@ -272,7 +279,7 @@ The lookback choice is made within the expanding quarterly walk-forward schedule
 
 ### Role in selection
 
-M0* is the fallback traded when no candidate in `M1 → M2 → M3 → M5 → ENS` passes every gate test. [prereg §07]
+M0* is the fallback traded when no candidate in `M1 → M2 → M3 → M5 → ENS → M6 → M7 → M8 → M9` passes its gate (Amendment 9 C3). [prereg §07]
 
 ### Leakage controls and determinism
 
@@ -284,10 +291,145 @@ M0* can adapt the horizon but cannot use the additional asset features, interact
 
 ### Results
 
-| Period | Net Sharpe (skeleton convention) | Net Sharpe (zero-cost convention) | Max drawdown | P(uplift > 0) | Rank IC | DSR |
-|---|---:|---:|---:|---:|---:|---:|
-| In-Sample walk-forward | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` | `TBD (Gate 3)` |
-| OOS | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` | `TBD (Gate 4)` |
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −0.6339 | −40.05% | 0.40 | — | — | — | — |
+| Out-of-Sample | −0.7662 | −42.50% | 0.39 | — | −0.1053 | −3.91% | −0.037 |
+
+**Traded model** (S37-9, S44-3): no candidate of either round passed its gate. Frozen lookback: 26 weeks (chosen at the last In-Sample refit). Out-of-Sample against SPY: SPY returned 15.43% a year (Sharpe 0.6625, maximum drawdown −31.79%); M0\* returned −3.91% a year (volatility 9.01%), from 100 to 76.15; costs took 2.01% a year and borrow 1.02%. Market-neutrality tests: beta −0.037 and correlation −0.078 pass; mean return in SPY's down weeks −0.09% a week fails, so no bonus is claimed. Deflated Sharpe ratio (N = 72 trials): 1.96e-5 In-Sample, 0.0046 Out-of-Sample; PBO 0.459 (S44-3, S45-2).
+
+## M6 — ridge on the 4-week target (round 2)
+
+### Purpose and mechanism
+
+Round 2 (Amendment 9) responds to the round-1 diagnosis that trading costs, not missing signal, sank the candidates. M6 keeps M2's inputs but trains on a smoother target, the 4-week excess return, so its scores change more slowly. [Amendment 9 C1]
+
+### Inputs
+
+M2's inputs: the six asset features, the market states and the five pre-registered interactions. Label `y4 = R4 − mean`, with `R4 = O(t+5)/O(t+1) − 1` and `label_end` at the session of `O(t+5)`. [Amendment 9 C1]
+
+### Preprocessing
+
+As M2: in-fold winsorising and standardisation of the continuous market states; BEAR24 stays 0/1. [Amendment 2 C1, Amendment 4 C1]
+
+### Model and fixed grid
+
+Ridge regression, λ ∈ {0.1, 1, 10}, chosen at each refit on the last 104 weeks of the training window (Amendment 5 C1); ties go to the larger λ. Every grid value was also run fixed as a trial. Frozen value: λ = 10. [Amendment 9 C1]
+
+### Training schedule
+
+Round 1's 48 quarterly refits and 624 test weeks; each fit is purged by the 4-week `label_end`. [Amendment 9 C1; S41-2]
+
+### Role in selection
+
+First round-2 candidate; round-2 candidates need P(uplift > 0) ≥ 0.90. [Amendment 9 C3]
+
+### Leakage controls and determinism
+
+Purge on the 4-week `label_end`, asserted on every fit; the same vault and determinism controls as round 1. [S41-2]
+
+### Known limitations
+
+A longer target smooths scores but does not by itself cut turnover enough; M6 still traded 0.76 of the book a week. [S42-7]
+
+### Results
+
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −0.9651 | −47.04% | 0.76 | 0.263 | −0.0314 | — | — |
+| Out-of-Sample | −0.9002 | −40.08% | 0.76 | — | +0.0524 | −4.47% | +0.019 |
+
+Gate (round 2): passes the drawdown test only (S44-3).
+
+## M7 — M6 with score smoothing (round 2)
+
+### Purpose and mechanism
+
+M7 adds exponential smoothing of past scores to M6, so the ranking changes only when evidence accumulates, cutting turnover directly. [Amendment 9 C1]
+
+### Inputs
+
+As M6, plus its own lagged scores. [Amendment 9 C1]
+
+### Preprocessing
+
+As M6. Smoothing weights 2^(−k/H), k = 0…3H, over scores already known at t. [Amendment 9 C1]
+
+### Model and fixed grid
+
+Ridge; grid λ ∈ {0.1, 1, 10} × half-life H ∈ {2, 4} weeks, chosen per refit (λ decides first, then H; ties to the larger λ and larger H). Frozen value: λ = 10, H = 2. [Amendment 9 C1; S41-7]
+
+### Training schedule
+
+As M6. [S41-2]
+
+### Role in selection
+
+Second round-2 candidate, and the base rung of the round-2 agent lab. [Amendment 9 C2, C3]
+
+### Leakage controls and determinism
+
+As M6; the smoothing uses only scores known at t, including across the In-Sample/Out-of-Sample boundary (tested in S42-8). [S42-8]
+
+### Known limitations
+
+The closest candidate: it missed the Sharpe bar by 0.031 and the bootstrap test (P 0.635 against 0.90). Its slow book also made the lab's relative turnover check veto any informative feature (S43-7). [S44-3]
+
+### Results
+
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −0.6527 | −36.66% | 0.30 | 0.635 | −0.1251 | — | — |
+| Out-of-Sample | −0.7802 | −30.92% | 0.34 | — | −0.0520 | −3.17% | +0.016 |
+
+Gate (round 2): passes the drawdown test only (S44-3).
+
+## M8 — LightGBM LambdaRank on the 4-week target (round 2)
+
+### Purpose and mechanism
+
+M8 learns the weekly ranking directly (learning to rank) on M2's inputs and the 4-week target, with the same score smoothing as M7. [Amendment 9 C1]
+
+### Inputs
+
+As M6. Relevance = the within-week rank 0–8 of the 4-week return; linear gain over 9 positions. [Amendment 9 C1]
+
+### Preprocessing
+
+As M6. [Amendment 9 C1]
+
+### Model and fixed grid
+
+LightGBM LambdaRank, 200 trees, learning rate 0.03, deterministic, one thread; depth ∈ {2, 3} × H ∈ {2, 4}, chosen per refit (depth decides first; ties to the smaller depth and larger H). Frozen value: depth 3, H = 4. [Amendment 9 C1; S41-7]
+
+### Training schedule
+
+As M6. [S41-2]
+
+### Role in selection
+
+Third round-2 candidate. [Amendment 9 C3]
+
+### Leakage controls and determinism
+
+As M6; LightGBM with `deterministic=True`, one thread and a fixed seed. [Amendment 9 C1]
+
+### Known limitations
+
+Low turnover, but its gross ranking signal was negative In-Sample. The one-week shift check gave a slightly higher delayed Sharpe (+0.059, P 0.729, a PASS under S32-3), reported as such (S42-6). [S42-7]
+
+### Results
+
+| Period | Net Sharpe | Max drawdown | Turnover / week | P(uplift > 0) vs M0 | Gross Sharpe (no costs) | Return / year | Beta to SPY |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| In-Sample walk-forward | −0.8236 | −49.83% | 0.30 | 0.436 | −0.3074 | — | — |
+| Out-of-Sample | −0.8692 | −26.97% | 0.28 | — | −0.1513 | −3.62% | +0.015 |
+
+Gate (round 2): passes the drawdown test only (S44-3).
+
+## M9 — M7 plus approved agent features (round 2)
+
+M9 = M7 plus the agent features Eliya and Mattia approve by name (Amendment 9 C2). The round-2 lab used the round-2 lab model recorded in S43-1, chosen as the most capable model of its provider available at run time. Before touching real data, the lab must pass the planted-signal test. Attempt 5 **failed**: the planted feature passed the Validator (uplift +0.79, P 0.997) and the Skeptic, but Risk's turnover check vetoed it (ratio 1.63 against the 1.5 limit), because M7's book is so slow. The failure was predicted offline in S43-7 before the live run. Changing the check after seeing it fail was refused. So the lab never read real data, and **M9 is absent** (S43-9). Round-2 lab spend: USD 1.39 of the USD 10 budget.
 
 ## M4 — dropped extension
 
